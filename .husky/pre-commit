@@ -1,0 +1,2 @@
+#!/usr/bin/env sh
+cd front && npx lint-staged
