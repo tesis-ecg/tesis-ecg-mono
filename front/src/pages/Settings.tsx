@@ -1,3 +1,5 @@
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+
 export function Settings() {
   return (
     <div className="flex flex-col gap-4">
@@ -6,12 +8,16 @@ export function Settings() {
         <p className="text-body2 text-gray-600">Preferencias de cuenta y del sistema.</p>
       </header>
 
-      <section className="rounded-xl border border-gray-100 bg-white p-6 shadow-card">
-        <h2 className="text-h6 text-gray-900">Configuración — placeholder</h2>
-        <p className="text-body2 text-gray-600">
-          Las opciones de cuenta, equipo y notificaciones se sumarán en otro ticket.
-        </p>
-      </section>
+      <Card className="p-6">
+        <CardHeader className="p-0">
+          <CardTitle className="text-h6 text-gray-900">Configuración — placeholder</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0 pt-2">
+          <p className="text-body2 text-gray-600">
+            Las opciones de cuenta, equipo y notificaciones se sumarán en otro ticket.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   )
 }
