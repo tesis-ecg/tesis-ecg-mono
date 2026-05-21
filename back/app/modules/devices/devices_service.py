@@ -1,0 +1,1 @@
+"""Devices service stubs."""

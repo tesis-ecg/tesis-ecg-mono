@@ -1,0 +1,1 @@
+"""Alerts schema stubs."""

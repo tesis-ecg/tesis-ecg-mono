@@ -1,0 +1,1 @@
+"""Doctors schema stubs."""

@@ -27,3 +27,20 @@ yarn-error.log*
 .cache/
 .turbo/
 .eslintcache
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.egg-info/
+.venv/
+
+# Python tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml

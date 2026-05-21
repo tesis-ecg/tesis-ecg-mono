@@ -1,2 +1,16 @@
 #!/usr/bin/env sh
+
+# Frontend: prettier + eslint on staged TS/JS files
 cd front && npx lint-staged
+cd ..
+
+# Backend: ruff format + lint on staged Python files
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '^back/.*\.py$')
+if [ -n "$STAGED_PY" ]; then
+  echo "--- ruff format + check (back/) ---"
+  cd back
+  echo "$STAGED_PY" | sed 's|^back/||' | xargs uv run ruff format
+  echo "$STAGED_PY" | sed 's|^back/||' | xargs uv run ruff check --fix
+  echo "$STAGED_PY" | sed 's|^back/||' | xargs git add
+  cd ..
+fi
