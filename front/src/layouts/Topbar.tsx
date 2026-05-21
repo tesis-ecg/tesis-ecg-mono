@@ -11,7 +11,7 @@ interface TopbarProps {
  */
 export function Topbar({ onMenuClick }: TopbarProps) {
   return (
-    <header className="flex h-topbar shrink-0 items-center gap-3 border-b border-gray-100 bg-white px-4">
+    <header className="flex h-topbar shrink-0 items-center gap-3 border-b border-gray-100 bg-white px-6">
       <button
         type="button"
         onClick={onMenuClick}
