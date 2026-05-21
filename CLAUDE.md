@@ -82,6 +82,20 @@ Este repo está organizado como monorepo. El repo git vive en la raíz (`tesis/`
   - `npm run lint` — ESLint
   - `npm run format` / `npm run format:check` — Prettier
 - **Variables de entorno**: `VITE_API_URL` (ver `front/.env.example`). Cliente axios base en `front/src/lib/api.ts`.
+- **Librería de componentes**: [shadcn/ui](https://ui.shadcn.com/) (style `new-york`), Radix primitives, `class-variance-authority`, `tw-animate-css`.
+- **Path alias**: `@/*` → `front/src/*` (configurado en `tsconfig` y `vite.config.ts`).
+- **Utility de clases**: `cn()` en `front/src/lib/utils.ts` (clsx + tailwind-merge). Usar siempre que se compongan clases condicionales — no concatenar con `.join(' ')`.
+
+### Convención de componentes UI
+
+**Flujo obligatorio para cualquier componente UI nuevo** (antes de escribir nada propio):
+
+1. **Buscar en el proyecto** — ¿ya existe en `front/src/components/` (componentes de dominio) o `front/src/components/ui/` (primitivos shadcn)? Si sí, reusarlo.
+2. **Buscar en ican-web como referencia** — `/Users/tserra/Documents/git/sirius/ican/ican-web/src/components/` y `/src/common/components/`. Si existe un equivalente, usarlo como **referencia visual y de API** (props, variantes, comportamiento, paleta). **Importante**: ican-web usa MUI + styled-components, así que **no se copia el código tal cual** — se reimplementa con primitivos shadcn manteniendo la misma estética y semántica.
+3. **Importar de shadcn** — si no existe en (1) ni (2), agregarlo con la CLI: `cd front && npx shadcn@latest add <component>`. Queda en `src/components/ui/`. Si hace falta una variante o un comportamiento de dominio, envolverlo en un wrapper en `src/components/`.
+4. **Coherencia visual** — toda variante nueva (sizes, colors, states) debe encajar con los tokens de `src/styles/tokens.css`. Si hace falta un token nuevo, agregarlo ahí, no inline.
+
+**Tokens de shadcn** están mapeados a los tokens propios del proyecto en `src/styles/tokens.css` (sección "shadcn/ui semantic tokens"). `bg-primary`, `text-foreground`, `border-input`, etc. toman automáticamente el navy/gray del proyecto. **No reemplazar los tokens propios** por los genéricos — extender.
 
 ## Convenciones
 
