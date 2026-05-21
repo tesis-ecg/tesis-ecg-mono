@@ -18,7 +18,7 @@ export function Topbar({ onMenuClick }: TopbarProps) {
         aria-label="Abrir menú"
         className="flex h-10 w-10 items-center justify-center rounded-md text-gray-800 transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 md:hidden"
       >
-        <Menu size={22} strokeWidth={1.75} />
+        <Menu size={24} strokeWidth={1.75} />
       </button>
 
       <div className="flex items-center gap-2">
