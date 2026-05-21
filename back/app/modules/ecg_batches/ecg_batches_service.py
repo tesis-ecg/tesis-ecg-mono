@@ -1,0 +1,1 @@
+"""ECG batches service stubs."""

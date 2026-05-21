@@ -1,0 +1,1 @@
+"""Admin repository stubs."""

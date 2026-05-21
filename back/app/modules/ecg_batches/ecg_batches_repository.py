@@ -1,0 +1,1 @@
+"""ECG batches repository stubs."""
