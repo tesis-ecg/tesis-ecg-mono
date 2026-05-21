@@ -1,4 +1,8 @@
 import { Outlet } from 'react-router-dom'
+
+import { Sheet, SheetContent } from '@/components/ui/sheet'
+import { TooltipProvider } from '@/components/ui/tooltip'
+
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { useSidebarState } from '../hooks/useSidebarState'
@@ -9,38 +13,37 @@ import { useSidebarState } from '../hooks/useSidebarState'
  * en el resto.
  *
  * En <md el sidebar se vuelve drawer overlay activado por el botón
- * hamburguesa del topbar.
+ * hamburguesa del topbar (Sheet de shadcn).
  */
 export function AppShell() {
-  const { mobileOpen, openMobile, closeMobile } = useSidebarState()
+  const { mobileOpen, openMobile, closeMobile, setMobileOpen } = useSidebarState()
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg text-fg">
-      {/* Sidebar desktop */}
-      <div className="hidden md:flex">
-        <Sidebar />
-      </div>
+    <TooltipProvider>
+      <div className="flex h-screen w-screen overflow-hidden bg-bg text-fg">
+        {/* Sidebar desktop */}
+        <div className="hidden md:flex">
+          <Sidebar />
+        </div>
 
-      {/* Drawer mobile */}
-      {mobileOpen && (
-        <>
-          <div
-            className="fixed inset-0 z-40 bg-black/30 md:hidden"
-            onClick={closeMobile}
-            aria-hidden
-          />
-          <div className="fixed inset-y-0 left-0 z-50 md:hidden">
+        {/* Drawer mobile vía Sheet */}
+        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+          <SheetContent
+            side="left"
+            hideCloseButton
+            className="w-sidebar max-w-sidebar p-0 md:hidden"
+          >
             <Sidebar onNavigate={closeMobile} />
-          </div>
-        </>
-      )}
+          </SheetContent>
+        </Sheet>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar onMenuClick={openMobile} />
-        <main className="flex-1 overflow-y-auto bg-bg-muted p-6">
-          <Outlet />
-        </main>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Topbar onMenuClick={openMobile} />
+          <main className="flex-1 overflow-y-auto bg-bg-muted p-6">
+            <Outlet />
+          </main>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   )
 }

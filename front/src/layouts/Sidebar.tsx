@@ -1,4 +1,9 @@
 import { LogOut } from 'lucide-react'
+
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+
 import { NavItem } from './Sidebar/NavItem'
 import { navItems } from './Sidebar/config'
 
@@ -30,31 +35,27 @@ export function Sidebar({ onNavigate }: SidebarProps) {
       </nav>
 
       <div className="flex flex-col items-center gap-3">
-        <button
-          type="button"
-          title="Cerrar sesión"
-          aria-label="Cerrar sesión"
-          // Logout real lo conecta TES-9.
-          onClick={() => {
-            // intencionalmente vacío en este pase
-          }}
-          className="group relative flex h-10 w-full items-center justify-center text-gray-800 transition-colors hover:bg-primary-50 hover:text-primary-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-inset"
-        >
-          <LogOut size={24} strokeWidth={1.75} />
-          <span
-            role="tooltip"
-            className="pointer-events-none absolute left-[78px] z-50 whitespace-nowrap rounded-md bg-gray-900 px-2 py-1 text-body3 text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100"
-          >
+        <Tooltip delayDuration={150}>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Cerrar sesión"
+              className="h-10 w-full rounded-none text-gray-800 hover:bg-primary-50 hover:text-primary-500"
+            >
+              <LogOut size={24} strokeWidth={1.75} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={12} className="bg-gray-900 text-white">
             Cerrar sesión
-          </span>
-        </button>
+          </TooltipContent>
+        </Tooltip>
 
-        <div
-          title="Perfil"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-primary-500 text-body3 font-medium text-white"
-        >
-          {initials}
-        </div>
+        <Avatar className="h-8 w-8">
+          <AvatarFallback className="bg-primary-500 text-body3 font-medium text-white">
+            {initials}
+          </AvatarFallback>
+        </Avatar>
       </div>
     </aside>
   )
