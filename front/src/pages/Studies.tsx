@@ -1,3 +1,5 @@
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+
 export function Studies() {
   return (
     <div className="flex flex-col gap-4">
@@ -6,12 +8,16 @@ export function Studies() {
         <p className="text-body2 text-gray-600">Registros ECG y sesiones de monitoreo.</p>
       </header>
 
-      <section className="rounded-xl border border-gray-100 bg-white p-6 shadow-card">
-        <h2 className="text-h6 text-gray-900">Estudios — placeholder</h2>
-        <p className="text-body2 text-gray-600">
-          El visor de ECG y el detalle de estudios se sumarán en otro ticket.
-        </p>
-      </section>
+      <Card className="p-6">
+        <CardHeader className="p-0">
+          <CardTitle className="text-h6 text-gray-900">Estudios — placeholder</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0 pt-2">
+          <p className="text-body2 text-gray-600">
+            El visor de ECG y el detalle de estudios se sumarán en otro ticket.
+          </p>
+        </CardContent>
+      </Card>
     </div>
   )
 }

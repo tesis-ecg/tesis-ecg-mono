@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
 
 /* Inter font (weights usados: 400 normal, 500 medium, 600 semibold, 700 bold) */
 @import '@fontsource/inter/400.css';
