@@ -64,6 +64,13 @@ uv run alembic downgrade -1                              # rollback un paso
 uv run alembic history                                   # ver historial
 ```
 
+### Mental model:
+
+1. Edit ORM models (like editing Prisma schema).
+2. Generate migration diff with Alembic autogenerate.
+3. Review migration file.
+4. Apply with alembic upgrade head.
+
 ### Formato, linting y tipos
 
 ```bash

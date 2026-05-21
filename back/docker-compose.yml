@@ -36,6 +36,8 @@ services:
       - ./app:/app/app
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://holter:holter@db:5432/holter
     depends_on:
       db:
         condition: service_healthy
