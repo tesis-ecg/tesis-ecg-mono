@@ -1,0 +1,31 @@
+{                                                                                                                                                                                                                                      
+    "hooks": {
+      "PostToolUse": [
+        {
+          "matcher": "Edit|Write",
+          "hooks": [
+            {
+              "name": "auto-format",
+              "type": "command",
+              "command": "node .claude/hooks/format-hook.js",
+              "description": "Runs surgical formatting on modified files"
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "bash .claude/hooks/structural-change-check.sh"
+            }
+          ]
+        }
+      ]
+    },                                                                                  
+    "auto_skill_trigger": {
+      "backend-skill": "apps/backend/**/*.ts",
+      "ui-branding-skill": "apps/frontend/**/*.ts"
+    }                                        
+  }

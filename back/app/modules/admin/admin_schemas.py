@@ -1,0 +1,1 @@
+"""Admin schema stubs."""

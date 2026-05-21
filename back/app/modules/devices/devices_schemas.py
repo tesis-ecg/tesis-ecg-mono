@@ -1,0 +1,1 @@
+"""Devices schema stubs."""

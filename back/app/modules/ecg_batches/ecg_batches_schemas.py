@@ -1,0 +1,1 @@
+"""ECG batches schema stubs."""
