@@ -1,18 +1,27 @@
 import { Route, Routes } from 'react-router-dom'
-
-function Home() {
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white gap-2">
-      <h1 className="text-4xl font-bold">Holter Dashboard</h1>
-      <p className="text-slate-400">Wearable ECG — TFG Austral</p>
-    </div>
-  )
-}
+import { AppShell } from './layouts/AppShell'
+import { Dashboard } from './pages/Dashboard'
+import { Patients } from './pages/Patients'
+import { Devices } from './pages/Devices'
+import { Studies } from './pages/Studies'
+import { Research } from './pages/Research'
+import { Settings } from './pages/Settings'
 
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<Home />} />
+      <Route element={<AppShell />}>
+        <Route index element={<Dashboard />} />
+        <Route path="patients" element={<Patients />} />
+        <Route path="devices" element={<Devices />} />
+        <Route path="studies" element={<Studies />} />
+        <Route path="research" element={<Research />} />
+        <Route path="settings" element={<Settings />} />
+        <Route
+          path="*"
+          element={<div className="text-h4 text-gray-900">Página no encontrada</div>}
+        />
+      </Route>
     </Routes>
   )
 }
