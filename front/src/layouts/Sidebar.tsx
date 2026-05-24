@@ -3,6 +3,7 @@ import { LogOut } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useAuth } from '@/features/auth/AuthContext'
 
 import { NavItem } from './Sidebar/NavItem'
 import { navItems } from './Sidebar/config'
@@ -12,13 +13,21 @@ interface SidebarProps {
   onNavigate?: () => void
 }
 
+function deriveInitials(fullName: string | undefined): string {
+  if (!fullName) return '··'
+  const parts = fullName.trim().split(/\s+/).slice(0, 2)
+  const initials = parts.map((p) => p[0]?.toUpperCase() ?? '').join('')
+  return initials || '··'
+}
+
 /**
  * Replica del Navbar de ican-web (`src/components/Navbar/index.tsx`):
  * 70px icon-only, vertical, fondo blanco, items + logout + avatar al fondo.
  */
 export function Sidebar({ onNavigate }: SidebarProps) {
-  // Placeholder: cuando exista AuthContext (TES-9) se reemplaza por user real.
-  const initials = 'TS'
+  const { user, logout } = useAuth()
+  const initials = deriveInitials(user?.fullName)
+  const tooltipName = user?.fullName ?? 'Usuario'
 
   return (
     <aside className="flex h-full w-sidebar shrink-0 flex-col justify-between border-r border-gray-100 bg-white py-4">
@@ -41,6 +50,9 @@ export function Sidebar({ onNavigate }: SidebarProps) {
               variant="ghost"
               size="icon"
               aria-label="Cerrar sesión"
+              onClick={() => {
+                void logout()
+              }}
               className="h-10 w-full rounded-none text-gray-800 hover:bg-primary-50 hover:text-primary-500"
             >
               <LogOut size={24} strokeWidth={1.75} />
@@ -51,11 +63,21 @@ export function Sidebar({ onNavigate }: SidebarProps) {
           </TooltipContent>
         </Tooltip>
 
-        <Avatar className="h-8 w-8">
-          <AvatarFallback className="bg-primary-500 text-body3 font-medium text-white">
-            {initials}
-          </AvatarFallback>
-        </Avatar>
+        <Tooltip delayDuration={150}>
+          <TooltipTrigger asChild>
+            <Avatar className="h-8 w-8 cursor-default">
+              <AvatarFallback className="bg-primary-500 text-body3 font-medium text-white">
+                {initials}
+              </AvatarFallback>
+            </Avatar>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={12} className="bg-gray-900 text-white">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-body3 font-medium">{tooltipName}</span>
+              {user?.email ? <span className="text-helper text-gray-300">{user.email}</span> : null}
+            </div>
+          </TooltipContent>
+        </Tooltip>
       </div>
     </aside>
   )
