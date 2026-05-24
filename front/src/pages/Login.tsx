@@ -6,6 +6,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { z } from 'zod'
 
 import loginBanner from '@/assets/login-banner.jpg'
+import { isApiError, unwrapError } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -27,11 +28,16 @@ const schema = z.object({
 type LoginFormValues = z.infer<typeof schema>
 
 function parseAuthError(err: unknown): string {
-  const status = (err as { response?: { status?: number } })?.response?.status
-  if (status === 401) return 'Email o contraseña incorrectos.'
-  if (status === 403) return 'Tu usuario está inactivo o bloqueado.'
-  if (status && status >= 500) return 'El servidor no responde. Probá de nuevo en unos minutos.'
-  return 'No pudimos completar el ingreso. Verificá tu conexión e intentá de nuevo.'
+  if (isApiError(err)) {
+    if (err.code === 'UNAUTHORIZED') return 'Email o contraseña incorrectos.'
+    if (err.code === 'FORBIDDEN') return 'Tu usuario está inactivo o bloqueado.'
+    if (err.code === 'SERVER') return 'El servidor no responde. Probá de nuevo en unos minutos.'
+    if (err.code === 'NETWORK' || err.code === 'TIMEOUT') {
+      return 'No pudimos completar el ingreso. Verificá tu conexión e intentá de nuevo.'
+    }
+    return err.message
+  }
+  return unwrapError(err)
 }
 
 export function Login() {

@@ -1,4 +1,7 @@
-import axios from 'axios'
+import axios, { AxiosError } from 'axios'
+
+import { mapAxiosError } from './apiError'
+import { attachRetry } from './apiRetry'
 
 const baseURL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
@@ -35,12 +38,18 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+attachRetry(api)
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error?.response?.status === 401) {
+  (error: AxiosError) => {
+    const apiError = mapAxiosError(error)
+    if (apiError.code === 'UNAUTHORIZED') {
       handler.onUnauthorized()
     }
-    return Promise.reject(error)
+    return Promise.reject(apiError)
   },
 )
+
+export { unwrapError, isApiError } from './apiError'
+export type { ApiError, ApiErrorCode, ApiResponse } from './apiError'
