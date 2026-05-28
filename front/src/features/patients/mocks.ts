@@ -73,6 +73,18 @@ function hoursAgoISO(hours: number): string {
   return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString()
 }
 
+/**
+ * Fecha de nacimiento determinística por índice, con edades entre ~25 y ~80
+ * años. Formato ISO `YYYY-MM-DD`.
+ */
+function birthDateFor(i: number): string {
+  const age = 25 + ((i * 13) % 56) // 25..80
+  const month = ((i * 5) % 12) + 1
+  const day = ((i * 7) % 28) + 1
+  const year = new Date().getFullYear() - age
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
 function pickStatus(i: number): PatientStudyStatus {
   return STATUSES[i % STATUSES.length]
 }
@@ -86,7 +98,7 @@ function generatePatient(i: number): Patient {
     id: `p_${String(i + 1).padStart(3, '0')}`,
     fullName: `${first} ${last}`,
     dni,
-    age: 38 + ((i * 3) % 38),
+    birthDate: birthDateFor(i),
     sex: i % 2 === 0 ? 'F' : 'M',
     assignedDeviceId: status === 'none' ? null : `d_${String((i % 12) + 1).padStart(3, '0')}`,
     studyStatus: status,
