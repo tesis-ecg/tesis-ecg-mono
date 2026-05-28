@@ -6,7 +6,7 @@ export interface Patient {
   id: string
   fullName: string
   dni: string
-  age: number
+  birthDate: string
   sex: PatientSex
   assignedDeviceId: string | null
   studyStatus: PatientStudyStatus
@@ -14,6 +14,21 @@ export interface Patient {
   contactEmail: string | null
   contactPhone: string | null
 }
+
+/**
+ * Datos editables de un paciente. `assignedDeviceId`, `studyStatus` y
+ * `lastDataReceivedAt` se setean en otros flujos, no en el ABM.
+ */
+export interface CreatePatientInput {
+  fullName: string
+  dni: string
+  birthDate: string
+  sex: PatientSex
+  contactEmail: string | null
+  contactPhone: string | null
+}
+
+export type UpdatePatientInput = Partial<CreatePatientInput>
 
 export interface PatientListParams {
   q?: string

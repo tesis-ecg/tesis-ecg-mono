@@ -19,7 +19,9 @@ import {
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { DeletePatientDialog } from '@/features/patients/components/DeletePatientDialog'
 import { DeviceHealthCard } from '@/features/patients/components/DeviceHealthCard'
+import { EditPatientDialog } from '@/features/patients/components/EditPatientDialog'
 import { MetricCard } from '@/features/patients/components/MetricCard'
 import { PatientStatusBadge } from '@/features/patients/components/PatientStatusBadge'
 import { StudiesTable } from '@/features/patients/components/StudiesTable'
@@ -27,6 +29,7 @@ import { usePatient } from '@/features/patients/hooks/usePatient'
 import { usePatientDevice } from '@/features/patients/hooks/usePatientDevice'
 import { usePatientStudies } from '@/features/patients/hooks/usePatientStudies'
 import { usePatientSummary } from '@/features/patients/hooks/usePatientSummary'
+import { calculateAge } from '@/features/patients/utils'
 import { isApiError, unwrapError } from '@/lib/api'
 
 type TabValue = 'resumen' | 'estudios' | 'dispositivo'
@@ -143,7 +146,7 @@ export function PatientDetail() {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-body3 text-gray-600">
               <span>DNI {p.dni}</span>
               <span>·</span>
-              <span>{p.age} años</span>
+              <span>{calculateAge(p.birthDate)} años</span>
               <span>·</span>
               <span>{SEX_LABEL[p.sex]}</span>
             </div>
@@ -164,7 +167,11 @@ export function PatientDetail() {
           </div>
         </div>
 
-        <NewStudyButton />
+        <div className="flex flex-wrap items-center gap-2">
+          <EditPatientDialog patient={p} />
+          <DeletePatientDialog patient={p} />
+          <NewStudyButton />
+        </div>
       </Card>
 
       {/* Tabs */}

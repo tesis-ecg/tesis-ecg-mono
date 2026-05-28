@@ -4,12 +4,14 @@ import { mockDelay } from '@/lib/mockDelay'
 
 import { MOCK_PATIENTS, mockDeviceFor, mockStudiesFor, mockSummaryFor } from '../mocks'
 import type {
+  CreatePatientInput,
   Patient,
   PatientDevice,
   PatientListParams,
   PatientListResponse,
   PatientStudiesResponse,
   PatientSummary,
+  UpdatePatientInput,
 } from '../types'
 
 /**
@@ -166,5 +168,112 @@ export async function getPatientDevice(id: string): Promise<PatientDevice> {
     })
   }
   return device
+  // MOCK ↑
+}
+
+/**
+ * Genera el próximo id `p_xxx` a partir del máximo sufijo numérico en el mock.
+ * Solo se usa en la capa mock; el backend real asigna el id.
+ */
+function nextMockPatientId(): string {
+  const maxN = MOCK_PATIENTS.reduce((max, p) => {
+    const n = Number(p.id.replace(/^p_/, ''))
+    return Number.isNaN(n) ? max : Math.max(max, n)
+  }, 0)
+  return `p_${String(maxN + 1).padStart(3, '0')}`
+}
+
+/**
+ * POST /patients — Alta de un paciente.
+ *
+ * BACKEND PENDIENTE — ver TES-28.
+ * Para activar el endpoint real cuando esté disponible:
+ *   1. Descomentar las dos líneas con `api.post(...)` + `return data`.
+ *   2. Borrar todo el bloque `// MOCK ↓ ... // MOCK ↑`.
+ */
+export async function createPatient(input: CreatePatientInput): Promise<Patient> {
+  // TODO(TES-28 backend): descomentar cuando el endpoint exista
+  // const { data } = await api.post<Patient>('/patients', input)
+  // return data
+
+  // MOCK ↓
+  await mockDelay()
+  if (MOCK_PATIENTS.some((p) => p.dni === input.dni)) {
+    throw createApiError({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'Ya existe un paciente con ese DNI.',
+    })
+  }
+  const patient: Patient = {
+    id: nextMockPatientId(),
+    fullName: input.fullName,
+    dni: input.dni,
+    birthDate: input.birthDate,
+    sex: input.sex,
+    contactEmail: input.contactEmail,
+    contactPhone: input.contactPhone,
+    assignedDeviceId: null,
+    studyStatus: 'none',
+    lastDataReceivedAt: null,
+  }
+  MOCK_PATIENTS.push(patient)
+  return patient
+  // MOCK ↑
+}
+
+/**
+ * PATCH /patients/:id — Edición de un paciente (campos parciales).
+ *
+ * BACKEND PENDIENTE — ver TES-28.
+ */
+export async function updatePatient(id: string, input: UpdatePatientInput): Promise<Patient> {
+  // TODO(TES-28 backend): descomentar cuando el endpoint exista
+  // const { data } = await api.patch<Patient>(`/patients/${id}`, input)
+  // return data
+
+  // MOCK ↓
+  await mockDelay()
+  const patient = MOCK_PATIENTS.find((p) => p.id === id)
+  if (!patient) {
+    throw createApiError({
+      status: 404,
+      code: 'NOT_FOUND',
+      message: 'Paciente no encontrado.',
+    })
+  }
+  if (input.dni && MOCK_PATIENTS.some((p) => p.id !== id && p.dni === input.dni)) {
+    throw createApiError({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'Ya existe un paciente con ese DNI.',
+    })
+  }
+  Object.assign(patient, input)
+  return patient
+  // MOCK ↑
+}
+
+/**
+ * DELETE /patients/:id — Baja de un paciente.
+ *
+ * BACKEND PENDIENTE — ver TES-28.
+ */
+export async function deletePatient(id: string): Promise<void> {
+  // TODO(TES-28 backend): descomentar cuando el endpoint exista
+  // await api.delete(`/patients/${id}`)
+  // return
+
+  // MOCK ↓
+  await mockDelay()
+  const index = MOCK_PATIENTS.findIndex((p) => p.id === id)
+  if (index === -1) {
+    throw createApiError({
+      status: 404,
+      code: 'NOT_FOUND',
+      message: 'Paciente no encontrado.',
+    })
+  }
+  MOCK_PATIENTS.splice(index, 1)
   // MOCK ↑
 }

@@ -17,9 +17,12 @@ import {
   TablePagination,
   TableRow,
 } from '@/components/ui/table'
+import { NewPatientDialog } from '@/features/patients/components/NewPatientDialog'
+import { PatientRowActions } from '@/features/patients/components/PatientRowActions'
 import { PatientStatusBadge } from '@/features/patients/components/PatientStatusBadge'
 import { usePatients } from '@/features/patients/hooks/usePatients'
 import type { PatientStudyStatus } from '@/features/patients/types'
+import { calculateAge } from '@/features/patients/utils'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { unwrapError } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/time'
@@ -125,9 +128,12 @@ export function Patients() {
 
   return (
     <div className="flex flex-col gap-4">
-      <header className="flex flex-col gap-1">
-        <h1 className="text-h4 text-gray-900">Pacientes</h1>
-        <p className="text-body2 text-gray-600">Listado y gestión de pacientes monitoreados.</p>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-h4 text-gray-900">Pacientes</h1>
+          <p className="text-body2 text-gray-600">Listado y gestión de pacientes monitoreados.</p>
+        </div>
+        <NewPatientDialog />
       </header>
 
       <Card className="flex flex-col gap-0 overflow-hidden p-0">
@@ -188,13 +194,16 @@ export function Patients() {
               <TableHead className="hidden md:table-cell">Dispositivo</TableHead>
               <TableHead>Estado</TableHead>
               <TableHead className="hidden lg:table-cell">Último dato</TableHead>
+              <TableHead className="w-12">
+                <span className="sr-only">Acciones</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <TableRow key={`sk-${i}`}>
-                  {Array.from({ length: 6 }).map((__, j) => (
+                  {Array.from({ length: 7 }).map((__, j) => (
                     <TableCell key={`sk-${i}-${j}`}>
                       <Skeleton className="h-4 w-full max-w-32" />
                     </TableCell>
@@ -203,7 +212,7 @@ export function Patients() {
               ))
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="border-b-0 p-0">
+                <TableCell colSpan={7} className="border-b-0 p-0">
                   <EmptyState
                     icon={Users}
                     title="No encontramos pacientes"
@@ -240,7 +249,9 @@ export function Patients() {
                 >
                   <TableCell className="font-medium text-gray-900">{p.fullName}</TableCell>
                   <TableCell>{p.dni}</TableCell>
-                  <TableCell className="hidden md:table-cell">{p.age}</TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    {calculateAge(p.birthDate)}
+                  </TableCell>
                   <TableCell className="hidden md:table-cell">
                     {p.assignedDeviceId ? (
                       <Badge variant="outline" className="font-mono">
@@ -255,6 +266,9 @@ export function Patients() {
                   </TableCell>
                   <TableCell className="hidden lg:table-cell">
                     {formatRelativeTime(p.lastDataReceivedAt)}
+                  </TableCell>
+                  <TableCell>
+                    <PatientRowActions patient={p} />
                   </TableCell>
                 </TableRow>
               ))
