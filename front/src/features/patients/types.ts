@@ -85,20 +85,3 @@ export interface PatientSummary {
     trend: MetricTrend
   } | null
 }
-
-export type DeviceSignalQuality = 'good' | 'fair' | 'poor' | 'none'
-
-export interface PatientDevice {
-  deviceId: string
-  serial: string
-  model: string
-  firmwareVersion: string
-  batteryPercent: number
-  signalDbm: number
-  signalQuality: DeviceSignalQuality
-  lastPingAt: string
-  nextScheduledUploadAt: string
-  uploadsToday: number
-  storageUsedMb: number
-  storageTotalMb: number
-}

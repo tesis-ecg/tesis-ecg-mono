@@ -1,9 +1,21 @@
-import { Activity, ArrowLeft, FileSearch, Heart, Mail, Phone, UserX } from 'lucide-react'
-import { useEffect } from 'react'
+import {
+  Activity,
+  ArrowLeft,
+  FileSearch,
+  Heart,
+  HeartPulse,
+  Mail,
+  Pencil,
+  Phone,
+  Trash2,
+  UserX,
+} from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/EmptyState'
+import { KebabMenu } from '@/components/KebabMenu'
 import { Spinner } from '@/components/Spinner'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
@@ -19,8 +31,10 @@ import {
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { AssignHolterDialog } from '@/features/devices/components/AssignHolterDialog'
+import { HolterHealthCard } from '@/features/devices/components/HolterHealthCard'
+import { UnassignHolterDialog } from '@/features/devices/components/UnassignHolterDialog'
 import { DeletePatientDialog } from '@/features/patients/components/DeletePatientDialog'
-import { DeviceHealthCard } from '@/features/patients/components/DeviceHealthCard'
 import { EditPatientDialog } from '@/features/patients/components/EditPatientDialog'
 import { MetricCard } from '@/features/patients/components/MetricCard'
 import { PatientStatusBadge } from '@/features/patients/components/PatientStatusBadge'
@@ -51,6 +65,8 @@ export function PatientDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const [editOpen, setEditOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
 
   const tabParam = searchParams.get('tab') as TabValue | null
   const tab: TabValue = tabParam && VALID_TABS.includes(tabParam) ? tabParam : 'resumen'
@@ -58,7 +74,9 @@ export function PatientDetail() {
   const patient = usePatient(id)
   const summary = usePatientSummary(tab === 'resumen' ? id : undefined)
   const studies = usePatientStudies(tab === 'estudios' ? id : undefined)
-  const device = usePatientDevice(tab === 'dispositivo' ? id : undefined)
+  const device = usePatientDevice(
+    tab === 'dispositivo' && patient.data?.assignedDeviceId ? id : undefined,
+  )
 
   useEffect(() => {
     if (
@@ -168,11 +186,28 @@ export function PatientDetail() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <EditPatientDialog patient={p} />
-          <DeletePatientDialog patient={p} />
           <NewStudyButton />
+          <KebabMenu
+            label={`Acciones para ${p.fullName}`}
+            actions={[
+              {
+                label: 'Editar paciente',
+                icon: Pencil,
+                onSelect: () => setEditOpen(true),
+              },
+              {
+                label: 'Eliminar paciente',
+                icon: Trash2,
+                variant: 'destructive',
+                onSelect: () => setDeleteOpen(true),
+              },
+            ]}
+          />
         </div>
       </Card>
+
+      <EditPatientDialog patient={p} open={editOpen} onOpenChange={setEditOpen} />
+      <DeletePatientDialog patient={p} open={deleteOpen} onOpenChange={setDeleteOpen} />
 
       {/* Tabs */}
       <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-4">
@@ -292,7 +327,16 @@ export function PatientDetail() {
         </TabsContent>
 
         <TabsContent value="dispositivo">
-          {device.isLoading ? (
+          {p.assignedDeviceId === null ? (
+            <Card className="p-6">
+              <EmptyState
+                icon={HeartPulse}
+                title="Sin Holter asignado"
+                description="Asigná un Holter disponible para empezar a monitorear al paciente."
+                action={<AssignHolterDialog patientId={p.id} />}
+              />
+            </Card>
+          ) : device.isLoading ? (
             <Card className="p-6">
               <Spinner label="Cargando dispositivo…" />
             </Card>
@@ -300,12 +344,17 @@ export function PatientDetail() {
             <Card className="p-6">
               <EmptyState
                 icon={UserX}
-                title="Sin dispositivo asignado"
+                title="No pudimos cargar el dispositivo"
                 description={unwrapError(device.error)}
               />
             </Card>
           ) : device.data ? (
-            <DeviceHealthCard device={device.data} />
+            <div className="flex flex-col gap-3">
+              <HolterHealthCard health={device.data} />
+              <div className="flex justify-end">
+                <UnassignHolterDialog holterId={device.data.deviceId} serial={device.data.serial} />
+              </div>
+            </div>
           ) : null}
         </TabsContent>
       </Tabs>

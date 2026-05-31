@@ -4,7 +4,6 @@
  */
 import type {
   Patient,
-  PatientDevice,
   PatientStudy,
   PatientStudySessionStatus,
   PatientStudyStatus,
@@ -100,7 +99,7 @@ function generatePatient(i: number): Patient {
     dni,
     birthDate: birthDateFor(i),
     sex: i % 2 === 0 ? 'F' : 'M',
-    assignedDeviceId: status === 'none' ? null : `d_${String((i % 12) + 1).padStart(3, '0')}`,
+    assignedDeviceId: status === 'none' ? null : `d_${String(i + 1).padStart(3, '0')}`,
     studyStatus: status,
     lastDataReceivedAt:
       status === 'active'
@@ -170,28 +169,5 @@ export function mockSummaryFor(patientId: string): PatientSummary {
     heartRate: { averageBpm: avgBpm, deltaBpm, trend: trend(deltaBpm) },
     eventsDetected: { count: events, delta: eventsDelta, trend: trend(eventsDelta) },
     adherencePercent: { value: adherence, deltaPp: adherenceDelta, trend: trend(adherenceDelta) },
-  }
-}
-
-export function mockDeviceFor(patientId: string): PatientDevice | null {
-  const patient = MOCK_PATIENTS.find((p) => p.id === patientId)
-  if (!patient || !patient.assignedDeviceId) return null
-  const batteryPercent = 30 + ((Number(patient.id.slice(2)) * 11) % 70)
-  const signalDbm = -60 - ((Number(patient.id.slice(2)) * 7) % 40)
-  const signalQuality =
-    signalDbm > -70 ? 'good' : signalDbm > -85 ? 'fair' : signalDbm > -100 ? 'poor' : 'none'
-  return {
-    deviceId: patient.assignedDeviceId,
-    serial: `HOLTER-AR-${patient.assignedDeviceId.replace('d_', '')}`,
-    model: 'SIM7080G v1',
-    firmwareVersion: '0.3.1',
-    batteryPercent,
-    signalDbm,
-    signalQuality,
-    lastPingAt: hoursAgoISO(0.25),
-    nextScheduledUploadAt: new Date(Date.now() + 35 * 60 * 1000).toISOString(),
-    uploadsToday: 13,
-    storageUsedMb: 2.7,
-    storageTotalMb: 128,
   }
 }

@@ -5,10 +5,10 @@ import { Card } from '@/components/ui/card'
 import { formatDateTime, formatRelativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
-import type { PatientDevice } from '../types'
+import type { HolterHealth, HolterSignalQuality } from '../types'
 
-interface DeviceHealthCardProps {
-  device: PatientDevice
+interface HolterHealthCardProps {
+  health: HolterHealth
 }
 
 function batteryVariant(percent: number): 'success' | 'warning' | 'destructive' {
@@ -17,46 +17,44 @@ function batteryVariant(percent: number): 'success' | 'warning' | 'destructive' 
   return 'destructive'
 }
 
-function signalVariant(
-  q: PatientDevice['signalQuality'],
-): 'success' | 'warning' | 'destructive' | 'neutral' {
+function signalVariant(q: HolterSignalQuality): 'success' | 'warning' | 'destructive' | 'neutral' {
   if (q === 'good') return 'success'
   if (q === 'fair') return 'warning'
   if (q === 'poor') return 'destructive'
   return 'neutral'
 }
 
-const SIGNAL_LABEL: Record<PatientDevice['signalQuality'], string> = {
+const SIGNAL_LABEL: Record<HolterSignalQuality, string> = {
   good: 'Buena',
   fair: 'Regular',
   poor: 'Pobre',
   none: 'Sin señal',
 }
 
-export function DeviceHealthCard({ device }: DeviceHealthCardProps) {
-  const storagePct = Math.round((device.storageUsedMb / device.storageTotalMb) * 100)
+export function HolterHealthCard({ health }: HolterHealthCardProps) {
+  const storagePct = Math.round((health.storageUsedMb / health.storageTotalMb) * 100)
   return (
     <Card className="flex flex-col gap-5 p-6">
       <header className="flex flex-col gap-1">
         <div className="flex items-center justify-between">
-          <h3 className="text-h6 text-gray-900">{device.serial}</h3>
+          <h3 className="text-h6 text-gray-900">{health.serial}</h3>
           <Badge variant="outline" className="font-mono">
-            {device.model}
+            {health.model}
           </Badge>
         </div>
-        <p className="text-body3 text-gray-600">Firmware v{device.firmwareVersion}</p>
+        <p className="text-body3 text-gray-600">Firmware v{health.firmwareVersion}</p>
       </header>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Row
           icon={Battery}
           label="Batería"
-          value={`${device.batteryPercent}%`}
+          value={`${health.batteryPercent}%`}
           badge={
-            <Badge variant={batteryVariant(device.batteryPercent)}>
-              {device.batteryPercent >= 50
+            <Badge variant={batteryVariant(health.batteryPercent)}>
+              {health.batteryPercent >= 50
                 ? 'OK'
-                : device.batteryPercent >= 20
+                : health.batteryPercent >= 20
                   ? 'Baja'
                   : 'Crítica'}
             </Badge>
@@ -65,24 +63,24 @@ export function DeviceHealthCard({ device }: DeviceHealthCardProps) {
         <Row
           icon={Radio}
           label="Señal celular"
-          value={`${device.signalDbm} dBm`}
+          value={`${health.signalDbm} dBm`}
           badge={
-            <Badge variant={signalVariant(device.signalQuality)}>
-              {SIGNAL_LABEL[device.signalQuality]}
+            <Badge variant={signalVariant(health.signalQuality)}>
+              {SIGNAL_LABEL[health.signalQuality]}
             </Badge>
           }
         />
-        <Row icon={Cpu} label="Último ping" value={formatRelativeTime(device.lastPingAt)} />
+        <Row icon={Cpu} label="Último ping" value={formatRelativeTime(health.lastPingAt)} />
         <Row
           icon={Upload}
           label="Próximo envío"
-          value={formatDateTime(device.nextScheduledUploadAt)}
-          hint={`${device.uploadsToday} envíos hoy`}
+          value={formatDateTime(health.nextScheduledUploadAt)}
+          hint={`${health.uploadsToday} envíos hoy`}
         />
         <Row
           icon={HardDrive}
           label="Almacenamiento"
-          value={`${device.storageUsedMb} / ${device.storageTotalMb} MB`}
+          value={`${health.storageUsedMb} / ${health.storageTotalMb} MB`}
           hint={`${storagePct}% usado`}
         />
       </div>

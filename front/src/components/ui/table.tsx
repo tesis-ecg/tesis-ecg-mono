@@ -1,19 +1,7 @@
 import * as React from 'react'
-import {
-  ChevronLeft,
-  ChevronRight,
-  ChevronsLeft,
-  ChevronsRight,
-  EllipsisVertical,
-  type LucideIcon,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+import { KebabMenu, type KebabMenuAction } from '@/components/KebabMenu'
 import { cn } from '@/lib/utils'
 
 function Table({ className, ...props }: React.ComponentProps<'table'>) {
@@ -205,26 +193,16 @@ function PageButton({ onClick, disabled, label, children }: PageButtonProps) {
   )
 }
 
-interface TableRowAction {
-  label: string
-  icon?: LucideIcon
-  onSelect: () => void
-  variant?: 'default' | 'destructive'
-  disabled?: boolean
-}
-
 /**
- * Botón de acciones por fila (menú "3 puntitos" vertical). Opcional: se renderiza
- * en una celda al final de la fila pasándole las opciones a mostrar.
- *
- * Frena la propagación del click/teclado para no disparar acciones de la fila
- * (p. ej. una `TableRow` clickable que navega al detalle).
+ * `TableRowActions` envuelve el `KebabMenu` con un stopPropagation para que el
+ * click sobre el botón no dispare la navegación de la fila (cuando la
+ * `TableRow` es clickable y navega al detalle).
  */
 function TableRowActions({
   actions,
   label = 'Acciones',
 }: {
-  actions: TableRowAction[]
+  actions: KebabMenuAction[]
   label?: string
 }) {
   return (
@@ -233,33 +211,7 @@ function TableRowActions({
       onKeyDown={(e) => e.stopPropagation()}
       className="flex justify-end"
     >
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          aria-label={label}
-          className="inline-flex size-8 cursor-pointer items-center justify-center rounded-md text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900 focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:outline-none"
-        >
-          <EllipsisVertical className="size-4" aria-hidden />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {actions.map((action) => {
-            const Icon = action.icon
-            return (
-              <DropdownMenuItem
-                key={action.label}
-                variant={action.variant}
-                disabled={action.disabled}
-                onSelect={(e) => {
-                  e.stopPropagation()
-                  action.onSelect()
-                }}
-              >
-                {Icon ? <Icon aria-hidden /> : null}
-                {action.label}
-              </DropdownMenuItem>
-            )
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <KebabMenu actions={actions} label={label} />
     </div>
   )
 }
@@ -275,5 +227,5 @@ export {
   TableCaption,
   TablePagination,
   TableRowActions,
-  type TableRowAction,
 }
+export type { KebabMenuAction as TableRowAction }
