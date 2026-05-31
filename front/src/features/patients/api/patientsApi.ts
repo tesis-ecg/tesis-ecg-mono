@@ -2,11 +2,13 @@
 import { createApiError } from '@/lib/apiError'
 import { mockDelay } from '@/lib/mockDelay'
 
-import { MOCK_PATIENTS, mockDeviceFor, mockStudiesFor, mockSummaryFor } from '../mocks'
+import { mockDeviceFor } from '@/features/devices/mocks'
+import type { HolterHealth } from '@/features/devices/types'
+
+import { MOCK_PATIENTS, mockStudiesFor, mockSummaryFor } from '../mocks'
 import type {
   CreatePatientInput,
   Patient,
-  PatientDevice,
   PatientListParams,
   PatientListResponse,
   PatientStudiesResponse,
@@ -144,9 +146,9 @@ export async function getPatientSummary(id: string): Promise<PatientSummary> {
  *
  * BACKEND PENDIENTE — ver TES-19.
  */
-export async function getPatientDevice(id: string): Promise<PatientDevice> {
+export async function getPatientDevice(id: string): Promise<HolterHealth> {
   // TODO(TES-19 backend): descomentar cuando el endpoint exista
-  // const { data } = await api.get<PatientDevice>(`/patients/${id}/device`)
+  // const { data } = await api.get<HolterHealth>(`/patients/${id}/device`)
   // return data
 
   // MOCK ↓
