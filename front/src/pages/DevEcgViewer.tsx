@@ -102,7 +102,7 @@ export function DevEcgViewer() {
           <ECGViewer ref={viewerRef} signal={signal} height={400} onViewportChange={setViewport} />
 
           {viewport && (
-            <p className="text-body3 text-gray-600">
+            <p className="text-body3 mt-10 text-gray-600">
               Viewport actual: {((viewport.startMs - signal.startTimestamp) / 1000).toFixed(2)} s →{' '}
               {((viewport.endMs - signal.startTimestamp) / 1000).toFixed(2)} s
             </p>

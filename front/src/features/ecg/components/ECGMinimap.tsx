@@ -178,10 +178,12 @@ export function ECGMinimap({ signal, viewport, onViewportChange, height = 64 }: 
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
       <div
-        className="absolute top-0 bottom-0 border-2 border-primary/70 bg-primary/15 pointer-events-none"
+        className="pointer-events-none absolute top-0 bottom-0 border-2"
         style={{
           left: `${viewportLeftPct}%`,
           width: `${viewportWidthPct}%`,
+          borderColor: 'var(--ecg-selector)',
+          backgroundColor: 'var(--ecg-selector-bg)',
         }}
       />
     </div>

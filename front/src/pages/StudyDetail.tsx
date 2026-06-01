@@ -150,7 +150,7 @@ export function StudyDetail() {
                 height={400}
                 onViewportChange={setViewport}
               />
-              <p className="text-body3 text-gray-500">
+              <p className="text-body3 mt-10 text-gray-500">
                 Zoom:{' '}
                 <kbd className="rounded border border-border bg-muted px-1">Ctrl/⌘ + scroll</kbd> ·
                 Pan: drag o flechas izq/der con focus en el gráfico
