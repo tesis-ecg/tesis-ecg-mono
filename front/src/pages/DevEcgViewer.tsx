@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
@@ -27,6 +28,7 @@ export function DevEcgViewer() {
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
 
   // Demos de la API imperativa (TES-23).
   const handleJumpTo30s = () => {
@@ -60,6 +62,14 @@ export function DevEcgViewer() {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
 
+  // Fullscreen modal — al cerrar, sincroniza el viewport del viewer chico con
+  // el último del grande.
+  const handleFullscreenClose = (lastViewport: ECGViewportChange | null) => {
+    if (lastViewport) {
+      viewerRef.current?.zoomToRange(lastViewport.startMs, lastViewport.endMs)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
@@ -76,7 +86,11 @@ export function DevEcgViewer() {
             Señal mock — {sampleCount.toLocaleString('es-AR')} samples · {durationMin.toFixed(0)}{' '}
             min · {signal.sampleRate} Hz
           </CardTitle>
-          <ECGZoomControls onZoomIn={handleZoomIn} onZoomOut={handleZoomOut} onFit={handleReset} />
+          <ECGZoomControls
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onFullscreen={() => setFullscreenOpen(true)}
+          />
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <div className="flex flex-wrap gap-2">
@@ -109,6 +123,14 @@ export function DevEcgViewer() {
           )}
         </CardContent>
       </Card>
+
+      <ECGFullscreenDialog
+        signal={signal}
+        initialViewport={viewport}
+        open={fullscreenOpen}
+        onOpenChange={setFullscreenOpen}
+        onClose={handleFullscreenClose}
+      />
     </div>
   )
 }

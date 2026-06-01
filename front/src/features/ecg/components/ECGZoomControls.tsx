@@ -5,16 +5,26 @@ import { Button } from '@/components/ui/button'
 interface ECGZoomControlsProps {
   onZoomIn: () => void
   onZoomOut: () => void
-  onFit: () => void
+  /** Abre el viewer en una modal a pantalla completa para revisión cómoda. */
+  onFullscreen?: () => void
   className?: string
 }
 
 /**
  * Controles de zoom para el `<ECGViewer />`. Stateless — el padre conecta los
- * callbacks contra la API imperativa del viewer (típicamente `zoomToRange` y
- * `resetZoom`).
+ * callbacks contra la API imperativa del viewer (typ. `zoomToRange`) y el
+ * estado del Dialog de pantalla completa.
+ *
+ * El botón Maximize **abre el viewer en una modal grande**, no resetea el
+ * zoom. Para volver a ver la señal completa, hay que arrastrar el viewport del
+ * mini-mapa o hacer zoom out repetido.
  */
-export function ECGZoomControls({ onZoomIn, onZoomOut, onFit, className }: ECGZoomControlsProps) {
+export function ECGZoomControls({
+  onZoomIn,
+  onZoomOut,
+  onFullscreen,
+  className,
+}: ECGZoomControlsProps) {
   return (
     <div className={className}>
       <div className="inline-flex gap-1">
@@ -36,15 +46,17 @@ export function ECGZoomControls({ onZoomIn, onZoomOut, onFit, className }: ECGZo
         >
           <ZoomIn className="size-4" />
         </Button>
-        <Button
-          variant="secondary"
-          size="icon"
-          onClick={onFit}
-          aria-label="Ajustar a la señal completa"
-          title="Fit"
-        >
-          <Maximize className="size-4" />
-        </Button>
+        {onFullscreen && (
+          <Button
+            variant="secondary"
+            size="icon"
+            onClick={onFullscreen}
+            aria-label="Abrir en pantalla completa"
+            title="Pantalla completa"
+          >
+            <Maximize className="size-4" />
+          </Button>
+        )}
       </div>
     </div>
   )

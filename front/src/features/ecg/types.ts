@@ -33,8 +33,16 @@ export interface ECGViewerProps {
    * Ancho del viewport inicial en segundos. Default 10 s — convención clínica
    * de tira de papel (25 mm/s × 25 cm ≈ 10 s). El viewer arranca mostrando los
    * últimos `initialWindowSec` segundos de la señal.
+   *
+   * Si `initialViewport` también está provisto, este último tiene precedencia.
    */
   initialWindowSec?: number
+  /**
+   * Viewport inicial absoluto (timestamps en ms epoch). Si se pasa, sobreescribe
+   * a `initialWindowSec`. Útil para sincronizar dos instancias del viewer (por
+   * ejemplo cuando se abre el viewer en una modal mostrando lo mismo).
+   */
+  initialViewport?: ECGViewportChange
   /**
    * Callback opcional disparado cuando cambia el viewport (zoom, pan o llamada
    * a la API imperativa). Útil para sincronizar mini-mapa, panel lateral, etc.

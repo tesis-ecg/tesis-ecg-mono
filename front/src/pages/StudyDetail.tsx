@@ -7,6 +7,7 @@ import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
@@ -26,6 +27,7 @@ export function StudyDetail() {
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
+  const [fullscreenOpen, setFullscreenOpen] = useState(false)
 
   // 404 → estado dedicado.
   if (studyQ.isError && isApiError(studyQ.error) && studyQ.error.code === 'NOT_FOUND') {
@@ -99,7 +101,12 @@ export function StudyDetail() {
     const newSpan = Math.min(fullSpan, span * 2)
     viewerRef.current?.zoomToRange(center - newSpan / 2, center + newSpan / 2)
   }
-  const handleFit = () => viewerRef.current?.resetZoom()
+  const handleFullscreen = () => setFullscreenOpen(true)
+  const handleFullscreenClose = (lastViewport: ECGViewportChange | null) => {
+    if (lastViewport) {
+      viewerRef.current?.zoomToRange(lastViewport.startMs, lastViewport.endMs)
+    }
+  }
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
@@ -136,7 +143,7 @@ export function StudyDetail() {
                 <ECGZoomControls
                   onZoomIn={handleZoomIn}
                   onZoomOut={handleZoomOut}
-                  onFit={handleFit}
+                  onFullscreen={handleFullscreen}
                 />
               </div>
               <ECGMinimap
@@ -169,6 +176,16 @@ export function StudyDetail() {
           </Card>
         </aside>
       </div>
+
+      {ecgQ.data && (
+        <ECGFullscreenDialog
+          signal={ecgQ.data}
+          initialViewport={viewport}
+          open={fullscreenOpen}
+          onOpenChange={setFullscreenOpen}
+          onClose={handleFullscreenClose}
+        />
+      )}
     </div>
   )
 }

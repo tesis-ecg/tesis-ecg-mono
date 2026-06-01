@@ -50,6 +50,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     paperSpeed: _paperSpeed = 25,
     amplitude: _amplitude = 10,
     initialWindowSec = 10,
+    initialViewport,
     onViewportChange,
   },
   ref,
@@ -161,10 +162,21 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     const u = new uPlot(opts, data, container)
     uplotRef.current = u
 
-    // Viewport inicial: últimos `initialWindowSec` segundos. Si la señal es más
-    // corta que la ventana pedida, mostramos el rango completo.
-    const initialSpan = Math.min(initialWindowSec, durationSec)
-    u.setScale('x', { min: durationSec - initialSpan, max: durationSec })
+    // Viewport inicial: `initialViewport` gana si está; si no, últimos
+    // `initialWindowSec` segundos. Si la señal es más corta que la ventana
+    // pedida, mostramos el rango completo.
+    if (initialViewport) {
+      const startSec = Math.max(0, (initialViewport.startMs - signal.startTimestamp) / 1000)
+      const endSec = Math.min(durationSec, (initialViewport.endMs - signal.startTimestamp) / 1000)
+      if (endSec > startSec) {
+        u.setScale('x', { min: startSec, max: endSec })
+      } else {
+        u.setScale('x', { min: 0, max: durationSec })
+      }
+    } else {
+      const initialSpan = Math.min(initialWindowSec, durationSec)
+      u.setScale('x', { min: durationSec - initialSpan, max: durationSec })
+    }
 
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0]
@@ -263,7 +275,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       uplotRef.current = null
       lastViewportRef.current = null
     }
-  }, [signal, height, xs, durationSec, initialWindowSec])
+  }, [signal, height, xs, durationSec, initialWindowSec, initialViewport])
 
   // API imperativa — convierte timestamps absolutos a segundos desde el inicio.
   useImperativeHandle(
