@@ -47,3 +47,18 @@ export function formatDateTime(iso: string | null | undefined): string {
     minute: '2-digit',
   })
 }
+
+/**
+ * Duración legible: `48h 32m` para ≥1 h, `15m 30s` para <1 h, `30 s` para <1 min.
+ * Usado en la metadata de estudios donde la duración suele ser de varias horas.
+ */
+export function formatDurationMs(ms: number | null | undefined): string {
+  if (ms == null || Number.isNaN(ms) || ms < 0) return '—'
+  const totalSec = Math.floor(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (h > 0) return m > 0 ? `${h} h ${m} min` : `${h} h`
+  if (m > 0) return s > 0 ? `${m} min ${s} s` : `${m} min`
+  return `${s} s`
+}
