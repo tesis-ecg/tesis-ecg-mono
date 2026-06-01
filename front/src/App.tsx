@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom'
 
 import { AppShell } from './layouts/AppShell'
 import { Dashboard } from './pages/Dashboard'
+import { DevEcgViewer } from './pages/DevEcgViewer'
 import { DeviceDetail } from './pages/DeviceDetail'
 import { Devices } from './pages/Devices'
 import { Forbidden } from './pages/Forbidden'
@@ -39,6 +40,7 @@ function App() {
             <Route path="research" element={<Research />} />
           </Route>
           <Route path="settings" element={<Settings />} />
+          <Route path="__dev/ecg-viewer" element={<DevEcgViewer />} />
         </Route>
       </Route>
 
