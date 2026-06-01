@@ -1,4 +1,4 @@
-import { Maximize, ZoomIn, ZoomOut } from 'lucide-react'
+import { Maximize, Minimize, ZoomIn, ZoomOut } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 
@@ -7,6 +7,8 @@ interface ECGZoomControlsProps {
   onZoomOut: () => void
   /** Abre el viewer en una modal a pantalla completa para revisión cómoda. */
   onFullscreen?: () => void
+  /** Cierra la modal de pantalla completa (sustituye al botón fullscreen cuando está dentro). */
+  onMinimize?: () => void
   className?: string
 }
 
@@ -23,6 +25,7 @@ export function ECGZoomControls({
   onZoomIn,
   onZoomOut,
   onFullscreen,
+  onMinimize,
   className,
 }: ECGZoomControlsProps) {
   return (
@@ -55,6 +58,17 @@ export function ECGZoomControls({
             title="Pantalla completa"
           >
             <Maximize className="size-4" />
+          </Button>
+        )}
+        {onMinimize && (
+          <Button
+            variant="secondary"
+            size="icon"
+            onClick={onMinimize}
+            aria-label="Minimizar"
+            title="Minimizar"
+          >
+            <Minimize className="size-4" />
           </Button>
         )}
       </div>

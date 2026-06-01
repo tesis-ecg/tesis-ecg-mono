@@ -13,6 +13,13 @@ import { ECGMinimap } from './ECGMinimap'
 import { ECGViewer } from './ECGViewer'
 import { ECGZoomControls } from './ECGZoomControls'
 
+/**
+ * Espacio reservado dentro del slot del viewer para la legend nativa de uPlot
+ * (label de "Tiempo" + "ECG" abajo del canvas). Sin esto, el canvas + legend
+ * se desbordan sobre el texto de indicaciones de abajo.
+ */
+const UPLOT_LEGEND_RESERVE_PX = 48
+
 interface ECGFullscreenDialogProps {
   signal: ECGSignal
   /** Viewport actual del viewer chico — la modal arranca mostrando lo mismo. */
@@ -32,8 +39,12 @@ interface ECGFullscreenDialogProps {
  * nueva de uPlot — Radix unmonta el contenido al cerrar, así que no hay leak.
  *
  * El viewport del viewer chico se pasa como `initialViewport` para que la
- * modal arranque mirando exactamente lo mismo. Al cerrar, opcionalmente se
- * propaga el viewport final via `onClose`.
+ * modal arranque mirando exactamente lo mismo. Al cerrar (botón Minimize,
+ * `Esc` o click fuera), opcionalmente se propaga el viewport final via
+ * `onClose`.
+ *
+ * No hay X de cierre — el control de cerrar vive en el `ECGZoomControls`
+ * arriba a la derecha junto al zoom in/out (botón Minimize).
  */
 export function ECGFullscreenDialog({
   signal,
@@ -47,14 +58,24 @@ export function ECGFullscreenDialog({
   // body se desmontó.
   const closeViewportRef = useRef<ECGViewportChange | null>(initialViewport)
 
+  const closeDialog = () => {
+    onClose?.(closeViewportRef.current)
+    onOpenChange(false)
+  }
+
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen) onClose?.(closeViewportRef.current)
+    if (!nextOpen) {
+      onClose?.(closeViewportRef.current)
+    }
     onOpenChange(nextOpen)
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[90vh] max-w-none flex-col gap-3 p-4 sm:max-w-none md:w-[95vw]">
+      <DialogContent
+        showCloseButton={false}
+        className="flex h-[90vh] max-w-none flex-col gap-3 p-4 sm:max-w-none md:w-[95vw]"
+      >
         {/* El body vive en un sub-componente que se monta/desmonta con `open`.
             Eso garantiza que el estado interno (viewport actual) se resetea en
             cada apertura sin tener que usar setState dentro de un effect. */}
@@ -65,6 +86,7 @@ export function ECGFullscreenDialog({
             onViewportChange={(vp) => {
               closeViewportRef.current = vp
             }}
+            onMinimize={closeDialog}
           />
         )}
       </DialogContent>
@@ -76,23 +98,34 @@ interface ECGFullscreenBodyProps {
   signal: ECGSignal
   initialViewport: ECGViewportChange | null
   onViewportChange: (viewport: ECGViewportChange) => void
+  onMinimize: () => void
 }
 
-function ECGFullscreenBody({ signal, initialViewport, onViewportChange }: ECGFullscreenBodyProps) {
+function ECGFullscreenBody({
+  signal,
+  initialViewport,
+  onViewportChange,
+  onMinimize,
+}: ECGFullscreenBodyProps) {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
+  const viewerSlotRef = useRef<HTMLDivElement | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(initialViewport)
-  const [viewerHeight, setViewerHeight] = useState(() =>
-    Math.max(360, Math.floor((typeof window !== 'undefined' ? window.innerHeight : 720) * 0.7)),
-  )
+  const [viewerHeight, setViewerHeight] = useState(360)
 
-  // Re-calcula la altura del viewer en resize de ventana para que la modal
-  // aproveche todo el alto disponible.
+  // Mide el slot del viewer y descuenta espacio para la legend de uPlot. Sin
+  // esto, el canvas se renderiza más alto que el espacio disponible y la
+  // legend choca con el texto de indicaciones.
   useEffect(() => {
-    const handleResize = () => {
-      setViewerHeight(Math.max(360, Math.floor(window.innerHeight * 0.7)))
+    const el = viewerSlotRef.current
+    if (!el) return
+    const update = () => {
+      const next = Math.max(300, Math.floor(el.clientHeight - UPLOT_LEGEND_RESERVE_PX))
+      setViewerHeight(next)
     }
-    window.addEventListener('resize', handleResize)
-    return () => window.removeEventListener('resize', handleResize)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
   }, [])
 
   const fullSpanMs = (signal.samples.length / signal.sampleRate) * 1000
@@ -122,7 +155,7 @@ function ECGFullscreenBody({ signal, initialViewport, onViewportChange }: ECGFul
 
   return (
     <>
-      <DialogHeader className="flex flex-row items-center justify-between gap-2 pr-8">
+      <DialogHeader className="flex flex-row items-center justify-between gap-2">
         <div className="flex flex-col gap-0.5">
           <DialogTitle>Señal ECG</DialogTitle>
           <DialogDescription>
@@ -130,12 +163,16 @@ function ECGFullscreenBody({ signal, initialViewport, onViewportChange }: ECGFul
             cerrar.
           </DialogDescription>
         </div>
-        <ECGZoomControls onZoomIn={handleZoomIn} onZoomOut={handleZoomOut} />
+        <ECGZoomControls
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+          onMinimize={onMinimize}
+        />
       </DialogHeader>
 
       <ECGMinimap signal={signal} viewport={viewport} onViewportChange={handleMinimapChange} />
 
-      <div className="min-h-0 flex-1">
+      <div ref={viewerSlotRef} className="min-h-0 flex-1">
         <ECGViewer
           ref={viewerRef}
           signal={signal}
@@ -145,7 +182,7 @@ function ECGFullscreenBody({ signal, initialViewport, onViewportChange }: ECGFul
         />
       </div>
 
-      <p className="text-body3 mt-10 text-gray-500">
+      <p className="text-body3 text-gray-500">
         Zoom: <kbd className="rounded border border-border bg-muted px-1">Ctrl/⌘ + scroll</kbd> ·
         Pan: drag o flechas izq/der con focus en el gráfico · Cerrar:{' '}
         <kbd className="rounded border border-border bg-muted px-1">Esc</kbd>
