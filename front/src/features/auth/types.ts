@@ -8,7 +8,6 @@ export interface User {
 }
 
 export interface Session {
-  token: string
   user: User
   expiresAt: string
 }

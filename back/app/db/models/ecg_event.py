@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import enum
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Enum, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.db.models.alert import Alert
+    from app.db.models.ecg_batch import ECGBatch
 
 
 class ECGEventType(enum.StrEnum):
@@ -42,3 +46,6 @@ class ECGEvent(TimestampMixin, Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     event_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
+
+    batch: Mapped[ECGBatch] = relationship(back_populates="events")
+    alerts: Mapped[list[Alert]] = relationship(back_populates="event")

@@ -6,19 +6,16 @@ import { attachRetry } from './apiRetry'
 const baseURL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
 interface AuthHandler {
-  getToken: () => string | null
   onUnauthorized: () => void
 }
 
 let handler: AuthHandler = {
-  getToken: () => null,
   onUnauthorized: () => {},
 }
 
 /**
- * Registra los callbacks que necesita el cliente HTTP para inyectar el
- * Bearer token y reaccionar a 401. Lo invoca `AuthProvider` al montar para
- * evitar el ciclo de imports api.ts ↔ AuthContext.
+ * Registra el callback que necesita el cliente HTTP para reaccionar a 401.
+ * Lo invoca `AuthProvider` al montar.
  */
 export function setAuthHandler(next: AuthHandler) {
   handler = next
@@ -27,15 +24,8 @@ export function setAuthHandler(next: AuthHandler) {
 export const api = axios.create({
   baseURL,
   timeout: 15000,
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
-})
-
-api.interceptors.request.use((config) => {
-  const token = handler.getToken()
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
 })
 
 attachRetry(api)

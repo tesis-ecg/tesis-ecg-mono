@@ -1,31 +1,41 @@
-// import { api } from '@/lib/api'
-import { mockDelay } from '@/lib/mockDelay'
+import { api } from '@/lib/api'
+import { createApiError } from '@/lib/apiError'
 
-import { mockEcgSignal } from '../mocks'
 import type { ECGSignal } from '../types'
 
-/**
- * GET /studies/:id/ecg — Señal ECG cruda del estudio.
- *
- * BACKEND PENDIENTE — ver TES-32. El payload real será probablemente binario
- * (`application/octet-stream` + Float32Array LE) o un pre-signed S3 URL. NO va
- * a venir como JSON con array de floats — sería >5 MB y el parsing en cliente
- * mata la performance del primer render.
- *
- * Cuando esté el endpoint real:
- *   1. Borrar el bloque `// MOCK ↓ ... // MOCK ↑`.
- *   2. Reemplazar por `await api.get(...)` con `responseType: 'arraybuffer'`
- *      y un wrapper que decodee el header + crea el Float32Array.
- */
-export async function getStudyEcg(studyId: string): Promise<ECGSignal> {
-  // TODO(TES-32 backend): cuando exista, fetch binario.
-  // const { data } = await api.get<ArrayBuffer>(`/studies/${studyId}/ecg`, {
-  //   responseType: 'arraybuffer',
-  // })
-  // return decodeEcgPayload(data)
+interface EcgUrlResponse {
+  url: string
+  sampleRate: number
+  startTimestamp: number
+  durationMs: number
+  sampleCount: number
+}
 
-  // MOCK ↓ — `mockDelay` corto: la generación de 900k samples ya suma latencia.
-  await mockDelay(150)
-  return mockEcgSignal(studyId)
-  // MOCK ↑
+export async function getStudyEcg(studyId: string): Promise<ECGSignal> {
+  const { data: meta } = await api.get<EcgUrlResponse>(`/studies/${studyId}/ecg`)
+
+  const response = await fetch(meta.url)
+  if (!response.ok) {
+    throw createApiError({
+      status: response.status,
+      code: 'UNKNOWN',
+      message: 'No se pudo descargar el ECG del estudio.',
+    })
+  }
+
+  const buffer = await response.arrayBuffer()
+  const expectedBytes = meta.sampleCount * 4
+  if (buffer.byteLength !== expectedBytes) {
+    throw createApiError({
+      status: 500,
+      code: 'SERVER',
+      message: 'Los datos del ECG están corruptos o incompletos.',
+    })
+  }
+
+  return {
+    sampleRate: meta.sampleRate,
+    samples: new Float32Array(buffer),
+    startTimestamp: meta.startTimestamp,
+  }
 }
