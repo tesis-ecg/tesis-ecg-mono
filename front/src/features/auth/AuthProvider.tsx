@@ -24,25 +24,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         await logoutRequest()
       } catch {
-        // El BE puede haber expirado el token; ya limpiamos el estado local.
+        // Cookie may already be expired; local state is already cleared.
       }
     }
   }, [])
 
-  // Validar sesión persistida al bootear.
+  // On boot, always call /me — the cookie is the source of truth.
   useEffect(() => {
     let cancelled = false
-    const existing = sessionRef.current
-    if (!existing) {
-      setLoading(false)
-      return
-    }
     void meRequest()
       .then((user) => {
         if (cancelled) return
-        const refreshed = { ...existing, user }
-        setSession(refreshed)
-        saveSession(refreshed)
+        const existing = sessionRef.current
+        const next: Session = { user, expiresAt: existing?.expiresAt ?? '' }
+        setSession(next)
+        saveSession(next)
       })
       .catch(() => {
         if (cancelled) return
@@ -57,11 +53,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Wire del cliente HTTP. Una sola vez: los getters leen sessionRef, así
-  // el interceptor siempre ve el token actual sin re-registrar.
   useEffect(() => {
     setAuthHandler({
-      getToken: () => sessionRef.current?.token ?? null,
       onUnauthorized: () => {
         void handleLogout()
       },
@@ -77,7 +70,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthContextValue>(
     () => ({
       user: session?.user ?? null,
-      token: session?.token ?? null,
       expiresAt: session?.expiresAt ?? null,
       loading,
       isAuthenticated: !!session,
