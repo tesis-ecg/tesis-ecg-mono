@@ -50,6 +50,7 @@ async def get_detail(
             Study.deleted_at.is_(None),
             Patient.doctor_id == doctor_id,
             Patient.deleted_at.is_(None),
+            Device.deleted_at.is_(None),
         )
     )
     row = result.one_or_none()

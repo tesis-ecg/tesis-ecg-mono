@@ -36,7 +36,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((user) => {
         if (cancelled) return
         const existing = sessionRef.current
-        const next: Session = { user, expiresAt: existing?.expiresAt ?? '' }
+        const fallbackExpiresAt = new Date(Date.now() + 86400000).toISOString()
+        const next: Session = { user, expiresAt: existing?.expiresAt || fallbackExpiresAt }
         setSession(next)
         saveSession(next)
       })

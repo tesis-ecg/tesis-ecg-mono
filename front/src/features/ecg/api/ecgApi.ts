@@ -24,6 +24,15 @@ export async function getStudyEcg(studyId: string): Promise<ECGSignal> {
   }
 
   const buffer = await response.arrayBuffer()
+  const expectedBytes = meta.sampleCount * 4
+  if (buffer.byteLength !== expectedBytes) {
+    throw createApiError({
+      status: 500,
+      code: 'SERVER',
+      message: 'Los datos del ECG están corruptos o incompletos.',
+    })
+  }
+
   return {
     sampleRate: meta.sampleRate,
     samples: new Float32Array(buffer),

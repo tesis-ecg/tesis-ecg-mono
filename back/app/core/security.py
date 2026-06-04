@@ -12,8 +12,8 @@ def create_access_token(user: User) -> tuple[str, datetime]:
         "sub": str(user.id),
         "email": user.email,
         "role": user.role.value,
-        "iat": datetime.now(UTC),
-        "exp": expires_at,
+        "iat": int(datetime.now(UTC).timestamp()),
+        "exp": int(expires_at.timestamp()),
     }
     token = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     return token, expires_at

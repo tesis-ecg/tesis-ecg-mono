@@ -12,6 +12,7 @@ from app.modules.devices.devices_schemas import (
     AssignHolterInput,
     AssignHolterRequest,
     HolterCreateInput,
+    HolterCreateOut,
     HolterCreateRequest,
     HolterHealthOut,
     HolterIdInput,
@@ -40,12 +41,12 @@ async def list_holters(
     )
 
 
-@router.post("", response_model=HolterOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=HolterCreateOut, status_code=status.HTTP_201_CREATED)
 async def create_holter(
     data: HolterCreateRequest,
     _: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> HolterOut:
+) -> HolterCreateOut:
     return await service.create_holter(HolterCreateInput(data=data), db)
 
 

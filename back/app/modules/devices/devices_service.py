@@ -12,6 +12,7 @@ from app.modules.devices import devices_repository as repo
 from app.modules.devices.devices_schemas import (
     AssignHolterInput,
     HolterCreateInput,
+    HolterCreateOut,
     HolterHealthOut,
     HolterIdInput,
     HolterListInput,
@@ -66,7 +67,7 @@ async def get_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
     return _holter_out(device)
 
 
-async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> HolterOut:
+async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> HolterCreateOut:
     existing = await repo.get_device_by_serial(db, input_data.data.serial)
     if existing is not None:
         raise HTTPException(
@@ -83,7 +84,8 @@ async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> Holt
         firmware_version=input_data.data.firmwareVersion,
         api_key_hash=api_key_hash,
     )
-    return _holter_out(device)
+    out = _holter_out(device)
+    return HolterCreateOut(**out.model_dump(), apiKey=api_key)
 
 
 async def update_holter(input_data: HolterUpdateInput, db: AsyncSession) -> HolterOut:

@@ -17,16 +17,20 @@ class Auth0Error(Exception):
 
 
 # --- Management API token cache (in-memory, single process) ---
-_mgmt_token: str | None = None
-_mgmt_token_expires_at: datetime = datetime.min.replace(tzinfo=UTC)
-_mgmt_token_lock = asyncio.Lock()
+class _MgmtTokenCache:
+    def __init__(self) -> None:
+        self.token: str | None = None
+        self.expires_at: datetime = datetime.min.replace(tzinfo=UTC)
+        self.lock = asyncio.Lock()
+
+
+_cache = _MgmtTokenCache()
 
 
 async def _get_mgmt_token() -> str:
-    global _mgmt_token, _mgmt_token_expires_at
-    async with _mgmt_token_lock:
-        if _mgmt_token and datetime.now(UTC) < _mgmt_token_expires_at:
-            return _mgmt_token
+    async with _cache.lock:
+        if _cache.token and datetime.now(UTC) < _cache.expires_at:
+            return _cache.token
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -44,10 +48,10 @@ async def _get_mgmt_token() -> str:
             raise Auth0Error("MGMT_TOKEN_ERROR", "Failed to obtain Auth0 management token", 500)
 
         data = resp.json()
-        _mgmt_token = data["access_token"]
+        _cache.token = data["access_token"]
         expires_in: int = data.get("expires_in", 86400)
-        _mgmt_token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in - 60)
-        return _mgmt_token
+        _cache.expires_at = datetime.now(UTC) + timedelta(seconds=expires_in - 60)
+        return _cache.token
 
 
 async def authenticate_user(email: str, password: str) -> str:

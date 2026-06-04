@@ -21,6 +21,10 @@ class HolterOut(CamelModel):
     createdAt: datetime
 
 
+class HolterCreateOut(HolterOut):
+    apiKey: str
+
+
 class HolterListResponse(CamelModel):
     items: list[HolterOut]
     total: int

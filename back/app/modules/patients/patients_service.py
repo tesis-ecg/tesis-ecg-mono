@@ -115,6 +115,13 @@ async def update_patient(input_data: PatientUpdateInput, db: AsyncSession) -> Pa
         )
 
     update_data = input_data.data.model_dump(exclude_unset=True)
+    for field in ("dni", "fullName", "birthDate", "sex"):
+        if field in update_data and update_data[field] is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "INVALID_FIELD", "message": f"El campo {field} no puede ser nulo."},
+            )
+
     if "dni" in update_data and update_data["dni"] != patient.dni:
         existing = await repo.get_patient_by_dni(
             db, update_data["dni"], exclude_patient_id=patient.id
