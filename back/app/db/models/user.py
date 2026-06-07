@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -8,11 +10,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.db.models.doctor import Doctor
     from app.db.models.patient import Patient
 
 
 class UserRole(enum.StrEnum):
     MEDICO = "medico"
+    PACIENTE = "paciente"
     ADMIN = "admin"
     INVESTIGADOR = "investigador"
     ASISTENTE = "asistente"
@@ -28,9 +32,10 @@ class User(TimestampMixin, Base):
         Enum(UserRole, name="user_role", values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
     )
-    specialty: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    license_number: Mapped[str | None] = mapped_column(String(120), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_logout_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    patients: Mapped[list["Patient"]] = relationship(back_populates="doctor")
+    doctor_profile: Mapped[Doctor | None] = relationship(back_populates="user")
+    patient_profile: Mapped[Patient | None] = relationship(
+        back_populates="user_account", foreign_keys="[Patient.user_id]"
+    )
