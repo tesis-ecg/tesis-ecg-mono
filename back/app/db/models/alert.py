@@ -12,9 +12,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.db.models.doctor import Doctor
     from app.db.models.ecg_event import ECGEvent
     from app.db.models.patient import Patient
-    from app.db.models.user import User
 
 
 class AlertSeverity(enum.StrEnum):
@@ -38,9 +38,9 @@ class Alert(TimestampMixin, Base):
     seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("user.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("doctor.id"), nullable=True
     )
 
     patient: Mapped[Patient] = relationship(back_populates="alerts")
     event: Mapped[ECGEvent] = relationship(back_populates="alerts")
-    acknowledged_by_user: Mapped[User | None] = relationship()
+    acknowledged_by_doctor: Mapped[Doctor | None] = relationship()

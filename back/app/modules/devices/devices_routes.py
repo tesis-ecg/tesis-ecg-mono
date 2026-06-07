@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.device import DeviceStatus
+from app.db.models.doctor import Doctor
 from app.db.models.user import User
-from app.dependencies.auth_dependencies import get_current_user
+from app.dependencies.auth_dependencies import get_current_doctor, get_current_user
 from app.dependencies.common_dependencies import get_db
 from app.modules.devices import devices_service as service
 from app.modules.devices.devices_schemas import (
@@ -82,12 +83,12 @@ async def delete_holter(
 async def assign_holter(
     device_id: uuid.UUID,
     data: AssignHolterRequest,
-    current_user: User = Depends(get_current_user),
+    current_doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
     return await service.assign_holter(
         AssignHolterInput(
-            doctor_id=current_user.id,
+            doctor_id=current_doctor.id,
             device_id=device_id,
             patient_id=data.patientId,
         ),
@@ -108,12 +109,12 @@ async def unassign_holter(
 async def reassign_holter(
     device_id: uuid.UUID,
     data: ReassignHolterRequest,
-    current_user: User = Depends(get_current_user),
+    current_doctor: Doctor = Depends(get_current_doctor),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
     return await service.reassign_holter(
         AssignHolterInput(
-            doctor_id=current_user.id,
+            doctor_id=current_doctor.id,
             device_id=device_id,
             patient_id=data.patientId,
         ),

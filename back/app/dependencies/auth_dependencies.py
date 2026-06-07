@@ -5,15 +5,18 @@ from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
+from app.db.models.doctor import Doctor
 from app.db.models.user import User
 from app.dependencies.common_dependencies import get_db
-from app.modules.auth import auth_repository as repo
 
 
 async def get_current_user(
     session: str | None = Cookie(default=None, alias="session"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    # Lazy import breaks the auth_dependencies ↔ auth_routes circular import.
+    from app.modules.auth import auth_repository as repo
+
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -64,3 +67,18 @@ async def get_current_user(
             )
 
     return user
+
+
+async def get_current_doctor(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Doctor:
+    from app.modules.doctors import doctors_repository as doctors_repo
+
+    doctor = await doctors_repo.get_by_user_id(db, current_user.id)
+    if doctor is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "Esta cuenta no tiene perfil de médico."},
+        )
+    return doctor

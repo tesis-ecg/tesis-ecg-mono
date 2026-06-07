@@ -14,6 +14,7 @@ from app.db.base import Base, TimestampMixin
 if TYPE_CHECKING:
     from app.db.models.alert import Alert
     from app.db.models.device import Device
+    from app.db.models.doctor import Doctor
     from app.db.models.user import User
 
 
@@ -34,7 +35,10 @@ class Patient(TimestampMixin, Base):
     __tablename__ = "patient"
 
     doctor_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("user.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("doctor.id"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, unique=True
     )
     medical_record_num: Mapped[str] = mapped_column(String(120), unique=True)
     first_name: Mapped[str] = mapped_column(String(120))
@@ -62,6 +66,9 @@ class Patient(TimestampMixin, Base):
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    doctor: Mapped[User] = relationship(back_populates="patients")
+    doctor: Mapped[Doctor] = relationship(back_populates="patients")
+    user_account: Mapped[User | None] = relationship(
+        back_populates="patient_profile", foreign_keys=[user_id]
+    )
     devices: Mapped[list[Device]] = relationship(back_populates="patient")
     alerts: Mapped[list[Alert]] = relationship(back_populates="patient")
