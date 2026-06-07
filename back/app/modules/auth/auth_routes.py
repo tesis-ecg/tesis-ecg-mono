@@ -41,7 +41,7 @@ def _set_session_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=True,
         secure=settings.environment != "development",
-        samesite="strict",
+        samesite="lax",
         max_age=settings.jwt_expire_minutes * 60,
         path="/",
     )
