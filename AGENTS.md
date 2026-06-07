@@ -1,5 +1,15 @@
 # Holter Wearable ECG — Proyecto de Tesis
 
+## Codebase Navigation (read this first)
+
+**For any task involving discovery, search, investigation, or navigation of this codebase — read `docs/CODEBASE_INDEX.md` before exploring files directly.**
+
+The index contains: module ownership, route → service → repository chains, data model graph, cross-app request flows, external integrations, and suggested reading paths per task type. It is the fastest way to find the right file without a broad directory walk.
+
+```
+@docs/CODEBASE_INDEX.md
+```
+
 ## Qué es este proyecto
 
 Proyecto interdisciplinario de Trabajo Final de Grado (TFG) en la Universidad Austral. Dos equipos trabajan en conjunto:

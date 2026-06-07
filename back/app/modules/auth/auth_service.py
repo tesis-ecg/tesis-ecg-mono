@@ -14,6 +14,7 @@ from app.db.models.audit_event import AuditEventType
 from app.db.models.user import User, UserRole
 from app.modules.auth import auth_repository as repo
 from app.modules.auth.auth_schemas import LoginResponse, RegisterRequest, UserOut
+from app.modules.doctors import doctors_repository as doctors_repo
 
 
 def _user_out(user: User) -> UserOut:
@@ -71,6 +72,7 @@ async def login(input_data: LoginInput, db: AsyncSession) -> tuple[str, LoginRes
             full_name=input_data.email.split("@")[0],
             role=UserRole.MEDICO,
         )
+        await doctors_repo.create(db, user.id)
 
     if not user.is_active:
         await repo.log_audit_event(
@@ -134,6 +136,8 @@ async def register(input_data: RegisterInput, db: AsyncSession) -> UserOut:
         full_name=input_data.data.fullName,
         role=input_data.data.role,
     )
+    if user.role == UserRole.MEDICO:
+        await doctors_repo.create(db, user.id)
     await repo.log_audit_event(
         db,
         AuditEventType.REGISTER,
