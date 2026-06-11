@@ -36,12 +36,18 @@ def _client_ip(request: Request) -> str | None:
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
+    # In production the dashboard and API live on different *.vercel.app
+    # subdomains. Because `vercel.app` is on the Public Suffix List, those
+    # count as cross-site, so the cookie must be `SameSite=None; Secure` for
+    # the browser to attach it to cross-site XHR/fetch requests. Locally
+    # (http, same-site) we fall back to `lax` since `None` requires `Secure`.
+    is_secure = settings.environment != "development"
     response.set_cookie(
         key=_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=settings.environment != "development",
-        samesite="lax",
+        secure=is_secure,
+        samesite="none" if is_secure else "lax",
         max_age=settings.jwt_expire_minutes * 60,
         path="/",
     )
@@ -69,7 +75,13 @@ async def logout_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     await logout(LogoutInput(user=current_user, ip=_client_ip(request)), db)
-    response.delete_cookie(key=_COOKIE_NAME, path="/")
+    is_secure = settings.environment != "development"
+    response.delete_cookie(
+        key=_COOKIE_NAME,
+        path="/",
+        secure=is_secure,
+        samesite="none" if is_secure else "lax",
+    )
 
 
 @router.get("/me", response_model=UserOut)
