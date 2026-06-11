@@ -22,3 +22,17 @@ export interface Study {
 
 // Re-export para que los consumers solo importen desde `features/studies/`.
 export type { PatientStudySessionStatus }
+
+export interface StudyListParams {
+  q?: string
+  status?: PatientStudySessionStatus[]
+  limit?: number
+  offset?: number
+}
+
+export interface StudyListResponse {
+  items: Study[]
+  total: number
+  limit: number
+  offset: number
+}

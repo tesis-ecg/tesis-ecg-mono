@@ -1,0 +1,88 @@
+# Full local stack: Postgres + MinIO (S3) + FastAPI backend + Vite frontend.
+# Backend and frontend both run with hot reload and source bind-mounts.
+#
+#   docker compose up            # build (first run) + start everything
+#   docker compose up --build    # force rebuild after dependency changes
+#   docker compose down          # stop; add -v to also wipe the db/minio volumes
+#
+# URLs once up:
+#   Frontend   http://localhost:5173
+#   API        http://localhost:8000   (docs at /docs)
+#   MinIO API  http://localhost:9000    console http://localhost:9001 (minioadmin/minioadmin)
+#   Postgres   localhost:5435           (holter/holter)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: holter
+      POSTGRES_USER: holter
+      POSTGRES_PASSWORD: holter
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U holter"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  back:
+    build: ./back
+    # Apply migrations, then run uvicorn with --reload. The ./back/app bind-mount below
+    # makes the reloader pick up code edits on the host instantly.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./back/app:/app/app
+      - ./back/alembic:/app/alembic
+    env_file:
+      - ./back/.env
+    environment:
+      # Override the .env values so the container talks to the compose services
+      # (the .env defaults point at localhost for running the API outside Docker).
+      DATABASE_URL: postgresql+asyncpg://holter:holter@db:5432/holter
+      S3_ENDPOINT_URL: http://minio:9000
+      FRONTEND_URL: http://localhost:5173
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  front:
+    build:
+      context: ./front
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5173:5173"
+    volumes:
+      # Bind-mount source for HMR; keep the container's linux node_modules isolated
+      # from the host's (macOS) binaries via an anonymous volume.
+      - ./front:/app
+      - /app/node_modules
+    environment:
+      # The browser (on the host) reaches the API via the published port.
+      VITE_API_URL: http://localhost:8000
+      # File-watch polling — required for reliable HMR over bind mounts on macOS/Windows.
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      - back
+
+volumes:
+  postgres_data:
+  minio_data:

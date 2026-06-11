@@ -10,7 +10,7 @@
  */
 import { MOCK_PATIENTS, mockStudiesFor } from '@/features/patients/mocks'
 
-import type { Study } from './types'
+import type { Study, StudyListParams, StudyListResponse } from './types'
 
 export function mockStudyFor(id: string): Study | null {
   // Parsear el id `s_<patientId>_<n>`. El patientId es `p_xxx`.
@@ -47,4 +47,51 @@ export function mockStudyFor(id: string): Study | null {
 function deviceSerialFor(deviceId: string): string {
   const suffix = deviceId.replace(/^d_/, '')
   return `HOL-${suffix}`
+}
+
+/**
+ * Agrega todos los estudios de todos los pacientes mock a `Study[]`
+ * (denormalizado, igual que `mockStudyFor`), ordenado por inicio desc.
+ * Es la fuente del listado `/studies` mientras no exista `GET /studies`.
+ */
+export function getAllMockStudies(): Study[] {
+  return MOCK_PATIENTS.flatMap((patient) =>
+    mockStudiesFor(patient.id).map((study) => {
+      const startedAtMs = new Date(study.startedAt).getTime()
+      const endedAtMs = study.endedAt ? new Date(study.endedAt).getTime() : Date.now()
+      return {
+        id: study.id,
+        patientId: study.patientId,
+        patientName: patient.fullName,
+        startedAt: study.startedAt,
+        endedAt: study.endedAt,
+        durationMs: Math.max(0, endedAtMs - startedAtMs),
+        deviceSerial: deviceSerialFor(study.deviceId),
+        status: study.status,
+      } satisfies Study
+    }),
+  ).sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+}
+
+/** Aplica búsqueda (`q`), filtro por estado y paginación sobre los estudios mock. */
+export function mockStudiesList(params: StudyListParams = {}): StudyListResponse {
+  const { q, status, limit = 20, offset = 0 } = params
+  let items = getAllMockStudies()
+
+  if (q) {
+    const needle = q.toLowerCase()
+    items = items.filter(
+      (s) =>
+        s.patientName.toLowerCase().includes(needle) ||
+        s.deviceSerial.toLowerCase().includes(needle) ||
+        s.id.toLowerCase().includes(needle),
+    )
+  }
+
+  if (status && status.length > 0) {
+    items = items.filter((s) => status.includes(s.status))
+  }
+
+  const total = items.length
+  return { items: items.slice(offset, offset + limit), total, limit, offset }
 }
