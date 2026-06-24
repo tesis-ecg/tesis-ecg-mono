@@ -18,6 +18,12 @@ export interface Study {
   durationMs: number
   deviceSerial: string
   status: PatientStudySessionStatus
+  /**
+   * Médico dueño del paciente del estudio. Solo lo devuelve el backend en la
+   * vista global del admin; ausente para médicos.
+   */
+  doctorId?: string | null
+  doctorName?: string | null
 }
 
 // Re-export para que los consumers solo importen desde `features/studies/`.

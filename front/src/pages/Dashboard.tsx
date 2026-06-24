@@ -9,15 +9,22 @@ import { KpiCard } from '@/features/dashboard/components/KpiCard'
 import { PendingAlertsCard } from '@/features/dashboard/components/PendingAlertsCard'
 import { RunningStudiesCard } from '@/features/dashboard/components/RunningStudiesCard'
 import { useDashboardKpis } from '@/features/dashboard/hooks/useDashboardKpis'
+import { useAuth } from '@/features/auth/AuthContext'
 
 export function Dashboard() {
   const { data, isLoading, isError } = useDashboardKpis()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
 
   return (
     <div className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
         <h1 className="text-h4 text-gray-900">Bienvenido</h1>
-        <p className="text-body2 text-gray-600">Resumen del sistema de telemetría cardíaca.</p>
+        <p className="text-body2 text-gray-600">
+          {isAdmin
+            ? 'Resumen global del sistema — datos de todos los médicos.'
+            : 'Resumen del sistema de telemetría cardíaca.'}
+        </p>
       </header>
 
       {isLoading ? (

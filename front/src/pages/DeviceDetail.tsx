@@ -1,4 +1,4 @@
-import { ArrowLeft, HeartPulse, Pencil, Trash2, User, UserX } from 'lucide-react'
+import { ArrowLeft, HeartPulse, Pencil, Stethoscope, Trash2, User, UserX } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -9,6 +9,8 @@ import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useAuth } from '@/features/auth/AuthContext'
+import { AssignDeviceToDoctorDialog } from '@/features/devices/components/AssignDeviceToDoctorDialog'
 import { DeleteHolterDialog } from '@/features/devices/components/DeleteHolterDialog'
 import { EditHolterDialog } from '@/features/devices/components/EditHolterDialog'
 import { HolterHealthCard } from '@/features/devices/components/HolterHealthCard'
@@ -24,8 +26,12 @@ import { formatDate, formatRelativeTime } from '@/lib/time'
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
+  const isMedico = user?.role === 'medico'
   const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [assignDoctorOpen, setAssignDoctorOpen] = useState(false)
   const holter = useHolter(id)
   const health = useHolterHealth(id)
   const assignedPatient = usePatient(holter.data?.assignedPatientId ?? undefined)
@@ -119,37 +125,53 @@ export function DeviceDetail() {
           </div>
         </div>
 
-        {!isRetired && (
+        {!isRetired && (isAdmin || isMedico) && (
           <div className="flex flex-wrap items-center gap-2">
-            <ReassignHolterDialog holter={h} />
-            {isAssigned && <UnassignHolterDialog holterId={h.id} serial={h.serial} />}
-            <KebabMenu
-              label={`Acciones para ${h.serial}`}
-              actions={[
-                {
-                  label: 'Editar Holter',
-                  icon: Pencil,
-                  onSelect: () => setEditOpen(true),
-                },
-                {
-                  label: 'Eliminar Holter',
-                  icon: Trash2,
-                  variant: 'destructive',
-                  onSelect: () => setDeleteOpen(true),
-                },
-              ]}
-            />
+            {isMedico && <ReassignHolterDialog holter={h} />}
+            {isMedico && isAssigned && <UnassignHolterDialog holterId={h.id} serial={h.serial} />}
+            {isAdmin && (
+              <KebabMenu
+                label={`Acciones para ${h.serial}`}
+                actions={[
+                  {
+                    label: 'Editar Holter',
+                    icon: Pencil,
+                    onSelect: () => setEditOpen(true),
+                  },
+                  {
+                    label: 'Asignar a médico',
+                    icon: Stethoscope,
+                    onSelect: () => setAssignDoctorOpen(true),
+                  },
+                  {
+                    label: 'Eliminar Holter',
+                    icon: Trash2,
+                    variant: 'destructive',
+                    onSelect: () => setDeleteOpen(true),
+                  },
+                ]}
+              />
+            )}
           </div>
         )}
       </Card>
 
-      <EditHolterDialog holter={h} open={editOpen} onOpenChange={setEditOpen} />
-      <DeleteHolterDialog
-        holter={h}
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        navigateOnSuccess
-      />
+      {isAdmin && (
+        <>
+          <EditHolterDialog holter={h} open={editOpen} onOpenChange={setEditOpen} />
+          <DeleteHolterDialog
+            holter={h}
+            open={deleteOpen}
+            onOpenChange={setDeleteOpen}
+            navigateOnSuccess
+          />
+          <AssignDeviceToDoctorDialog
+            holter={h}
+            open={assignDoctorOpen}
+            onOpenChange={setAssignDoctorOpen}
+          />
+        </>
+      )}
 
       {/* Paciente asignado */}
       <Card className="p-6">
@@ -189,7 +211,7 @@ export function DeviceDetail() {
                 </span>
               </div>
             </div>
-            {!isRetired && <ReassignHolterDialog holter={h} />}
+            {isMedico && !isRetired && <ReassignHolterDialog holter={h} />}
           </div>
         )}
       </Card>

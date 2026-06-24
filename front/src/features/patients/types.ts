@@ -13,6 +13,12 @@ export interface Patient {
   lastDataReceivedAt: string | null
   contactEmail: string | null
   contactPhone: string | null
+  /**
+   * Médico dueño del paciente. Solo lo devuelve el backend en la vista global
+   * del admin (todas las tablas de todos los médicos); ausente para médicos.
+   */
+  doctorId?: string | null
+  doctorName?: string | null
 }
 
 /**
