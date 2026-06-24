@@ -1,10 +1,14 @@
-import { Home, Users, HeartPulse, Activity, FlaskConical, Settings } from 'lucide-react'
+import { Home, Users, HeartPulse, Activity, FlaskConical, Settings, UserCog } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+
+import type { Role } from '@/features/auth/types'
 
 export type NavItemConfig = {
   name: string
   path: string
   icon: LucideIcon
+  /** Si se define, el ítem solo se muestra a estos roles (admin siempre ve todo). */
+  roles?: Role[]
 }
 
 export const navItems: NavItemConfig[] = [
@@ -13,5 +17,6 @@ export const navItems: NavItemConfig[] = [
   { name: 'Dispositivos', path: '/devices', icon: HeartPulse },
   { name: 'Estudios', path: '/studies', icon: Activity },
   { name: 'Investigación', path: '/research', icon: FlaskConical },
+  { name: 'Usuarios', path: '/users', icon: UserCog, roles: ['admin'] },
   { name: 'Configuración', path: '/settings', icon: Settings },
 ]

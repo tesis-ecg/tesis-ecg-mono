@@ -19,6 +19,7 @@ import {
 import { StudyStatusBadge } from '@/features/studies/components/StudyStatusBadge'
 import { useStudies } from '@/features/studies/hooks/useStudies'
 import type { PatientStudySessionStatus } from '@/features/studies/types'
+import { useAuth } from '@/features/auth/AuthContext'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { unwrapError } from '@/lib/api'
 import { formatDateTime, formatDurationMs } from '@/lib/time'
@@ -48,6 +49,8 @@ function parseStatusParam(value: string | null): PatientStudySessionStatus[] {
 
 export function Studies() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [searchParams, setSearchParams] = useSearchParams()
 
   const q = searchParams.get('q') ?? ''
@@ -128,6 +131,7 @@ export function Studies() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const items = data?.items ?? []
   const hasActiveFilters = Boolean(debouncedSearch) || status.length > 0
+  const colCount = isAdmin ? 7 : 6
 
   return (
     <div className="flex flex-col gap-4">
@@ -192,13 +196,14 @@ export function Studies() {
               <TableHead className="hidden lg:table-cell">Fin</TableHead>
               <TableHead>Duración</TableHead>
               <TableHead className="hidden md:table-cell">Holter</TableHead>
+              {isAdmin && <TableHead>Médico</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <TableRow key={`sk-${i}`}>
-                  {Array.from({ length: 6 }).map((__, j) => (
+                  {Array.from({ length: colCount }).map((__, j) => (
                     <TableCell key={`sk-${i}-${j}`}>
                       <Skeleton className="h-4 w-full max-w-32" />
                     </TableCell>
@@ -207,7 +212,7 @@ export function Studies() {
               ))
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="border-b-0 p-0">
+                <TableCell colSpan={colCount} className="border-b-0 p-0">
                   <EmptyState
                     icon={Activity}
                     title="No encontramos estudios"
@@ -256,6 +261,11 @@ export function Studies() {
                   <TableCell className="hidden md:table-cell text-gray-600">
                     {s.deviceSerial}
                   </TableCell>
+                  {isAdmin && (
+                    <TableCell>
+                      {s.doctorName ?? <span className="text-gray-400">—</span>}
+                    </TableCell>
+                  )}
                 </TableRow>
               ))
             )}

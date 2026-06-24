@@ -9,8 +9,26 @@ export interface Holter {
   firmwareVersion: string | null
   status: HolterStatus
   assignedPatientId: string | null
+  /**
+   * Médico al que el admin asignó el dispositivo (ownership device→médico).
+   * El médico solo ve/gestiona los dispositivos donde figura como dueño.
+   * Poblado por el backend; ausente para vistas no-admin que no lo necesitan.
+   */
+  assignedDoctorId?: string | null
+  assignedDoctorName?: string | null
   lastSeenAt: string | null
   createdAt: string
+}
+
+/** Opción de médico para el Select de "Asignar a médico" (solo admin). */
+export interface DoctorOption {
+  id: string
+  fullName: string
+}
+
+export interface AssignHolterToDoctorInput {
+  holterId: string
+  doctorId: string
 }
 
 export interface CreateHolterInput {

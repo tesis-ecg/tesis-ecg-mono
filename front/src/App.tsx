@@ -15,6 +15,7 @@ import { Research } from './pages/Research'
 import { Settings } from './pages/Settings'
 import { Studies } from './pages/Studies'
 import { StudyDetail } from './pages/StudyDetail'
+import { Users } from './pages/Users'
 import { ProtectedRoute } from './router/ProtectedRoute'
 import { RoleRoute } from './router/RoleRoute'
 
@@ -38,6 +39,9 @@ function App() {
           <Route path="studies/:id" element={<StudyDetail />} />
           <Route element={<RoleRoute allow={['investigador']} />}>
             <Route path="research" element={<Research />} />
+          </Route>
+          <Route element={<RoleRoute allow={['admin']} />}>
+            <Route path="users" element={<Users />} />
           </Route>
           <Route path="settings" element={<Settings />} />
           <Route path="__dev/ecg-viewer" element={<DevEcgViewer />} />

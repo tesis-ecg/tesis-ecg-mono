@@ -29,10 +29,15 @@ export function Sidebar({ onNavigate }: SidebarProps) {
   const initials = deriveInitials(user?.fullName)
   const tooltipName = user?.fullName ?? 'Usuario'
 
+  // Un ítem sin `roles` es visible para todos; admin siempre ve todo (igual que RoleRoute).
+  const visibleItems = navItems.filter(
+    (item) => !item.roles || user?.role === 'admin' || (user && item.roles.includes(user.role)),
+  )
+
   return (
     <aside className="flex h-full w-sidebar shrink-0 flex-col justify-between border-r border-gray-100 bg-white py-4">
       <nav className="flex flex-col gap-1" aria-label="Navegación principal">
-        {navItems.map((item) => (
+        {visibleItems.map((item) => (
           <NavItem
             key={item.path}
             icon={item.icon}

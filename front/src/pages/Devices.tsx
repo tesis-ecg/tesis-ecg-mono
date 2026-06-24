@@ -22,6 +22,7 @@ import { HolterStatusBadge } from '@/features/devices/components/HolterStatusBad
 import { NewHolterDialog } from '@/features/devices/components/NewHolterDialog'
 import { useHolters } from '@/features/devices/hooks/useHolters'
 import type { HolterStatus } from '@/features/devices/types'
+import { useAuth } from '@/features/auth/AuthContext'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { unwrapError } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -43,6 +44,8 @@ function parseStatusParam(value: string | null): HolterStatus[] {
 
 export function Devices() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [searchParams, setSearchParams] = useSearchParams()
 
   const q = searchParams.get('q') ?? ''
@@ -123,6 +126,7 @@ export function Devices() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const items = data?.items ?? []
   const hasActiveFilters = Boolean(debouncedSearch) || status.length > 0
+  const colCount = isAdmin ? 7 : 6
 
   return (
     <div className="flex flex-col gap-4">
@@ -131,7 +135,7 @@ export function Devices() {
           <h1 className="text-h4 text-gray-900">Dispositivos</h1>
           <p className="text-body2 text-gray-600">Inventario y estado de los Holter desplegados.</p>
         </div>
-        <NewHolterDialog />
+        {isAdmin && <NewHolterDialog />}
       </header>
 
       <Card className="flex flex-col gap-0 overflow-hidden p-0">
@@ -189,6 +193,7 @@ export function Devices() {
               <TableHead className="hidden md:table-cell">Firmware</TableHead>
               <TableHead>Estado</TableHead>
               <TableHead>Paciente asignado</TableHead>
+              {isAdmin && <TableHead>Médico</TableHead>}
               <TableHead className="w-12">
                 <span className="sr-only">Acciones</span>
               </TableHead>
@@ -198,7 +203,7 @@ export function Devices() {
             {isLoading ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <TableRow key={`sk-${i}`}>
-                  {Array.from({ length: 6 }).map((__, j) => (
+                  {Array.from({ length: colCount }).map((__, j) => (
                     <TableCell key={`sk-${i}-${j}`}>
                       <Skeleton className="h-4 w-full max-w-32" />
                     </TableCell>
@@ -207,7 +212,7 @@ export function Devices() {
               ))
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="border-b-0 p-0">
+                <TableCell colSpan={colCount} className="border-b-0 p-0">
                   <EmptyState
                     icon={HeartPulse}
                     title="No hay Holters"
@@ -265,6 +270,11 @@ export function Devices() {
                       <span className="text-gray-400">—</span>
                     )}
                   </TableCell>
+                  {isAdmin && (
+                    <TableCell>
+                      {h.assignedDoctorName ?? <span className="text-gray-400">—</span>}
+                    </TableCell>
+                  )}
                   <TableCell>
                     <HolterRowActions holter={h} />
                   </TableCell>

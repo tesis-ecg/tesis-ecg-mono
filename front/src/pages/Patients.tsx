@@ -23,6 +23,7 @@ import { PatientStatusBadge } from '@/features/patients/components/PatientStatus
 import { usePatients } from '@/features/patients/hooks/usePatients'
 import type { PatientStudyStatus } from '@/features/patients/types'
 import { calculateAge } from '@/features/patients/utils'
+import { useAuth } from '@/features/auth/AuthContext'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { unwrapError } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/time'
@@ -45,6 +46,8 @@ function parseStatusParam(value: string | null): PatientStudyStatus[] {
 
 export function Patients() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [searchParams, setSearchParams] = useSearchParams()
 
   const q = searchParams.get('q') ?? ''
@@ -125,6 +128,7 @@ export function Patients() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const items = data?.items ?? []
   const hasActiveFilters = Boolean(debouncedSearch) || status.length > 0
+  const colCount = isAdmin ? 8 : 7
 
   return (
     <div className="flex flex-col gap-4">
@@ -194,6 +198,7 @@ export function Patients() {
               <TableHead className="hidden md:table-cell">Dispositivo</TableHead>
               <TableHead>Estado</TableHead>
               <TableHead className="hidden lg:table-cell">Último dato</TableHead>
+              {isAdmin && <TableHead>Médico</TableHead>}
               <TableHead className="w-12">
                 <span className="sr-only">Acciones</span>
               </TableHead>
@@ -203,7 +208,7 @@ export function Patients() {
             {isLoading ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <TableRow key={`sk-${i}`}>
-                  {Array.from({ length: 7 }).map((__, j) => (
+                  {Array.from({ length: colCount }).map((__, j) => (
                     <TableCell key={`sk-${i}-${j}`}>
                       <Skeleton className="h-4 w-full max-w-32" />
                     </TableCell>
@@ -212,7 +217,7 @@ export function Patients() {
               ))
             ) : items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="border-b-0 p-0">
+                <TableCell colSpan={colCount} className="border-b-0 p-0">
                   <EmptyState
                     icon={Users}
                     title="No encontramos pacientes"
@@ -267,6 +272,11 @@ export function Patients() {
                   <TableCell className="hidden lg:table-cell">
                     {formatRelativeTime(p.lastDataReceivedAt)}
                   </TableCell>
+                  {isAdmin && (
+                    <TableCell>
+                      {p.doctorName ?? <span className="text-gray-400">—</span>}
+                    </TableCell>
+                  )}
                   <TableCell>
                     <PatientRowActions patient={p} />
                   </TableCell>
