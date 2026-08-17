@@ -111,3 +111,7 @@ Este repo está organizado como monorepo. El repo git vive en la raíz (`tesis/`
 
 - Documentación en español
 - Código y comentarios técnicos pueden ser en inglés
+
+## Imported Claude Cowork project instructions
+
+Este proyecto es para la tesis de mi carrera Ingenieria Informatica
