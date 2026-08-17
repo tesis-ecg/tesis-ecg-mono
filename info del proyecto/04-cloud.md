@@ -48,7 +48,7 @@ Alert
 
 ## Recepción directa desde Holter
 
-El Holter envía datos directamente al backend vía módulo SIM (LTE-M) cada hora, sin intermediarios. Ver [documentación completa del canal SIM](07-sim-celular.md).
+El Holter envía datos directamente al backend vía el WiFi del domicilio del paciente cada hora, sin intermediarios. Ver [documentación completa del canal WiFi](07-wifi-y-provisioning.md).
 
 ### Endpoint de batch upload
 
@@ -56,7 +56,7 @@ El Holter envía datos directamente al backend vía módulo SIM (LTE-M) cada hor
 @app.post("/devices/{device_id}/ecg-batch")
 async def receive_ecg_batch(device_id: str, request: Request, batch: ECGBatchPayload):
     """
-    Recibe un batch de datos ECG directamente desde el Holter (via SIM).
+    Recibe un batch de datos ECG directamente desde el Holter (via WiFi).
     Autenticación por API key del dispositivo (no JWT).
     """
     # Verificar API key del dispositivo
@@ -81,7 +81,7 @@ async def receive_ecg_batch(device_id: str, request: Request, batch: ECGBatchPay
             sample_rate=chunk.sample_rate,
             num_samples=chunk.num_samples,
             data_url=s3_url,
-            source="sim"  # distinguir de datos que llegan via app
+            source="wifi"
         )
     
     # Actualizar estado del dispositivo
@@ -89,6 +89,7 @@ async def receive_ecg_batch(device_id: str, request: Request, batch: ECGBatchPay
         device_id=device_id,
         battery_pct=batch.battery_pct,
         sd_free_mb=batch.sd_free_mb,
+        wifi_rssi=batch.wifi_rssi,
         last_seen=datetime.utcnow()
     )
     
@@ -111,14 +112,19 @@ class ECGBatchPayload(BaseModel):
     firmware_version: str
     battery_pct: int
     sd_free_mb: int
+    wifi_rssi: int          # dBm — alimenta el Tablero de Salud del Hardware
     batch: list[ECGChunkData]
 ```
+
+### Idempotencia
+
+El dispositivo reintenta tras cortes de red, así que el par `(device_id, timestamp)` debe tener unique constraint. Un reintento sobre un chunk ya recibido devuelve 200 sin duplicar la fila.
 
 ### Autenticación por API key
 
 El Holter se autentica con una **API key única por dispositivo** (no JWT — el dispositivo opera sin interacción humana):
 
-- Se genera durante el provisioning/manufactura y se graba en flash del XIAO Nordic
+- Se genera durante la manufactura y se graba en flash del MCU. Es independiente de las credenciales WiFi: la API key es la identidad permanente del equipo y no se borra al reasignar el dispositivo a otro paciente
 - Se envía en el header `X-API-Key` de cada request
 - El backend valida contra la tabla `Device` en PostgreSQL
 - No requiere flujo de login/refresh — el dispositivo opera sin interacción humana
@@ -130,5 +136,19 @@ Se agrega un campo `source` al modelo `ECGChunk` para trazabilidad:
 ```
 ECGChunk
   ├── ...campos existentes...
-  └── source: "sim"    # Todos los datos llegan vía SIM batch
+  └── source: "wifi"   # Todos los datos llegan vía WiFi batch
 ```
+
+### Órdenes hacia el dispositivo
+
+La respuesta del endpoint es también el canal de control: el dispositivo solo habla con el backend una vez por hora, así que las órdenes viajan en la respuesta del batch.
+
+```json
+{
+  "status": "ok",
+  "chunks_received": 1,
+  "command": "unprovision"
+}
+```
+
+`unprovision` es la orden de desasignación (borrar credenciales del paciente, formatear SD y volver a modo AP). El firmware **puede rechazarla** si quedan batches sin subir; en ese caso responde con la cantidad pendiente y el portal se lo muestra al técnico como advertencia. Ver [Re-provisioning](07-wifi-y-provisioning.md#re-provisioning-entre-pacientes).

@@ -123,7 +123,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 
 - Root `CLAUDE.md` / `AGENTS.md` — project + agent conventions (authoritative for FE component flow, tokens, monorepo layout).
 - `back/docs/backend/01-arquitectura.md` … `06-setup-local.md` — backend prose (modelos, endpoints, auth, ML pipeline, local setup). **Note staleness** (see Unknowns).
-- `info del proyecto/` — system architecture (SIM/LTE-M comms, firmware, battery, security). Index at `info del proyecto/README.md`.
+- `info del proyecto/` — system architecture (WiFi comms + SoftAP provisioning, firmware, battery, security). Index at `info del proyecto/README.md`. Note: `08-sim-celular-descartado.md` documents the **rejected** LTE-M design — do not treat as current.
 - `Requerimientos.md` — requirements.
 
 ## Suggested Reading Paths

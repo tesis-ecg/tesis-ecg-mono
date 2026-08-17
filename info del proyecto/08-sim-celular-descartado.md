@@ -1,8 +1,21 @@
-# Canal SIM — Arquitectura principal de comunicación
+# Canal SIM (LTE-M) — OPCIÓN DESCARTADA
+
+> [!WARNING]
+> **Documento archivado. Esta NO es la arquitectura del proyecto.**
+>
+> El canal celular fue la decisión original y se descartó. El canal de comunicación
+> actual es **WiFi del domicilio del paciente** — ver [Canal WiFi y provisioning](07-wifi-y-provisioning.md)
+> y la [justificación de la decisión](01-justificacion.md#opción-b--sim-celular-lte-m--descartada).
+>
+> Se conserva porque documenta una alternativa evaluada en profundidad (hardware,
+> protocolo AT, consumo, costos de plan de datos) y sigue siendo la vía de evolución
+> natural si en el futuro se requiere cobertura fuera del domicilio. Todo el contenido
+> de abajo describe la arquitectura anterior y **está desactualizado** respecto del
+> resto de la documentación.
 
 ## Resumen
 
-El Holter opera como dispositivo standalone usando un módulo celular IoT (LTE-M, **SIM7080G como candidato técnico**) con tarjeta SIM para enviar datos ECG directamente al backend cada hora, sin depender de BLE, WiFi del paciente ni smartphone. **Este es el canal primario del sistema.**
+El Holter opera como dispositivo standalone usando un módulo celular IoT (LTE-M, **SIM7080G como candidato técnico**) con tarjeta SIM para enviar datos ECG directamente al backend cada hora, sin depender de BLE, WiFi del paciente ni smartphone.
 
 La SD card actúa como buffer primario: graba continuamente y, al cumplirse el intervalo (default: 1h), el módulo SIM se despierta, envía el batch acumulado al backend via HTTP POST, y una vez confirmada la recepción, elimina los datos enviados de la SD.
 
