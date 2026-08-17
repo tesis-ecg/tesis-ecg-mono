@@ -8,7 +8,7 @@ Este módulo es el pilar comercial. Su objetivo es que el administrador pueda co
 
 * **Gestión de "Créditos de Monitoreo":** El sistema debe permitir al administrador cargar "tiempo de uso" o "cantidad de estudios" a una cuenta médica. Una vez agotado el crédito, el sistema notificará al profesional y restringirá el inicio de nuevos estudios hasta la renovación de la suscripción.
 
-* **Tablero de Salud del Hardware:** El personal administrativo debe poder ver de un vistazo si los equipos están cargados, si tienen buena señal celular en el domicilio del paciente y si están transmitiendo datos correctamente.
+* **Tablero de Salud del Hardware:** El personal administrativo debe poder ver de un vistazo si los equipos están cargados, si tienen buena señal de WiFi en el domicilio del paciente y si están transmitiendo datos correctamente.
 
   * En caso de que el adsr mande que está midiendo mal, se le debe notificar al paciente vía la app mobile (los primeros
 
@@ -34,7 +34,7 @@ Este módulo es el "cerebro invisible". Su función es recibir los datos crudos 
 
 * **Semáforo de Calidad de Señal:** Si el paciente se colocó mal el chaleco o un electrodo seco perdió contacto, el sistema debe identificar ese segmento de tiempo como "No Diagnóstico" y notificarlo, evitando que el médico pierda tiempo analizando ruido.
 
-* **Reconstrucción Fiel de la Experiencia:** El sistema debe garantizar que los datos recolectados en la memoria del equipo lleguen íntegros a la nube, incluso si hay cortes en la señal celular durante el día o la noche.
+* **Reconstrucción Fiel de la Experiencia:** El sistema debe garantizar que los datos recolectados en la memoria del equipo lleguen íntegros a la nube, incluso si el paciente pasa horas o días fuera del alcance del WiFi de su domicilio.
 
 * **Exportación para Integración Hospitalaria:** Los resultados deben poder descargarse en formatos que el Hospital Austral ya utilice en sus sistemas de cardiología, facilitando que el estudio se incorpore a la historia clínica del paciente.
 
