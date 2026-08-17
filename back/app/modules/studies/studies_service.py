@@ -72,14 +72,21 @@ def _not_found() -> HTTPException:
 
 @lru_cache
 def _get_s3_client() -> Any:
+    """Cliente usado para firmar las URLs que descarga el navegador.
+
+    Se firma contra `s3_public_endpoint_url` (el host al que llega el browser)
+    porque SigV4 incluye el header `Host` en la firma — reescribir el host de la
+    URL después de firmarla la invalida.
+    """
+    endpoint = settings.s3_public_endpoint_url or settings.s3_endpoint_url
     client_kwargs: dict[str, object] = {
         "aws_access_key_id": settings.aws_access_key_id,
         "aws_secret_access_key": settings.aws_secret_access_key,
         "region_name": settings.aws_region,
         "config": Config(signature_version="s3v4"),
     }
-    if settings.s3_endpoint_url:
-        client_kwargs["endpoint_url"] = settings.s3_endpoint_url
+    if endpoint:
+        client_kwargs["endpoint_url"] = endpoint
     return boto3.client("s3", **client_kwargs)
 
 

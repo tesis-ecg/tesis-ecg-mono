@@ -57,6 +57,9 @@ services:
       # (the .env defaults point at localhost for running the API outside Docker).
       DATABASE_URL: postgresql+asyncpg://holter:holter@db:5432/holter
       S3_ENDPOINT_URL: http://minio:9000
+      # Las URLs prefirmadas las descarga el navegador (en el host), no el backend:
+      # se firman contra el puerto publicado de MinIO.
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
       FRONTEND_URL: http://localhost:5173
     depends_on:
       db:

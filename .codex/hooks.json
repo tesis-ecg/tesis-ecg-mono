@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/tserra/Documents/git/austral/tesis/.codex/hooks/structural-change-check.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

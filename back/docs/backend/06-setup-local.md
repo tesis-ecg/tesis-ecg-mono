@@ -122,6 +122,39 @@ Convención de nombres: `001_initial`, `002_add_alert_seen_at`, `003_...` — un
 
 **Regla**: nunca editar archivos de `versions/` una vez que se aplicaron a alguna base de datos compartida.
 
+## Datos de prueba (seed)
+
+`app/scripts/seed_demo.py` carga un dataset de demo completo: 8 pacientes con distintos
+sexos, edades y estados de estudio, 13 Holters (asignados, disponibles, en mantenimiento,
+retirado), 9 estudios (en curso, completados, agendado, cancelado) con su señal de ECG
+sintética subida a S3/MinIO, más los `ecg_batch`, `ecg_event` y `alert` correspondientes.
+
+```bash
+# Desde la raíz del repo, con el stack levantado
+docker compose exec back python -m app.scripts.seed_demo
+
+# Regenerar desde cero (borra solo los datos de demo)
+docker compose exec back python -m app.scripts.seed_demo --reset
+
+# Colgar los pacientes de otro médico
+docker compose exec back python -m app.scripts.seed_demo --reset --doctor-email medico@example.com
+```
+
+Fuera de Docker: `cd back && uv run python -m app.scripts.seed_demo` (requiere que
+`DATABASE_URL` y `S3_ENDPOINT_URL` apunten a los puertos publicados en el host).
+
+Los datos de demo se identifican por el prefijo `DEMO-` en `patient.medical_record_num` y
+`HOLTER-DEMO-` en `device.serial_number`; `--reset` borra exactamente eso y nada más. La
+seed es idempotente: si ya hay datos de demo cargados, aborta y pide `--reset`.
+
+> **Nota sobre el ECG en el navegador**: `GET /studies/{id}/ecg` devuelve una URL
+> prefirmada que descarga el navegador, no el backend. Por eso se firma contra
+> `S3_PUBLIC_ENDPOINT_URL` (`http://localhost:9000`, el puerto publicado de MinIO) y no
+> contra `S3_ENDPOINT_URL` (`http://minio:9000`, que solo resuelve dentro de la red de
+> compose). La firma SigV4 incluye el header `Host`, así que la URL no se puede reescribir
+> después de firmada — hay que firmarla con el host correcto desde el principio. Si la
+> variable queda vacía, se cae a `S3_ENDPOINT_URL`.
+
 ## Validación de código (obligatorio antes de commit)
 
 Correr siempre en este orden:
