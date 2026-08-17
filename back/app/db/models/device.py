@@ -31,6 +31,11 @@ class Device(TimestampMixin, Base):
     patient_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("patient.id"), nullable=True
     )
+    # Ownership device→médico (lo setea el admin). Sin relationship(): el repo no usa
+    # lazy loading y en async una relación no cargada tira MissingGreenlet.
+    doctor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("doctor.id"), nullable=True, index=True
+    )
     api_key_hash: Mapped[str] = mapped_column(String(255))
     firmware_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

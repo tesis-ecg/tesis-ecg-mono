@@ -105,12 +105,6 @@ async def logout(input_data: LogoutInput, db: AsyncSession) -> None:
 
 
 async def register(input_data: RegisterInput, db: AsyncSession) -> UserOut:
-    if input_data.requesting_user.role != UserRole.ADMIN:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Solo admins pueden registrar usuarios."},
-        )
-
     existing = await repo.get_user_by_email(db, input_data.data.email)
     if existing:
         raise HTTPException(

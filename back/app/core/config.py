@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +34,15 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60
 
     frontend_url: str = "http://localhost:5173"
+
+    # Dashboard / watchdog
+    dashboard_stale_hours: int = 10
+    dashboard_low_battery_pct: int = 45
+    # Los dos límites alimentan el `default` de un Query(ge=1, le=50), y FastAPI no
+    # valida el default: las cotas tienen que estar acá o un .env fuera de rango
+    # pasaría sin chistar cuando el FE llama sin query params.
+    dashboard_widget_limit: int = Field(default=6, ge=1, le=50)
+    dashboard_alerts_limit: int = Field(default=10, ge=1, le=50)
 
 
 # `BaseSettings` values are provided from environment variables at runtime.

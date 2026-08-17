@@ -7,11 +7,13 @@ from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.device import Device, DeviceStatus
+from app.db.models.doctor import Doctor
 from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
+from app.db.models.user import User
 from app.modules.patients.patients_schemas import PatientRow
 
 
-def _patient_row_statement() -> Select[tuple[Patient, uuid.UUID | None]]:
+def _patient_row_statement() -> Select[tuple[Patient, uuid.UUID | None, str | None]]:
     assigned_device_id = (
         select(Device.id)
         .where(
@@ -19,13 +21,34 @@ def _patient_row_statement() -> Select[tuple[Patient, uuid.UUID | None]]:
             Device.deleted_at.is_(None),
             Device.status == DeviceStatus.ASSIGNED,
         )
+        # order_by explícito: sin él, un paciente con dos devices asignados (estado
+        # alcanzable por carrera) devolvería una fila arbitraria en cada request.
+        .order_by(Device.created_at.desc(), Device.id.asc())
         .limit(1)
         .scalar_subquery()
     )
-    return select(Patient, assigned_device_id.label("assigned_device_id"))
+    doctor_name = (
+        select(User.full_name)
+        .join(Doctor, Doctor.user_id == User.id)
+        .where(
+            Doctor.id == Patient.doctor_id,
+            Doctor.deleted_at.is_(None),
+            User.deleted_at.is_(None),
+            User.is_active.is_(True),
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    return select(
+        Patient,
+        assigned_device_id.label("assigned_device_id"),
+        doctor_name.label("doctor_name"),
+    )
 
 
-def _to_row(patient: Patient, assigned_device_id: uuid.UUID | None) -> PatientRow:
+def _to_row(
+    patient: Patient, assigned_device_id: uuid.UUID | None, doctor_name: str | None
+) -> PatientRow:
     return PatientRow(
         id=patient.id,
         first_name=patient.first_name,
@@ -38,16 +61,20 @@ def _to_row(patient: Patient, assigned_device_id: uuid.UUID | None) -> PatientRo
         email=patient.email,
         phone=patient.phone,
         assigned_device_id=assigned_device_id,
+        doctor_id=patient.doctor_id,
+        doctor_name=doctor_name,
     )
 
 
 def _apply_patient_filters(
-    statement: Select[tuple[Patient, uuid.UUID | None]] | Select[tuple[int]],
-    doctor_id: uuid.UUID,
+    statement: Select[tuple[Patient, uuid.UUID | None, str | None]] | Select[tuple[int]],
+    doctor_id: uuid.UUID | None,
     q: str | None,
     statuses: list[PatientStudyStatus] | None,
-) -> Select[tuple[Patient, uuid.UUID | None]] | Select[tuple[int]]:
-    statement = statement.where(Patient.deleted_at.is_(None), Patient.doctor_id == doctor_id)
+) -> Select[tuple[Patient, uuid.UUID | None, str | None]] | Select[tuple[int]]:
+    statement = statement.where(Patient.deleted_at.is_(None))
+    if doctor_id is not None:
+        statement = statement.where(Patient.doctor_id == doctor_id)
     if q:
         pattern = f"%{q.strip()}%"
         full_name = func.concat(Patient.first_name, " ", Patient.last_name)
@@ -59,7 +86,7 @@ def _apply_patient_filters(
 
 async def list_patients(
     db: AsyncSession,
-    doctor_id: uuid.UUID,
+    doctor_id: uuid.UUID | None,
     q: str | None,
     statuses: list[PatientStudyStatus] | None,
     limit: int,
@@ -72,51 +99,65 @@ async def list_patients(
         select(func.count()).select_from(Patient), doctor_id, q, statuses
     )
 
+    # `Patient.id` cierra cada orden: sin desempate, dos homónimos (o dos filas con el
+    # mismo last_data_received_at) pueden repetirse entre páginas.
     if sort == "lastDataReceivedAt" and order == "desc":
         statement = statement.order_by(
-            Patient.last_data_received_at.desc().nullslast(), Patient.last_name.desc()
+            Patient.last_data_received_at.desc().nullslast(),
+            Patient.last_name.desc(),
+            Patient.id.asc(),
         )
     elif sort == "lastDataReceivedAt":
         statement = statement.order_by(
-            Patient.last_data_received_at.asc().nullslast(), Patient.last_name.asc()
+            Patient.last_data_received_at.asc().nullslast(),
+            Patient.last_name.asc(),
+            Patient.id.asc(),
         )
     elif order == "desc":
-        statement = statement.order_by(Patient.first_name.desc(), Patient.last_name.desc())
+        statement = statement.order_by(
+            Patient.first_name.desc(), Patient.last_name.desc(), Patient.id.asc()
+        )
     else:
-        statement = statement.order_by(Patient.first_name.asc(), Patient.last_name.asc())
+        statement = statement.order_by(
+            Patient.first_name.asc(), Patient.last_name.asc(), Patient.id.asc()
+        )
 
     result = await db.execute(statement.limit(limit).offset(offset))
-    count_result = await db.execute(count_statement)
-    rows = [_to_row(patient, assigned_device_id) for patient, assigned_device_id in result.all()]
-    return rows, count_result.scalar_one()
+    total = await db.scalar(count_statement)
+    rows = [
+        _to_row(patient, assigned_device_id, doctor_name)
+        for patient, assigned_device_id, doctor_name in result.all()
+    ]
+    return rows, total or 0
 
 
 async def get_patient_row(
-    db: AsyncSession, patient_id: uuid.UUID, doctor_id: uuid.UUID
+    db: AsyncSession, patient_id: uuid.UUID, doctor_id: uuid.UUID | None
 ) -> PatientRow | None:
     statement = _patient_row_statement().where(
         Patient.id == patient_id,
-        Patient.doctor_id == doctor_id,
         Patient.deleted_at.is_(None),
     )
+    if doctor_id is not None:
+        statement = statement.where(Patient.doctor_id == doctor_id)
     result = await db.execute(statement)
     row = result.one_or_none()
     if row is None:
         return None
-    patient, assigned_device_id = row
-    return _to_row(patient, assigned_device_id)
+    patient, assigned_device_id, doctor_name = row
+    return _to_row(patient, assigned_device_id, doctor_name)
 
 
 async def get_patient_model(
-    db: AsyncSession, patient_id: uuid.UUID, doctor_id: uuid.UUID
+    db: AsyncSession, patient_id: uuid.UUID, doctor_id: uuid.UUID | None
 ) -> Patient | None:
-    result = await db.execute(
-        select(Patient).where(
-            Patient.id == patient_id,
-            Patient.doctor_id == doctor_id,
-            Patient.deleted_at.is_(None),
-        )
+    statement = select(Patient).where(
+        Patient.id == patient_id,
+        Patient.deleted_at.is_(None),
     )
+    if doctor_id is not None:
+        statement = statement.where(Patient.doctor_id == doctor_id)
+    result = await db.execute(statement)
     return result.scalar_one_or_none()
 
 
@@ -173,11 +214,16 @@ async def soft_delete_patient(db: AsyncSession, patient: Patient) -> None:
 
 
 async def get_assigned_device_for_patient(db: AsyncSession, patient_id: uuid.UUID) -> Device | None:
+    # first() y no scalar_one_or_none(): con dos devices ASSIGNED sobre el mismo
+    # paciente (carrera entre dos assign) esto sería un 500 por MultipleResultsFound.
     result = await db.execute(
-        select(Device).where(
+        select(Device)
+        .where(
             Device.patient_id == patient_id,
             Device.status == DeviceStatus.ASSIGNED,
             Device.deleted_at.is_(None),
         )
+        .order_by(Device.created_at.desc(), Device.id.asc())
+        .limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
