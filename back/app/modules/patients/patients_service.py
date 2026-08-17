@@ -4,7 +4,8 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.devices.devices_schemas import HolterHealthOut
-from app.modules.devices.devices_service import SD_TOTAL_MB
+from app.modules.devices.devices_service import holter_health_out
+from app.modules.doctors import doctors_repository as doctors_repo
 from app.modules.patients import patients_repository as repo
 from app.modules.patients.patients_schemas import (
     PatientCreateInput,
@@ -48,6 +49,8 @@ def _patient_out(row: PatientRow) -> PatientOut:
         lastDataReceivedAt=row.last_data_received_at,
         contactEmail=row.email,
         contactPhone=row.phone,
+        doctorId=row.doctor_id,
+        doctorName=row.doctor_name,
     )
 
 
@@ -81,6 +84,22 @@ async def get_patient(input_data: PatientIdInput, db: AsyncSession) -> PatientOu
 
 
 async def create_patient(input_data: PatientCreateInput, db: AsyncSession) -> PatientOut:
+    # Patient.doctor_id es NOT NULL y get_role_scope devuelve doctor_id=None al admin
+    # para darle la vista global. Antes de rechazar se busca su propio perfil médico:
+    # un admin promovido desde una cuenta médico conserva la fila Doctor.
+    doctor_id = input_data.doctor_id
+    if doctor_id is None:
+        doctor = await doctors_repo.get_by_user_id(db, input_data.requesting_user.id)
+        if doctor is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "DOCTOR_REQUIRED",
+                    "message": "Un admin no puede crear pacientes sin un médico asignado.",
+                },
+            )
+        doctor_id = doctor.id
+
     existing = await repo.get_patient_by_dni(db, input_data.data.dni)
     if existing is not None:
         raise HTTPException(
@@ -91,7 +110,7 @@ async def create_patient(input_data: PatientCreateInput, db: AsyncSession) -> Pa
     first_name, last_name = _split_full_name(input_data.data.fullName)
     patient = await repo.create_patient(
         db,
-        doctor_id=input_data.doctor_id,
+        doctor_id=doctor_id,
         first_name=first_name,
         last_name=last_name,
         dni=input_data.data.dni,
@@ -176,30 +195,9 @@ async def get_patient_device(input_data: PatientIdInput, db: AsyncSession) -> Ho
             status_code=404,
             detail={"code": "DEVICE_NOT_FOUND", "message": "Paciente sin Holter asignado."},
         )
-    if device.last_seen_at is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "DEVICE_HEALTH_NOT_FOUND",
-                "message": "Este Holter no se ha conectado todavía.",
-            },
-        )
-
-    free_mb = device.last_sd_free_mb if device.last_sd_free_mb is not None else SD_TOTAL_MB
-    return HolterHealthOut(
-        deviceId=device.id,
-        serial=device.serial_number,
-        model=device.model,
-        firmwareVersion=device.firmware_version or "unknown",
-        batteryPercent=device.last_battery_pct or 0,
-        signalDbm=0,
-        signalQuality="good",
-        lastPingAt=device.last_seen_at,
-        nextScheduledUploadAt=device.last_seen_at,
-        uploadsToday=0,
-        storageUsedMb=max(SD_TOTAL_MB - free_mb, 0),
-        storageTotalMb=SD_TOTAL_MB,
-    )
+    # Mismo helper que GET /devices/{id}/health: el FE consume el mismo tipo
+    # HolterHealth desde los dos endpoints y los valores tienen que coincidir.
+    return holter_health_out(device)
 
 
 async def get_patient_summary(

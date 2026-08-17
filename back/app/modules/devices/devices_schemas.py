@@ -17,6 +17,8 @@ class HolterOut(CamelModel):
     firmwareVersion: str | None
     status: DeviceStatus
     assignedPatientId: uuid.UUID | None
+    assignedDoctorId: uuid.UUID | None
+    assignedDoctorName: str | None
     lastSeenAt: datetime | None
     createdAt: datetime
 
@@ -52,6 +54,10 @@ class ReassignHolterRequest(CamelModel):
     patientId: uuid.UUID
 
 
+class AssignDoctorRequest(CamelModel):
+    doctorId: uuid.UUID
+
+
 class HolterHealthOut(CamelModel):
     deviceId: uuid.UUID
     serial: str
@@ -69,6 +75,7 @@ class HolterHealthOut(CamelModel):
 
 @dataclass(frozen=True)
 class HolterListInput:
+    doctor_id: uuid.UUID | None
     q: str | None
     status: list[DeviceStatus] | None
     limit: int
@@ -88,11 +95,20 @@ class HolterUpdateInput:
 
 @dataclass(frozen=True)
 class HolterIdInput:
+    # None => admin (vista global, sin chequeo de ownership) o rol de solo lectura
+    doctor_id: uuid.UUID | None
     device_id: uuid.UUID
 
 
 @dataclass(frozen=True)
 class AssignHolterInput:
-    doctor_id: uuid.UUID
+    # None => admin (vista global, sin chequeo de ownership ni de médico del paciente)
+    doctor_id: uuid.UUID | None
     device_id: uuid.UUID
     patient_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class AssignDoctorInput:
+    device_id: uuid.UUID
+    data: AssignDoctorRequest

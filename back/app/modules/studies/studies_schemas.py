@@ -32,6 +32,15 @@ class StudyDetailOut(CamelModel):
     durationMs: int
     deviceSerial: str
     status: StudyStatus
+    doctorId: uuid.UUID | None
+    doctorName: str | None
+
+
+class StudyListResponse(CamelModel):
+    items: list[StudyDetailOut]
+    total: int
+    limit: int
+    offset: int
 
 
 class StudyEcgOut(CamelModel):
@@ -43,12 +52,21 @@ class StudyEcgOut(CamelModel):
 
 
 @dataclass(frozen=True)
+class StudyListInput:
+    doctor_id: uuid.UUID | None
+    q: str | None
+    status: list[StudyStatus] | None
+    limit: int
+    offset: int
+
+
+@dataclass(frozen=True)
 class PatientStudiesInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
     patient_id: uuid.UUID
 
 
 @dataclass(frozen=True)
 class StudyIdInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
     study_id: uuid.UUID

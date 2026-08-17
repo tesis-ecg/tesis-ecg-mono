@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any, cast
 
@@ -9,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.models.device import Device
 from app.db.models.patient import Patient
-from app.db.models.study import Study
+from app.db.models.study import Study, StudyStatus
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.studies_schemas import (
     PatientStudiesInput,
@@ -18,15 +19,19 @@ from app.modules.studies.studies_schemas import (
     StudyDetailOut,
     StudyEcgOut,
     StudyIdInput,
+    StudyListInput,
+    StudyListResponse,
 )
 
 
 def _duration_ms(study: Study) -> int:
     if study.duration_ms is not None:
         return study.duration_ms
-    if study.ended_at is None:
-        return 0
-    return int((study.ended_at - study.started_at).total_seconds() * 1000)
+    if study.ended_at is not None:
+        return int((study.ended_at - study.started_at).total_seconds() * 1000)
+    if study.status == StudyStatus.IN_PROGRESS:
+        return max(int((datetime.now(UTC) - study.started_at).total_seconds() * 1000), 0)
+    return 0
 
 
 def _duration_hours(study: Study) -> float | None:
@@ -50,7 +55,9 @@ def _patient_study_out(study: Study) -> PatientStudyOut:
     )
 
 
-def _study_detail_out(study: Study, patient: Patient, device: Device) -> StudyDetailOut:
+def _study_detail_out(
+    study: Study, patient: Patient, device: Device, doctor_name: str | None
+) -> StudyDetailOut:
     return StudyDetailOut(
         id=study.id,
         patientId=patient.id,
@@ -60,6 +67,8 @@ def _study_detail_out(study: Study, patient: Patient, device: Device) -> StudyDe
         durationMs=_duration_ms(study),
         deviceSerial=device.serial_number,
         status=study.status,
+        doctorId=patient.doctor_id,
+        doctorName=doctor_name,
     )
 
 
@@ -94,6 +103,26 @@ def _build_presigned_ecg_url(key: str) -> str:
     )
 
 
+async def list_studies(input_data: StudyListInput, db: AsyncSession) -> StudyListResponse:
+    rows, total = await repo.list_studies(
+        db,
+        doctor_id=input_data.doctor_id,
+        q=input_data.q,
+        statuses=input_data.status,
+        limit=input_data.limit,
+        offset=input_data.offset,
+    )
+    return StudyListResponse(
+        items=[
+            _study_detail_out(study, patient, device, doctor_name)
+            for study, patient, device, doctor_name in rows
+        ],
+        total=total,
+        limit=input_data.limit,
+        offset=input_data.offset,
+    )
+
+
 async def list_patient_studies(
     input_data: PatientStudiesInput, db: AsyncSession
 ) -> PatientStudiesResponse:
@@ -113,15 +142,15 @@ async def get_study(input_data: StudyIdInput, db: AsyncSession) -> StudyDetailOu
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, patient, device = result
-    return _study_detail_out(study, patient, device)
+    study, patient, device, doctor_name = result
+    return _study_detail_out(study, patient, device, doctor_name)
 
 
 async def get_study_ecg(input_data: StudyIdInput, db: AsyncSession) -> StudyEcgOut:
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, _, _ = result
+    study, _, _, _ = result
     if study.ecg_s3_key is None:
         raise HTTPException(
             status_code=404,

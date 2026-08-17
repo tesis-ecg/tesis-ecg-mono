@@ -7,6 +7,7 @@ from datetime import date, datetime
 from pydantic import Field
 
 from app.db.models.patient import PatientSex, PatientStudyStatus
+from app.db.models.user import User
 from app.modules._base_schema import CamelModel
 
 
@@ -21,6 +22,8 @@ class PatientOut(CamelModel):
     lastDataReceivedAt: datetime | None
     contactEmail: str | None
     contactPhone: str | None
+    doctorId: uuid.UUID | None
+    doctorName: str | None
 
 
 class PatientListResponse(CamelModel):
@@ -87,11 +90,13 @@ class PatientRow:
     email: str | None
     phone: str | None
     assigned_device_id: uuid.UUID | None
+    doctor_id: uuid.UUID
+    doctor_name: str | None
 
 
 @dataclass(frozen=True)
 class PatientListInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
     q: str | None
     status: list[PatientStudyStatus] | None
     limit: int
@@ -102,25 +107,26 @@ class PatientListInput:
 
 @dataclass(frozen=True)
 class PatientCreateInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
+    requesting_user: User
     data: PatientCreateRequest
 
 
 @dataclass(frozen=True)
 class PatientUpdateInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
     patient_id: uuid.UUID
     data: PatientUpdateRequest
 
 
 @dataclass(frozen=True)
 class PatientIdInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
     patient_id: uuid.UUID
 
 
 @dataclass(frozen=True)
 class PatientSummaryInput:
-    doctor_id: uuid.UUID
+    doctor_id: uuid.UUID | None
     patient_id: uuid.UUID
     window_hours: int

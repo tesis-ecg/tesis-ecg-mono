@@ -1,7 +1,8 @@
-"""Auth0 HTTP client — ROPG login, Management API (create user, password reset)."""
+"""Auth0 HTTP client — ROPG login, Management API (user CRUD, password reset)."""
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 import httpx
 
@@ -52,6 +53,11 @@ async def _get_mgmt_token() -> str:
         expires_in: int = data.get("expires_in", 86400)
         _cache.expires_at = datetime.now(UTC) + timedelta(seconds=expires_in - 60)
         return _cache.token
+
+
+def _mgmt_user_url(auth0_id: str) -> str:
+    # Los auth0_id llevan `|` (auth0|abc123): sin escapar, la URL sale rota.
+    return f"https://{settings.auth0_domain}/api/v2/users/{quote(auth0_id, safe='')}"
 
 
 async def authenticate_user(email: str, password: str) -> str:
@@ -115,6 +121,64 @@ async def create_auth0_user(email: str, password: str, full_name: str) -> str:
     if resp.status_code == 409:
         raise Auth0Error("EMAIL_CONFLICT", "Email already registered.", 409)
     raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to create user."), 502)
+
+
+async def update_auth0_user_email(auth0_id: str, email: str) -> None:
+    """Management API: update user email."""
+    token = await _get_mgmt_token()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            _mgmt_user_url(auth0_id),
+            headers={"Authorization": f"Bearer {token}"},
+            json={"email": email, "connection": settings.auth0_connection},
+            timeout=15,
+        )
+
+    if resp.status_code == 200:
+        return
+
+    body = resp.json()
+    if resp.status_code == 409:
+        raise Auth0Error("EMAIL_CONFLICT", "Email already registered.", 409)
+    raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to update user email."), 502)
+
+
+async def block_auth0_user(auth0_id: str) -> None:
+    """Management API: block user (baja lógica)."""
+    token = await _get_mgmt_token()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            _mgmt_user_url(auth0_id),
+            headers={"Authorization": f"Bearer {token}"},
+            json={"blocked": True},
+            timeout=15,
+        )
+
+    if resp.status_code == 200:
+        return
+
+    body = resp.json()
+    raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to block user."), 502)
+
+
+async def delete_auth0_user(auth0_id: str) -> None:
+    """Management API: delete user (compensación de un create fallido)."""
+    token = await _get_mgmt_token()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            _mgmt_user_url(auth0_id),
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=15,
+        )
+
+    # El early return va ANTES de resp.json(): un 204 llega con el body vacío.
+    if resp.status_code in (200, 204, 404):
+        return
+
+    raise Auth0Error("AUTH0_ERROR", "Failed to delete user.", 502)
 
 
 async def trigger_password_reset(email: str) -> None:
