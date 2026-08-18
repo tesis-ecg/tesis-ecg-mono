@@ -1,6 +1,6 @@
 # App Móvil — No forma parte del canal de datos
 
-La arquitectura elegida es **WiFi standalone**. El dispositivo envía datos directamente al backend vía la red del domicilio cada hora, sin depender de un smartphone como puente. Ver [justificación de la decisión de arquitectura](01-justificacion.md).
+La arquitectura elegida es **WiFi standalone**. El dispositivo envía datos directamente al backend vía la red del domicilio cada hora, sin depender de un smartphone como puente. Ver [justificación de la decisión de arquitectura](01-justificacion.md) y las cuentas en [la comparativa de canales](09-comparativa-canales-de-transmision.md).
 
 ## Configuración inicial sin app
 
@@ -10,18 +10,26 @@ Esto es lo que permite sostener la decisión de no requerir app aun habiendo un 
 
 ## BLE
 
-El MCU de la familia ESP32 tiene BLE integrado, pero **esta arquitectura no lo usa**. Todos los roles que podría cumplir están cubiertos por el canal WiFi y el portal cautivo:
+El nRF52840 tiene BLE, y el firmware del equipo de Biomédica **ya lo tiene implementado y validado**: un servicio con cuatro características (LIVE / BACKLOG / CONTROL / STATUS), emparejamiento cifrado y autenticado con passkey de 6 dígitos distinto por equipo, y drenaje de backlog confirmado trama a trama por ACK.
+
+Lo que esta arquitectura decide es **no usarlo como camino de datos**, que es distinto de no usarlo. Un canal de datos que depende de que el paciente tenga el celular cerca y la app viva todos los días es demasiado frágil para un registro clínico (ver [la comparativa de canales](09-comparativa-canales-de-transmision.md), opción A).
+
+Los roles principales quedan cubiertos por el canal WiFi:
 
 | Rol | Cómo se resuelve |
 |---|---|
-| Configuración de red | Portal cautivo (SoftAP) |
+| Transporte de datos al backend | **WiFi** — es el camino crítico y no depende de ningún teléfono |
 | Vinculación dispositivo ↔ paciente | Portal médico + orden al dispositivo en el ciclo horario |
-| Telemetría (batería, SD, RSSI) | Campos del payload de cada batch |
-| Verificación de colocación de electrodos | Puede servirse como preview en vivo desde el mismo `esp_http_server` del portal, vía WebSocket a un canvas en la página |
+| Telemetría (batería, buffer, RSSI) | Campos del payload de cada batch |
 
-Mantener un solo stack de radio en el firmware reduce consumo de RAM, superficie de bugs y trabajo de testing.
+Y quedan dos roles donde BLE **sí es la mejor herramienta**, y donde conviene usarlo justamente porque ya está hecho:
 
-**BLE queda como vía de evolución** si en el futuro se quiere una app compañera con telemetría en segundo plano, sin que el paciente tenga que desconectarse de su WiFi para hablarle al chaleco.
+| Rol | Por qué BLE |
+|---|---|
+| Verificación de colocación de electrodos | El canal LIVE ya emite la señal en tiempo real. Ver la onda mientras se acomoda el chaleco es más directo que levantar un AP y abrir un portal |
+| Configuración inicial del equipo | Emparejar por BLE desde una app es más simple para el paciente que conectarse a `Holter-XXXX` y esperar que se abra el portal cautivo — un flujo que funciona distinto en iOS y en Android |
+
+**La diferencia clave con usar BLE como canal de datos**: si el paciente no abre la app, no se pierde ni un dato. El chaleco sigue subiendo por WiFi. La app suma, no sostiene.
 
 ## Alcance de una eventual app de paciente
 
