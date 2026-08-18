@@ -19,7 +19,7 @@ El Holter opera como dispositivo standalone usando un módulo celular IoT (LTE-M
 
 La SD card actúa como buffer primario: graba continuamente y, al cumplirse el intervalo (default: 1h), el módulo SIM se despierta, envía el batch acumulado al backend via HTTP POST, y una vez confirmada la recepción, elimina los datos enviados de la SD.
 
-Cada hora, el batch comprimido de la SD se envía al backend y, una vez confirmada la recepción (HTTP 200), se borra de la SD. En operación normal la SD retiene solo ~2.7 MB (el batch de la hora en curso).
+Cada hora, el batch comprimido se envía al backend y, una vez confirmada la recepción (HTTP 200), se libera del buffer local. En operación normal el buffer retiene solo ~1,7 MB (el batch de la hora en curso).
 
 ---
 
@@ -43,10 +43,10 @@ Cada hora, el batch comprimido de la SD se envía al backend y, una vez confirma
 | Tecnología | LTE-M (Cat-M1) + NB-IoT + GNSS |
 | Interfaz con MCU | UART (TX/RX + control pins) |
 | Voltaje operación | 3.0 - 4.3V (compatible con LiPo directo) |
-| Consumo TX | ~50-80 mA |
+| Consumo TX | ~80 mA medios, **pico de 250 mA** a 23 dBm (exige capacitor de bulk y un rail capaz de entregarlo) |
 | Consumo idle | ~3-5 mA |
 | Consumo PSM (deep sleep) | ~3 µA |
-| Costo módulo | ~$8-12 USD |
+| Costo módulo | ~$8,63-11,11 USD (LCSC, ago. 2026). **Con portasim, antena LTE, bulk cap y regulador de 2 A: ~USD 10,70-13,20/equipo** |
 | Disponibilidad Argentina | Mercado Libre, Electrocomponentes, Todobytes |
 | Tamaño | 17.6 x 15.7 x 2.3 mm |
 
@@ -73,26 +73,30 @@ VBAT     ──────────────────  VBAT (3.7V LiPo
 
 | Proveedor | Plan | Costo | Notas |
 |---|---|---|---|
-| 1NCE | 500 MB / 10 años | $10 USD (una vez) | Solo para pruebas (~6 días de datos a 3 canales) |
+| 1NCE | 500 MB / 10 años | $10 USD (una vez) | Solo para pruebas — con el caudal real (40,5 MB/día) se agota en **~12 días** |
 | Hologram | Pay-as-you-go | ~$0.60/MB | Roaming global, flexible |
 | **Claro Argentina IoT** | Plan IoT M2M 3-5 GB/mes | ~$5-10/mes | **Recomendado para MVP/producción** |
 | Movistar Argentina | Plan IoT 3-5 GB/mes | ~$5-10/mes | Cobertura Cat-M1 |
 
-**Recomendación**: Con 3 canales el consumo es ~78 MB/día (~2.4 GB/mes). Se necesita un plan de al menos **3 GB/mes**. 1NCE solo alcanza para pruebas cortas de laboratorio.
+**Recomendación**: con el caudal real el consumo es **~44,6 MB/día (~1,34 GB/mes)** en un estudio de ECG. Se necesita un plan de al menos **2 GB/mes**, que ningún plan M2M argentino ofrece — hay que ir a tarifa de consumidor (~$2.000-3.000 ARS por equipo/mes). 1NCE solo alcanza para pruebas cortas de laboratorio (~12 días).
 
 ---
 
 ## Consumo de datos celulares
 
-3 canales (parámetros de muestreo a confirmar en Fase 1; estimación de referencia 250 Hz × 16 bits) → ~1.500 bytes/seg raw → ~2.7 MB/hora comprimido (~50% delta encoding)
+> **Cifras corregidas.** La versión original estimaba 250 Hz × 3 canales × 16 bits con delta encoding al 50%. El firmware real muestrea a **500 Hz** y comprime **sin pérdida** con un codec Rice de predictor de orden 2, con ratio **medido de 12,80×** sobre ruido ambulatorio real.
 
-| Período | Datos comprimidos | Con overhead HTTP/TLS (~20%) |
+ECG, 1 derivación, 500 Hz, 24 bits → **468,6 B/s comprimidos** (medición del firmware, `DATAFLOW.md` §9.1)
+
+| Período | Datos comprimidos | Con overhead HTTP/TLS (~10%) |
 |---|---|---|
-| 1 hora | ~2.7 MB | ~3.2 MB |
-| 1 día | ~65 MB | ~78 MB |
-| 1 mes | ~1.95 GB | ~2.4 GB |
+| 1 hora | 1,687 MB | 1,856 MB |
+| 1 día | **40,5 MB** | **44,6 MB** |
+| 1 mes | 1,22 GB | **1,34 GB** |
 
-**Con envío cada 1h**: ~78 MB/día, ~2.4 GB/mes. Se requiere un plan IoT de mínimo **3 GB/mes**.
+**Con envío cada 1h**: ~44,6 MB/día, **~1,34 GB/mes por equipo**.
+
+Y acá está el problema de fondo del canal celular en Argentina: **los planes M2M/IoT locales no cubren ese volumen.** La oferta multicarrier típica (Movistar + Claro) ronda los **20 MB/mes** — unas 60 veces menos. Hay que contratar un plan de datos de consumidor, que es lo mismo que decir que cada chaleco lleva algo parecido a la línea de un celular. Ver el desglose de costos en [09-comparativa-canales-de-transmision.md](09-comparativa-canales-de-transmision.md).
 
 ---
 
@@ -213,37 +217,70 @@ AT+CSCLK=2                           // Entrar en PSM
 ### Detalle de cada estado
 
 1. **RECORDING**: Estado normal. ECG → RAM buffer → SD cada 4-8 seg. Timer de intervalo corriendo.
-2. **PREPARING_BATCH**: Timer expiró. Lee archivos pendientes de SD, aplica delta encoding + compresión.
+2. **PREPARING_BATCH**: Timer expiró. Lee del buffer las tramas pendientes, ya comprimidas por el codec sin pérdida del firmware.
 3. **SIM_WAKING**: Envía pulso de `PWRKEY`, espera respuesta `AT`, verifica SIM, conecta a red (~5-15 seg).
 4. **SENDING**: HTTP POST del batch al backend. Timeout de 30 seg por request.
 5. **CONFIRMING**: Verifica HTTP 200 del backend.
 6. **CLEANING_SD**: Elimina los archivos de SD cuyos datos fueron confirmados por el backend.
 7. **SIM_SLEEPING**: Envía el módulo a PSM (~3 µA). Vuelve a RECORDING.
-8. **SIM_ERROR**: Si falla conexión o envío, los datos permanecen en SD. Se reintenta en el próximo ciclo. Después de 3 fallos consecutivos, incrementa el intervalo (backoff exponencial: 1h → 2h → 4h).
+8. **SIM_ERROR**: Si falla conexión o envío, los datos permanecen en el buffer local. Se reintenta en el próximo ciclo. Después de 3 fallos consecutivos, incrementa el intervalo (backoff exponencial: 1h → 2h → 4h).
 
 ---
 
 ## Consumo energético
 
+> ### ⚠️ Corrección de un error de esta sección
+>
+> La versión original de este documento estimaba el ciclo de envío en **~30 segundos por hora**, y de ahí concluía que "el módulo SIM agrega solo ~0,6 mA" y que el impacto en la autonomía era menor al 5%. **Eso está mal por aproximadamente un factor de 10.**
+>
+> Subir el batch de una hora (1,86 MB con overhead) en 30 segundos exigiría **~720 kbps sostenidos de subida**. LTE-M no llega ni cerca: la especificación del SIM7080G declara 1.119 kbps como techo teórico, el valor típico citado para Cat-M1 es ~380 kbps, y lo observado en campo va de **25 a 200 kbps** según cobertura.
+>
+> LTE-M está diseñada para **telemetría** —unos pocos kilobytes de un sensor, con muy bajo consumo y buena penetración en interiores—, no para mover decenas de megabytes por día. Ese desajuste es el problema de fondo de esta opción, y no se resuelve cambiando de módulo.
+>
+> Las cifras corregidas están abajo. El análisis completo, con las tres opciones comparadas, está en [09-comparativa-canales-de-transmision.md](09-comparativa-canales-de-transmision.md).
+
 | Estado | Consumo | Duración típica | Frecuencia |
 |---|---|---|---|
-| RECORDING (XIAO Nordic + AFE + SD) | ~6-12 mA | Continuo | Siempre |
-| SIM_WAKING (conexión a red) | ~60 mA | ~10 seg | Cada 1h |
-| SENDING (HTTP POST) | ~60-80 mA | ~15-20 seg | Cada 1h |
-| SIM_SLEEPING (PSM) | ~3 µA | ~59 min | Cada 1h |
+| RECORDING (XIAO nRF52840 + AFE + buffer) | ~6 mA | Continuo | Siempre |
+| SIM_WAKING (salir de PSM y engancharse a la red) | ~50 mA | ~10 seg | Cada 1h |
+| SENDING (HTTP POST) | ~80 mA medios (pico 250 mA) | **~2,5 a 60 min** según cobertura | Cada 1h |
+| SIM_SLEEPING (PSM) | ~3 µA | El resto | Cada 1h |
 
-### Cálculo de autonomía
+### Cálculo de autonomía (corregido)
+
+Base: caudal medido de **40,5 MB/día** en un estudio de ECG (+10% de overhead = 44,6 MB/día), consumo base de **6 mA** y batería de **1800 mAh → 1530 mAh útiles**.
 
 ```
-Consumo base (XIAO Nordic + AFE + SD, sin SIM): ~10 mA promedio
-Consumo SIM promedio/día:                        24 envíos × 30 seg × 70 mA = 50,400 mAs / 86,400 s ≈ 0.6 mA
-Total promedio con SIM:                          ~10.6 mA
+Cobertura BUENA (380 kbps = 47,5 KB/s)
+  Radio en TX = 44,6e6 ÷ 47,5e3 = 939 s/día (15,6 min/día)
+  Energía     = 80 mA × 939 s = 20,9 mAh + 3,3 mAh de enganches = 24,2 mAh/día
+  Canal SIM   = 1,01 mA  →  total 7,01 mA  →  1530 ÷ 7,01 = 218 h = 9,1 días
 
-Batería 500 mAh:  ~47 h (~2 días)
-Batería 800 mAh:  ~75 h (~3 días)
+Cobertura TÍPICA (100 kbps = 12,5 KB/s)
+  Radio en TX = 44,6e6 ÷ 12,5e3 = 3.568 s/día (59,5 min/día)
+  Energía     = 79,3 mAh + 3,3 mAh = 82,6 mAh/día
+  Canal SIM   = 3,44 mA  →  total 9,44 mA  →  1530 ÷ 9,44 = 162 h = 6,8 días
+
+Cobertura POBRE (25 kbps = 3,1 KB/s)
+  Radio en TX = 44,6e6 ÷ 3,1e3 = 14.272 s/día (¡4 horas/día!)
+  Energía     = 317,2 mAh + 3,3 mAh = 320,5 mAh/día
+  Canal SIM   = 13,35 mA →  total 19,35 mA →  1530 ÷ 19,35 = 79 h = 3,3 días
 ```
 
-El módulo SIM agrega solo ~0.6 mA al consumo promedio gracias al PSM. Impacto menor al 5% en autonomía.
+**El módulo SIM agrega entre 1,01 y 13,35 mA**, es decir entre el **14% y el 69% de la autonomía** del equipo — no el 5% que decía la versión anterior.
+
+Y lo más problemático no es el promedio sino la **dispersión**: la autonomía va de 9,1 a 3,3 días según en qué parte de la casa esté el paciente. Un equipo médico cuya batería dura entre 3 y 9 días según la cobertura es un equipo del que no se le puede decir al paciente cuándo cargarlo.
+
+> **Nota sobre el PSM.** El Power Saving Mode funciona muy bien y hace que el consumo *entre* envíos sea irrelevante (3 µA). El problema nunca fue el reposo: es cuánto tiempo hay que tener la radio prendida transmitiendo. Agrandar el batch tampoco ayuda — el costo de enganche (0,139 mAh) es despreciable frente al de transmisión (79,3 mAh/día), así que pasar de 24 envíos diarios a 6 ahorra un 3%.
+
+### Costo recurrente en Argentina
+
+```
+Estudio de ECG:        44,6 MB/día × 30 = 1,34 GB por mes y por equipo
+Estudio de impedancia:  14,9 MB/día × 30 = 0,45 GB por mes y por equipo
+```
+
+Los planes M2M/IoT argentinos están dimensionados para telemetría (~20 MB/mes), unas 60 veces menos de lo que necesita un estudio de ECG, así que habría que contratar un **plan de datos de consumidor**: tomando Movistar prepago como referencia ($1.490/1 GB, $6.100/5 GB), son **~$2.000-3.000 ARS por equipo y por mes**, o ~$100.000-150.000 ARS/mes para un trial de 50 equipos.
 
 ---
 
@@ -273,7 +310,7 @@ El módulo SIM agrega solo ~0.6 mA al consumo promedio gracias al PSM. Impacto m
 ### Manejo de acumulación
 
 Si la SIM no puede enviar por horas/días (sin señal, plan sin datos):
-- La SD sigue acumulando normalmente (~2.7 MB/hora comprimido, 3 canales)
+- El buffer sigue acumulando normalmente (~1,687 MB/hora comprimido, 1 derivación)
 - Con 128 MB, hay margen para ~2 días de datos sin enviar (~47 horas)
 - Al recuperar señal, se envían los batches acumulados secuencialmente (más antiguos primero)
 - Se limita a 5 batches por ciclo de envío para no mantener la SIM encendida demasiado tiempo

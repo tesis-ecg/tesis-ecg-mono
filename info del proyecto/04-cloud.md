@@ -68,7 +68,7 @@ async def receive_ecg_batch(device_id: str, request: Request, batch: ECGBatchPay
     # Procesar cada chunk del batch
     for chunk in batch.batch:
         # Decodificar base64 y descomprimir
-        raw_data = decompress_delta(base64.b64decode(chunk.data_b64))
+        raw_data = decode_ecg_frames(base64.b64decode(chunk.data_b64))
         
         # Subir a S3
         s3_url = await upload_to_s3(device_id, chunk.timestamp, raw_data)
@@ -102,9 +102,9 @@ async def receive_ecg_batch(device_id: str, request: Request, batch: ECGBatchPay
 class ECGChunkData(BaseModel):
     timestamp: int          # Unix timestamp del inicio del chunk
     duration_sec: int       # Duración en segundos (ej: 3600 para 1 hora)
-    sample_rate: int        # Hz (250)
+    sample_rate: int        # Hz (500)
     num_samples: int        # Cantidad de muestras
-    compression: str        # "delta" o "raw"
+    compression: str        # "rice-p2" (codec sin pérdida del firmware) o "raw"
     data_b64: str           # Datos comprimidos en base64
 
 class ECGBatchPayload(BaseModel):
@@ -151,4 +151,4 @@ La respuesta del endpoint es también el canal de control: el dispositivo solo h
 }
 ```
 
-`unprovision` es la orden de desasignación (borrar credenciales del paciente, formatear SD y volver a modo AP). El firmware **puede rechazarla** si quedan batches sin subir; en ese caso responde con la cantidad pendiente y el portal se lo muestra al técnico como advertencia. Ver [Re-provisioning](07-wifi-y-provisioning.md#re-provisioning-entre-pacientes).
+`unprovision` es la orden de desasignación (borrar credenciales del paciente, limpiar el buffer local y volver a modo AP). El firmware **puede rechazarla** si quedan batches sin subir; en ese caso responde con la cantidad pendiente y el portal se lo muestra al técnico como advertencia. Ver [Re-provisioning](07-wifi-y-provisioning.md#re-provisioning-entre-pacientes).

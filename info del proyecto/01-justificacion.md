@@ -1,8 +1,10 @@
 # Justificación: WiFi del domicilio como canal principal
 
+> **Nota de revisión.** Esta decisión se revisó desde cero con cuentas propias de consumo y costo sobre el hardware real (XIAO nRF52840 + ADS1292R + batería de 1800 mAh). El análisis completo está en [09-comparativa-canales-de-transmision.md](09-comparativa-canales-de-transmision.md). **La decisión se mantiene**, pero uno de los factores decisivos originales resultó ser falso y está corregido más abajo (factor 1).
+
 ## Opciones evaluadas
 
-- **Opción A (elegida):** **WiFi del domicilio del paciente** como único canal, standalone — SD buffer + envío batch periódico directo al backend, configuración por SoftAP + portal cautivo, sin app móvil
+- **Opción A (elegida):** **WiFi del domicilio del paciente** como único canal de datos, standalone — buffer local + envío batch periódico directo al backend, configuración por SoftAP + portal cautivo, sin app móvil. Como el nRF52840 no tiene WiFi, la radio la aporta un co-procesador ESP32-C3
 - **Opción B (descartada):** módulo celular SIM (LTE-M, SIM7080G como candidato) como único canal — fue la decisión original del proyecto, ver [documento archivado](08-sim-celular-descartado.md)
 - **Opción C (descartada):** BLE como canal principal + app móvil como puente al backend
 
@@ -15,22 +17,29 @@
 | **Latencia de datos al cloud** | ~1h estando en casa | ~1h siempre | ~2 seg |
 | **UX para 40-70 años** | Un formulario web una vez, asistible por el técnico en la entrega | Ninguna configuración | Requiere instalar app y mantenerla activa |
 | **Costo operativo** | **$0** | Plan de datos IoT (~$3-5/mes por equipo) | $0 (usa datos del paciente) |
-| **Costo y complejidad de hardware** | **Ninguno — la radio viene en el MCU** | Módulo SIM + slot + antena LTE + diseño RF en PCB | Ninguno |
-| **Complejidad firmware** | Media (stack WiFi + HTTP server para provisioning) | Media-Alta (UART, comandos AT, máquina de estados del módem) | Alta (GATT + sync bulk + manejo de background iOS) |
+| **Costo y complejidad de hardware** | Co-procesador ESP32-C3 + load switch + antena: **~USD 2,60/equipo** | Módulo SIM + slot + antena LTE + diseño RF en PCB: **~USD 10,70-13,20/equipo** | **Ninguno — el BLE ya está en el nRF52840** |
+| **Complejidad firmware** | Media (diálogo UART con el co-procesador, que corre el stack WiFi + provisioning) | Media-Alta (UART, comandos AT, máquina de estados del módem) | **Ya está implementado y validado en el firmware actual** |
 | **Complejidad total del sistema** | Baja — firmware + cloud + dashboard | Baja — firmware + cloud + dashboard | Alta — suma app iOS/Android |
-| **Autonomía de batería** | Buena — burst de ~15-20 seg/hora | Buena — burst de ~30 seg/hora con PSM | Buena — BLE ~10-15 mA continuo |
-| **Riesgo de pérdida de datos** | Bajo — SD cubre la ventana fuera de casa | Bajo — SD cubre cortes de señal | Bajo — SD acumula, sync al reconectar |
+| **Autonomía de batería** | **10,2 días** — el canal se lleva 4% | **6,8 días** con cobertura típica; **3,3** con cobertura pobre | **10,0 días** — el canal se lleva 6% |
+| **Riesgo de pérdida de datos** | Bajo en casa; **alto fuera**, porque el buffer actual es de ~10 h (ver nota sobre la microSD) | Bajo — el buffer cubre cortes de señal | Medio — depende de que el paciente tenga el celular cerca y la app viva |
 | **Dependencia de terceros** | Router y proveedor de internet del paciente | Cobertura y saldo del operador celular | Sistema operativo del teléfono |
 
 ## Factores decisivos para la Opción A
 
-1. **El hardware ya la incluye, sin costo ni área de PCB.** El MCU elegido (familia ESP32) trae WiFi y BLE integrados. La Opción B exige agregar módulo SIM, portasim, antena LTE y las consideraciones de diseño RF asociadas — área, costo unitario y trabajo del equipo de Biomédica que la Opción A no consume.
+1. **Cuesta poco hardware, y sobre todo no obliga a cambiar el microcontrolador.** ~~El MCU elegido (familia ESP32) trae WiFi y BLE integrados.~~ **Corrección:** el MCU real del proyecto es el **XIAO nRF52840**, que tiene BLE pero **no tiene WiFi**, así que este canal *no* es gratis en hardware. Se resuelve con un **co-procesador ESP32-C3 por UART (~USD 2,60/equipo)**, y esa decisión es mejor que la alternativa de cambiar el MCU por un ESP32 por dos motivos medidos:
+
+   - **Batería**: el nRF52840 consume 2-3× menos que un ESP32 grabando de forma continua. Como el equipo graba las 24 h y transmite ~90 segundos por día, el consumo lo define el MCU que graba, no la radio. Con co-procesador la autonomía es de **10,2 días**; cambiando el MCU baja a **4,8 días**.
+   - **Firmware**: sobre el nRF52840 ya hay un pipeline validado (99,28% de sensibilidad y 99,73% de predictividad positiva contra MIT-BIH, más nueve suites de tests). Portarlo a ESP-IDF significa reescribirlo y revalidarlo entero.
+
+   La Opción B sigue siendo la más cara en hardware (~USD 10,70-13,20/equipo) y la que más trabajo de RF le suma al equipo de Biomédica. Ver el desglose completo en [09-comparativa-canales-de-transmision.md](09-comparativa-canales-de-transmision.md).
 
 2. **Costo operativo cero.** Sin plan de datos IoT, sin gestión de SIMs, sin saldo que se agote a mitad de un estudio. Para un trial clínico con múltiples equipos en paralelo, eliminar el costo recurrente por dispositivo simplifica tanto el presupuesto como la logística administrativa.
 
 3. **El caso de uso es domiciliario.** El Holter mide de forma continua durante días o semanas, y el paciente pasa la mayor parte de ese tiempo —incluidas las noches, que es cuando se captura la bioimpedancia según [Requerimientos](../Requerimientos.md)— en su casa. La ventana de transmisión coincide con la ventana de permanencia.
 
-4. **La SD absorbe las salidas del domicilio.** La grabación nunca se interrumpe: sale del domicilio, la SD acumula; vuelve, se drena en el siguiente ciclo horario. Con la SD correctamente dimensionada (ver [Batería y datos](05-bateria-y-datos.md)) la ventana cubierta pasa de horas a meses, con lo cual "el paciente se fue el fin de semana" deja de ser un escenario de riesgo.
+4. **El buffer local absorbe las salidas del domicilio — pero todavía no está dimensionado para eso.** La grabación nunca se interrumpe: sale del domicilio, el buffer acumula; vuelve, se drena en el siguiente ciclo horario.
+
+   > **Pendiente, y es el riesgo abierto más grande del sistema.** El hardware actual tiene una **flash SPI de 16 MB = 9,94 horas** de buffer, no una microSD de varios GB. Con eso, "el paciente se fue el fin de semana" **sí** es un escenario de pérdida de datos. Agregar una **microSD de 4-8 GB** lleva la ventana de ~10 horas a ~4 meses y cierra el problema; es el requerimiento número uno hacia el equipo de Biomédica. Ver [Batería y datos](05-bateria-y-datos.md).
 
 5. **El provisioning no requiere app.** SoftAP + portal cautivo funciona desde cualquier celular, tablet o notebook con navegador — sin instalar nada, sin store, sin pairing. Se resuelve en la entrega, con el técnico al lado. Esto es lo que permite mantener la decisión de **no desarrollar app móvil** aun habiendo un paso de configuración.
 
@@ -38,19 +47,27 @@
 
 ## Desventajas aceptadas
 
-- **Sin cobertura fuera del domicilio.** Es la diferencia real contra la Opción B y hay que enunciarla sin adornos: mientras el paciente está fuera de casa, el backend no recibe datos nuevos. Se acepta porque (a) la grabación continúa intacta en SD y no se pierde ni un segundo de señal, (b) el uso clínico es preventivo y no de urgencia, con latencia de 1 h ya asumida, y (c) la SD dimensionada cubre ausencias de semanas.
+- **Sin cobertura fuera del domicilio.** Es la diferencia real contra la Opción B y hay que enunciarla sin adornos: mientras el paciente está fuera de casa, el backend no recibe datos nuevos. Se acepta porque (a) la grabación continúa intacta en el buffer local y no se pierde ni un segundo de señal, (b) el uso clínico es preventivo y no de urgencia, con latencia de 1 h ya asumida, y (c) el buffer, **una vez dimensionado con la microSD pendiente**, cubre ausencias de semanas. Con la flash actual de 16 MB la cobertura es de solo ~10 h, así que (a) y (c) todavía no se cumplen.
 - **Tener WiFi pasa a ser criterio de inclusión del trial.** Los pacientes sin conexión en el domicilio no pueden participar bajo esta arquitectura. Es una restricción de reclutamiento a documentar en el protocolo del ensayo.
 - **Un paso de configuración a cargo del paciente.** Mitigado por el portal cautivo (sin app) y porque se hace en la entrega, asistido. Se agrega el riesgo de que el paciente cambie de router o de contraseña durante el estudio, lo cual requiere repetir el provisioning.
 - **Dependencia del router del paciente.** Un corte de internet domiciliario detiene la transmisión (no la grabación). El dashboard lo detecta como ausencia de sincronización y lo eleva al equipo de soporte vía el watchdog.
-- **Solo 2.4 GHz.** La familia ESP32 no asocia a redes de 5 GHz — a documentar en el instructivo de soporte.
+- **Solo 2.4 GHz.** El co-procesador ESP32-C3 no asocia a redes de 5 GHz — a documentar en el instructivo de soporte.
 
 ## Opción B — Por qué se descartó
 
 Fue la arquitectura original del proyecto y está documentada en detalle en [08-sim-celular-descartado.md](08-sim-celular-descartado.md). Sigue siendo, técnicamente, la opción con mejor cobertura, y su ventaja sobre la Opción A es real y no discutida: transmite desde cualquier lado.
 
-Se descartó cuando el diseño de hardware dejó de incluir el módulo SIM. Con el MCU de la familia ESP32, la radio WiFi ya está en el chip, mientras que el canal celular exige sumar módulo, antena, portasim, diseño RF y un plan de datos por equipo. Ese costo —en dinero, en área de PCB y en trabajo del equipo de Biomédica— no se justifica frente a un beneficio, la cobertura fuera del domicilio, que el caso de uso domiciliario no necesita y que la SD cubre.
+Se descartó cuando el diseño de hardware dejó de incluir el módulo SIM. La revisión con números propios confirma la decisión, aunque por razones distintas a las que se habían anotado originalmente:
+
+- **Batería**: es la opción que más consume y, peor, la única cuyo consumo es *impredecible*. La autonomía va de **9,1 días con buena cobertura a 3,3 días con cobertura pobre**, según en qué parte de la casa esté el paciente. No se le puede decir al paciente cada cuánto cargar el equipo.
+- **Costo**: ~USD 10,70-13,20 por equipo, contra ~USD 2,60 del co-procesador WiFi, más diseño de RF y un árbol de alimentación capaz de entregar el pico de 250 mA del módulo.
+- **Costo recurrente**: 40,5 MB/día son **1,34 GB por mes y por equipo**. Los planes M2M argentinos están dimensionados para ~20 MB/mes, así que hay que pagar tarifa de consumidor: **~$2.000-3.000 ARS por equipo/mes**.
+
+Nada de esto se justifica frente a un beneficio —la cobertura fuera del domicilio— que el caso de uso domiciliario no necesita.
 
 **Queda como vía de evolución natural**: si en algún momento el producto requiere monitoreo ambulatorio real fuera del hogar, el canal celular es la respuesta y el documento archivado conserva el análisis completo.
+
+> **Y conviene dejarla preparada en la placa.** La recomendación concreta es **dibujar el footprint del módulo SIM y el portasim en la PCB sin poblarlos**. Cuesta **USD 0 de BOM** y unos pocos cm² de placa, y con eso la variante celular deja de ser un rediseño para pasar a ser otra versión del mismo producto, con el mismo firmware base. Es la diferencia entre tener una "vía de evolución" escrita en un documento y tenerla de verdad.
 
 ## Opción C — Por qué se descartó
 

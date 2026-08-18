@@ -20,11 +20,12 @@ Se está desarrollando un dispositivo wearable tipo Holter ECG integrado en un c
 
 ## Arquitectura del sistema
 
-- **Hardware**: XIAO Nordic + AFE (front-end analógico) para adquisición de ECG de 3 canales
-- **Comunicación principal**: módulo celular SIM (LTE-M, SIM7080G como candidato técnico) — SD como buffer continuo + envío batch cada 1h directo al backend, standalone, sin depender de app ni WiFi
-- **Almacenamiento local**: microSD 128 MB (buffer primario; en operación normal retiene solo ~2.7 MB — el batch de la hora en curso; acumula hasta ~2 días sin señal celular)
-- **Batería**: Li-Po 500-800 mAh, autonomía estimada ~2-3 días (SIM agrega <5% de overhead)
-- **App móvil**: no aplica — el dispositivo opera 100% standalone vía SIM
+- **Hardware**: Seeed XIAO **nRF52840** (Cortex-M4F + BLE, **sin WiFi**) + AFE TI **ADS1292R** (2 canales de 24 bits) para adquisición de ECG e impedancia
+- **Comunicación principal**: **WiFi del domicilio del paciente** — buffer local continuo + envío batch cada 1h directo al backend por HTTPS, standalone, sin app móvil ni módulo celular. Como el nRF52840 no tiene WiFi, la radio la aporta un **co-procesador ESP32-C3** por UART, encendido solo durante el ciclo de envío (~90 s/día)
+- **Provisioning**: SoftAP + portal cautivo servido por el co-procesador; se configura una vez, en la entrega
+- **Almacenamiento local**: flash SPI S25FL128L de **16 MB** (buffer actual: **9,94 h** de grabación). Una **microSD de 4-8 GB es requerimiento abierto** hacia Biomédica para cubrir ausencias largas del domicilio — todavía no existe en el hardware
+- **Batería**: Li-Po 3,7 V **1800 mAh**, autonomía estimada **~10 días** (el canal WiFi se lleva solo ~4%)
+- **App móvil**: no forma parte del canal de datos. BLE (que el firmware ya implementa) queda para provisioning, verificación de colocación y una eventual app de acompañamiento del paciente
 - **Cloud**: FastAPI + PostgreSQL + S3
 - **Dashboard médico**: React/Next.js
 
@@ -35,26 +36,31 @@ La arquitectura de comunicación está documentada en `info del proyecto/`:
 | Archivo | Contenido |
 |---|---|
 | `info del proyecto/README.md` | Índice, diagrama general, stack tecnológico |
-| `info del proyecto/01-justificacion.md` | SIM vs BLE+App: comparación y decisión de arquitectura |
-| `info del proyecto/02-firmware-holter.md` | Flujo SIM principal, SD, máquina de estados |
-| `info del proyecto/03-app-movil.md` | No aplica — sin app móvil en la arquitectura actual |
+| `info del proyecto/01-justificacion.md` | WiFi vs SIM vs BLE+App: comparación y decisión de arquitectura |
+| `info del proyecto/02-firmware-holter.md` | Flujo de datos, buffer local, máquina de estados |
+| `info del proyecto/03-app-movil.md` | Por qué la app no es parte del canal de datos |
 | `info del proyecto/04-cloud.md` | FastAPI, modelo de datos, trigger del médico |
 | `info del proyecto/05-bateria-y-datos.md` | Consumo, batería, volúmenes, tiempos de transferencia |
 | `info del proyecto/06-escenarios-y-seguridad.md` | Escenarios críticos, seguridad, regulatorio |
-| `info del proyecto/07-sim-celular.md` | Canal SIM (LTE-M): arquitectura principal, SD buffer, envío batch periódico |
+| `info del proyecto/07-wifi-y-provisioning.md` | Canal WiFi, SoftAP, portal cautivo, ciclo de envío |
+| `info del proyecto/08-sim-celular-descartado.md` | Archivo histórico: análisis del canal celular LTE-M |
+| `info del proyecto/09-comparativa-canales-de-transmision.md` | **Comparación BLE vs WiFi vs SIM con cuentas de consumo, costos y conclusión** |
 
 ## Decisiones de diseño tomadas
 
-- **Módulo celular SIM (LTE-M) como único canal de comunicación**: arquitectura standalone, sin BLE, sin app, sin WiFi del paciente. El módulo concreto es candidato (SIM7080G como referencia técnica más probable)
-- La SD card (128 MB) es el buffer primario: ECG graba continuamente a SD; cada hora el SIM envía el batch y limpia lo enviado
-- La SD es el seguro final: si la SIM no tiene señal, los datos se acumulan hasta ~2 días. Al recuperar señal, se envían los pendientes
-- PSM (Power Saving Mode) del módulo SIM: el módulo duerme ~59 min/hora a 3 µA — impacto en batería menor al 5%
+- **WiFi del domicilio como único canal de datos**: arquitectura standalone, sin app obligatoria, sin plan de datos. Ver `01-justificacion.md` y las cuentas completas en `09-comparativa-canales-de-transmision.md`
+- **No se cambia el MCU.** El firmware validado corre sobre nRF52840, que consume 2-3× menos que un ESP32 grabando de forma continua. Agregar un co-procesador WiFi de ~USD 2,60 conserva la autonomía (10,2 días) y el firmware; migrar a ESP32 la bajaría a ~4,8 días
+- **El buffer local es el seguro final**: nunca se borra nada que el backend no haya confirmado. Con la flash actual de 16 MB la ventana sin conexión es de **~10 h**, no de meses — de ahí la prioridad de la microSD
+- **El footprint del módulo SIM queda previsto en la PCB pero sin poblar**, para que una futura variante ambulatoria no exija rediseñar la arquitectura
+- **BLE no se apaga, se reubica**: el firmware ya tiene un servicio BLE completo (pairing con passkey, canales LIVE/BACKLOG/CONTROL/STATUS, backlog confirmado por ACK). No se usa como camino de datos crítico
 
 ## Contexto técnico
 
-- MCU: XIAO Nordic (Seeed Studio XIAO nRF52840 / variante Nordic)
-- ECG: 3 canales — parámetros de muestreo (sample rate, resolución) a definir con el equipo de Biomédica en Fase 1
-- Módulo celular: SIM via UART con el XIAO Nordic (LTE-M/NB-IoT, SIM7080G como candidato)
+- MCU: Seeed Studio XIAO nRF52840 (Cortex-M4F + BLE, sin WiFi)
+- AFE: TI ADS1292R sobre placa de evaluación ADS1x9xECG-FE, **500 Hz**, 24 bits, 2 canales (ECG e impedancia son **estudios separados**, no simultáneos)
+- Compresión: codec Rice sin pérdida con predictor de orden 2, ratio **medido 12,80×** sobre ruido ambulatorio real → **468,6 B/s = 40,5 MB/día** en un estudio de ECG
+- Radio WiFi: co-procesador ESP32-C3 por UART (LTE-M/SIM7080G queda documentado como opción futura, no implementada)
+- El firmware de referencia del equipo de Biomédica vive en el repo hermano `../Holter-ECG-System` (ver su `DATAFLOW.md` y `Filtros.md` para números medidos)
 - Usuarios objetivo: pacientes 40-70 años en Argentina
 - Regulatorio: ANMAT (clase II), Ley 25.326
 
