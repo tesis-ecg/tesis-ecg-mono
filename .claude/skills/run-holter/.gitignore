@@ -1,0 +1,3 @@
+# Artefactos de corridas: logs y pidfiles de stack.sh.
+# Solo se versionan SKILL.md y stack.sh.
+.run/

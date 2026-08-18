@@ -62,24 +62,14 @@ export async function unassignHolter(holterId: string): Promise<Holter> {
   return data
 }
 
-// --- Asignación device→médico (mock-first; endpoints de backend pendientes) ---
+// --- Asignación device→médico (solo admin) ---
 
 /** Catálogo de médicos para el Select de "Asignar a médico" (solo admin). */
-const MOCK_DOCTORS: DoctorOption[] = [
-  { id: 'doc_001', fullName: 'María Gómez' },
-  { id: 'doc_002', fullName: 'Juan Pérez' },
-  { id: 'doc_003', fullName: 'Lucía Fernández' },
-]
-
 export async function listDoctors(): Promise<DoctorOption[]> {
-  // TODO(backend): GET /doctors (admin) — id + nombre de cada médico, para el Select de asignación.
-  //   const { data } = await api.get<DoctorOption[]>('/doctors')
-  //   return data
-  return MOCK_DOCTORS
+  const { data } = await api.get<DoctorOption[]>('/doctors')
+  return data
 }
 
 export async function assignHolterToDoctor(input: AssignHolterToDoctorInput): Promise<void> {
-  // TODO(backend): POST /devices/:id/assign-doctor { doctorId } (admin) — setea device.doctor_id.
-  //   await api.post(`/devices/${input.holterId}/assign-doctor`, { doctorId: input.doctorId })
-  void input
+  await api.post(`/devices/${input.holterId}/assign-doctor`, { doctorId: input.doctorId })
 }
