@@ -1,3 +1,5 @@
+import { routes, type VercelConfig } from '@vercel/config/v1'
+
 function requiredHttpsOrigin(name: string): string {
   const rawValue = process.env[name]
   if (!rawValue) throw new Error(`${name} es obligatorio para desplegar en Vercel.`)
@@ -11,12 +13,12 @@ function requiredHttpsOrigin(name: string): string {
 
 const backendOrigin = requiredHttpsOrigin('BACKEND_ORIGIN')
 
-export const config = {
+export const config: VercelConfig = {
   framework: 'vite',
   outputDirectory: 'dist',
   rewrites: [
-    { source: '/api/:path*', destination: `${backendOrigin}/:path*` },
-    { source: '/(.*)', destination: '/index.html' },
+    routes.rewrite('/api/:path*', `${backendOrigin}/:path*`),
+    routes.rewrite('/(.*)', '/index.html'),
   ],
   headers: [
     {
