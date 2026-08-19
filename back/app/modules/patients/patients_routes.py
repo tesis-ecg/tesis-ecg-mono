@@ -28,7 +28,8 @@ router = APIRouter()
 
 @router.get("", response_model=PatientListResponse)
 async def list_patients(
-    q: str | None = None,
+    q: str | None = Query(default=None, max_length=120),
+    has_device: bool | None = Query(default=None, alias="hasDevice"),
     status_filter: list[PatientStudyStatus] | None = Query(default=None, alias="status"),
     status_bracket: list[PatientStudyStatus] | None = Query(default=None, alias="status[]"),
     # le=250: el diálogo de reasignación del FE pide limit=250 para filtrar los
@@ -49,6 +50,7 @@ async def list_patients(
             offset=offset,
             sort=sort,
             order=order,
+            has_device=has_device,
         ),
         db,
     )
@@ -123,7 +125,13 @@ async def update_patient(
     db: AsyncSession = Depends(get_db),
 ) -> PatientOut:
     return await service.update_patient(
-        PatientUpdateInput(doctor_id=scope.doctor_id, patient_id=patient_id, data=data), db
+        PatientUpdateInput(
+            doctor_id=scope.doctor_id,
+            patient_id=patient_id,
+            data=data,
+            actor_id=scope.user.id,
+        ),
+        db,
     )
 
 
@@ -134,6 +142,11 @@ async def delete_patient(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     await service.delete_patient(
-        PatientIdInput(doctor_id=scope.doctor_id, patient_id=patient_id), db
+        PatientIdInput(
+            doctor_id=scope.doctor_id,
+            patient_id=patient_id,
+            actor_id=scope.user.id,
+        ),
+        db,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

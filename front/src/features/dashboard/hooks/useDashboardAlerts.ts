@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getDashboardAlerts } from '../api/dashboardApi'
+import { getDashboardOverview } from '../api/dashboardApi'
 
 export function useDashboardAlerts() {
   return useQuery({
-    queryKey: ['dashboard', 'alerts'],
-    queryFn: getDashboardAlerts,
+    queryKey: ['dashboard', 'overview'],
+    queryFn: getDashboardOverview,
+    select: (overview) => overview.alerts,
   })
 }

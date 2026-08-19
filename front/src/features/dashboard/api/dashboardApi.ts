@@ -6,7 +6,13 @@ import type {
   DashboardKpis,
   DeviceWatchdogItem,
   RunningStudy,
+  DashboardOverview,
 } from '../types'
+
+export async function getDashboardOverview(): Promise<DashboardOverview> {
+  const { data } = await api.get<DashboardOverview>('/dashboard/overview')
+  return data
+}
 
 export async function getDashboardKpis(): Promise<DashboardKpis> {
   const { data } = await api.get<DashboardKpis>('/dashboard/kpis')

@@ -62,6 +62,14 @@ class DeviceWatchdogOut(CamelModel):
     reason: str
 
 
+class DashboardOverviewOut(CamelModel):
+    kpis: DashboardKpisOut
+    alerts: list[DashboardAlertOut]
+    attentionPatients: list[AttentionPatientOut]
+    runningStudies: list[RunningStudyOut]
+    deviceWatchdog: list[DeviceWatchdogOut]
+
+
 @dataclass(frozen=True)
 class DashboardKpisInput:
     doctor_id: uuid.UUID | None
@@ -89,3 +97,10 @@ class RunningStudiesInput:
 class DeviceWatchdogInput:
     doctor_id: uuid.UUID | None
     limit: int
+
+
+@dataclass(frozen=True)
+class DashboardOverviewInput:
+    doctor_id: uuid.UUID | None
+    widget_limit: int
+    alerts_limit: int

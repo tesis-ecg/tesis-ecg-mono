@@ -9,6 +9,7 @@ from app.dependencies.common_dependencies import get_db
 from app.modules.studies import studies_service as service
 from app.modules.studies.studies_schemas import (
     StudyDetailOut,
+    StudyEcgManifestOut,
     StudyEcgOut,
     StudyIdInput,
     StudyListInput,
@@ -20,7 +21,7 @@ router = APIRouter()
 
 @router.get("", response_model=StudyListResponse)
 async def list_studies(
-    q: str | None = None,
+    q: str | None = Query(default=None, max_length=120),
     status_filter: list[StudyStatus] | None = Query(default=None, alias="status"),
     status_bracket: list[StudyStatus] | None = Query(default=None, alias="status[]"),
     limit: int = Query(default=20, ge=1, le=100),
@@ -49,12 +50,33 @@ async def get_study(
     return await service.get_study(StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db)
 
 
-@router.get("/{study_id}/ecg", response_model=StudyEcgOut)
+@router.get("/{study_id}/ecg", response_model=StudyEcgOut, deprecated=True)
 async def get_study_ecg(
     study_id: uuid.UUID,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyEcgOut:
     return await service.get_study_ecg(
-        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+        StudyIdInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+        ),
+        db,
+    )
+
+
+@router.get("/{study_id}/ecg/manifest", response_model=StudyEcgManifestOut)
+async def get_study_ecg_manifest(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyEcgManifestOut:
+    return await service.get_study_ecg_manifest(
+        StudyIdInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+        ),
+        db,
     )

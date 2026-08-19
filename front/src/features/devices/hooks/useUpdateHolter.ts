@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { updateHolter } from '../api/devicesApi'
 import type { UpdateHolterInput } from '../types'
+import { invalidateClinicalData } from '@/lib/queryKeys'
 
 /**
  * Edita parcialmente un Holter. Invalida `['devices']` + `['patients']` porque
@@ -14,8 +15,7 @@ export function useUpdateHolter() {
     mutationFn: ({ id, input }: { id: string; input: UpdateHolterInput }) =>
       updateHolter(id, input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['devices'] })
-      void queryClient.invalidateQueries({ queryKey: ['patients'] })
+      void invalidateClinicalData(queryClient)
     },
   })
 }

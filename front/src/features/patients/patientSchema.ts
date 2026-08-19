@@ -22,6 +22,7 @@ export const patientFormSchema = z.object({
   sex: z.enum(['M', 'F', 'X'], 'Seleccioná un sexo.'),
   contactEmail: z.email('Ingresá un email válido.').or(z.literal('')),
   contactPhone: z.string().trim(),
+  doctorId: z.string().uuid().optional(),
 })
 
 export type PatientFormValues = z.infer<typeof patientFormSchema>

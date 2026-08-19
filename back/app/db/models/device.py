@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,6 +25,27 @@ class DeviceStatus(enum.StrEnum):
 
 class Device(TimestampMixin, Base):
     __tablename__ = "device"
+    __table_args__ = (
+        CheckConstraint(
+            "(status = 'assigned' AND patient_id IS NOT NULL AND doctor_id IS NOT NULL) "
+            "OR (status <> 'assigned' AND patient_id IS NULL)",
+            name="ck_device_assignment_state",
+        ),
+        CheckConstraint(
+            "last_battery_pct IS NULL OR last_battery_pct BETWEEN 0 AND 100",
+            name="ck_device_battery_pct",
+        ),
+        CheckConstraint(
+            "last_sd_free_mb IS NULL OR last_sd_free_mb >= 0",
+            name="ck_device_sd_free_nonnegative",
+        ),
+        Index(
+            "uq_device_active_patient",
+            "patient_id",
+            unique=True,
+            postgresql_where=text("patient_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     serial_number: Mapped[str] = mapped_column(String(120), unique=True)
     model: Mapped[str] = mapped_column(String(120), default="Holter ECG")

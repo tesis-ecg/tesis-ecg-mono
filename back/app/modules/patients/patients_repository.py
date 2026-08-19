@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Select, func, or_, select, update
+from sqlalchemy import Select, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.device import Device, DeviceStatus
@@ -71,6 +71,7 @@ def _apply_patient_filters(
     doctor_id: uuid.UUID | None,
     q: str | None,
     statuses: list[PatientStudyStatus] | None,
+    has_device: bool | None,
 ) -> Select[tuple[Patient, uuid.UUID | None, str | None]] | Select[tuple[int]]:
     statement = statement.where(Patient.deleted_at.is_(None))
     if doctor_id is not None:
@@ -81,6 +82,17 @@ def _apply_patient_filters(
         statement = statement.where(or_(full_name.ilike(pattern), Patient.dni.ilike(pattern)))
     if statuses:
         statement = statement.where(Patient.study_status.in_(statuses))
+    if has_device is not None:
+        assigned_device_exists = exists(
+            select(Device.id).where(
+                Device.patient_id == Patient.id,
+                Device.status == DeviceStatus.ASSIGNED,
+                Device.deleted_at.is_(None),
+            )
+        )
+        statement = statement.where(
+            assigned_device_exists if has_device else ~assigned_device_exists
+        )
     return statement
 
 
@@ -93,10 +105,11 @@ async def list_patients(
     offset: int,
     sort: str,
     order: str,
+    has_device: bool | None,
 ) -> tuple[list[PatientRow], int]:
-    statement = _apply_patient_filters(_patient_row_statement(), doctor_id, q, statuses)
+    statement = _apply_patient_filters(_patient_row_statement(), doctor_id, q, statuses, has_device)
     count_statement = _apply_patient_filters(
-        select(func.count()).select_from(Patient), doctor_id, q, statuses
+        select(func.count()).select_from(Patient), doctor_id, q, statuses, has_device
     )
 
     # `Patient.id` cierra cada orden: sin desempate, dos homónimos (o dos filas con el
@@ -154,6 +167,20 @@ async def get_patient_model(
     statement = select(Patient).where(
         Patient.id == patient_id,
         Patient.deleted_at.is_(None),
+    )
+    if doctor_id is not None:
+        statement = statement.where(Patient.doctor_id == doctor_id)
+    result = await db.execute(statement)
+    return result.scalar_one_or_none()
+
+
+async def get_patient_model_for_update(
+    db: AsyncSession, patient_id: uuid.UUID, doctor_id: uuid.UUID | None
+) -> Patient | None:
+    statement = (
+        select(Patient)
+        .where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+        .with_for_update()
     )
     if doctor_id is not None:
         statement = statement.where(Patient.doctor_id == doctor_id)

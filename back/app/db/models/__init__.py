@@ -1,5 +1,6 @@
 from app.db.models.alert import Alert
 from app.db.models.audit_event import AuditEvent
+from app.db.models.auth_rate_limit import AuthRateLimit
 from app.db.models.device import Device
 from app.db.models.doctor import Doctor
 from app.db.models.ecg_batch import ECGBatch
@@ -17,5 +18,6 @@ __all__ = [
     "Alert",
     "User",
     "AuditEvent",
+    "AuthRateLimit",
     "Study",
 ]

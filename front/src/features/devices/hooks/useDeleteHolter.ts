@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { deleteHolter } from '../api/devicesApi'
+import { invalidateClinicalData } from '@/lib/queryKeys'
 
 /**
  * Soft-delete del Holter (status → 'retired'). Si estaba asignado, también
@@ -11,8 +12,7 @@ export function useDeleteHolter() {
   return useMutation({
     mutationFn: (id: string) => deleteHolter(id),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['devices'] })
-      void queryClient.invalidateQueries({ queryKey: ['patients'] })
+      void invalidateClinicalData(queryClient)
     },
   })
 }

@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select'
 
 import { patientFormSchema, type PatientFormValues } from '../patientSchema'
+import type { DoctorOption } from '@/features/devices/types'
 
 const SEX_OPTIONS: { value: PatientFormValues['sex']; label: string }[] = [
   { value: 'M', label: 'Masculino' },
@@ -32,6 +33,8 @@ interface PatientFormProps {
   onSubmit: (values: PatientFormValues) => void
   isSubmitting: boolean
   submitLabel: string
+  requireDoctor?: boolean
+  doctorOptions?: DoctorOption[]
 }
 
 export function PatientForm({
@@ -39,6 +42,8 @@ export function PatientForm({
   onSubmit,
   isSubmitting,
   submitLabel,
+  requireDoctor = false,
+  doctorOptions = [],
 }: PatientFormProps) {
   const form = useForm<PatientFormValues>({
     resolver: zodResolver(patientFormSchema),
@@ -48,6 +53,7 @@ export function PatientForm({
       birthDate: '',
       contactEmail: '',
       contactPhone: '',
+      doctorId: undefined,
       ...defaultValues,
     },
   })
@@ -55,6 +61,33 @@ export function PatientForm({
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
+        {requireDoctor ? (
+          <FormField
+            control={form.control}
+            name="doctorId"
+            rules={{ required: 'Seleccioná un médico.' }}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Médico responsable</FormLabel>
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <FormControl>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Seleccioná un médico" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {doctorOptions.map((doctor) => (
+                      <SelectItem key={doctor.id} value={doctor.id}>
+                        {doctor.fullName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        ) : null}
         <FormField
           control={form.control}
           name="fullName"

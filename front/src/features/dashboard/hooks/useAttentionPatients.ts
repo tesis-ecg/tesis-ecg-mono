@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getAttentionPatients } from '../api/dashboardApi'
+import { getDashboardOverview } from '../api/dashboardApi'
 
 export function useAttentionPatients() {
   return useQuery({
-    queryKey: ['dashboard', 'attention-patients'],
-    queryFn: getAttentionPatients,
+    queryKey: ['dashboard', 'overview'],
+    queryFn: getDashboardOverview,
+    select: (overview) => overview.attentionPatients,
   })
 }

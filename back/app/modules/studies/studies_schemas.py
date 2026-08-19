@@ -49,6 +49,32 @@ class StudyEcgOut(CamelModel):
     startTimestamp: int
     durationMs: int
     sampleCount: int
+    expiresAt: datetime
+
+
+class StudyEcgObjectOut(CamelModel):
+    url: str
+    expiresAt: datetime
+    byteLength: int
+    sha256: str | None
+
+
+class StudyEcgLevelOut(StudyEcgObjectOut):
+    samplesPerBucket: int
+    pointCount: int
+    encoding: str = "minmax-float32-le"
+
+
+class StudyEcgManifestOut(CamelModel):
+    formatVersion: int = 1
+    channel: str = "ecg"
+    encoding: str
+    sampleRate: int
+    sampleCount: int
+    startTimestamp: int
+    durationMs: int
+    raw: StudyEcgObjectOut
+    levels: list[StudyEcgLevelOut]
 
 
 @dataclass(frozen=True)
@@ -70,3 +96,4 @@ class PatientStudiesInput:
 class StudyIdInput:
     doctor_id: uuid.UUID | None
     study_id: uuid.UUID
+    actor_id: uuid.UUID | None = None

@@ -1,4 +1,4 @@
-import { Home, Users, HeartPulse, Activity, FlaskConical, Settings, UserCog } from 'lucide-react'
+import { Home, Users, HeartPulse, Activity, UserCog } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 import type { Role } from '@/features/auth/types'
@@ -16,7 +16,5 @@ export const navItems: NavItemConfig[] = [
   { name: 'Pacientes', path: '/patients', icon: Users },
   { name: 'Dispositivos', path: '/devices', icon: HeartPulse },
   { name: 'Estudios', path: '/studies', icon: Activity },
-  { name: 'Investigación', path: '/research', icon: FlaskConical },
   { name: 'Usuarios', path: '/users', icon: UserCog, roles: ['admin'] },
-  { name: 'Configuración', path: '/settings', icon: Settings },
 ]

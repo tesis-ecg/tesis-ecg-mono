@@ -36,7 +36,7 @@ router = APIRouter()
 
 @router.get("", response_model=HolterListResponse)
 async def list_holters(
-    q: str | None = None,
+    q: str | None = Query(default=None, max_length=120),
     status_filter: list[DeviceStatus] | None = Query(default=None, alias="status"),
     status_bracket: list[DeviceStatus] | None = Query(default=None, alias="status[]"),
     limit: int = Query(default=20, ge=1, le=100),
@@ -59,10 +59,10 @@ async def list_holters(
 @router.post("", response_model=HolterCreateOut, status_code=status.HTTP_201_CREATED)
 async def create_holter(
     data: HolterCreateRequest,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterCreateOut:
-    return await service.create_holter(HolterCreateInput(data=data), db)
+    return await service.create_holter(HolterCreateInput(data=data, actor_id=current_user.id), db)
 
 
 @router.get("/{device_id}", response_model=HolterOut)
@@ -80,39 +80,45 @@ async def get_holter(
 async def update_holter(
     device_id: uuid.UUID,
     data: HolterUpdateRequest,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
-    return await service.update_holter(HolterUpdateInput(device_id=device_id, data=data), db)
+    return await service.update_holter(
+        HolterUpdateInput(device_id=device_id, data=data, actor_id=current_user.id), db
+    )
 
 
 @router.delete("/{device_id}", response_model=HolterOut)
 async def delete_holter(
     device_id: uuid.UUID,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
-    return await service.delete_holter(HolterIdInput(doctor_id=None, device_id=device_id), db)
+    return await service.delete_holter(
+        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db
+    )
 
 
 @router.post("/{device_id}/assign-doctor", response_model=HolterOut)
 async def assign_holter_doctor(
     device_id: uuid.UUID,
     data: AssignDoctorRequest,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
-    return await service.assign_holter_doctor(AssignDoctorInput(device_id=device_id, data=data), db)
+    return await service.assign_holter_doctor(
+        AssignDoctorInput(device_id=device_id, data=data, actor_id=current_user.id), db
+    )
 
 
 @router.post("/{device_id}/unassign-doctor", response_model=HolterOut)
 async def unassign_holter_doctor(
     device_id: uuid.UUID,
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
     return await service.unassign_holter_doctor(
-        HolterIdInput(doctor_id=None, device_id=device_id), db
+        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db
     )
 
 
@@ -128,6 +134,7 @@ async def assign_holter(
             doctor_id=scope.doctor_id,
             device_id=device_id,
             patient_id=data.patientId,
+            actor_id=scope.user.id,
         ),
         db,
     )
@@ -140,7 +147,8 @@ async def unassign_holter(
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
     return await service.unassign_holter(
-        HolterIdInput(doctor_id=scope.doctor_id, device_id=device_id), db
+        HolterIdInput(doctor_id=scope.doctor_id, device_id=device_id, actor_id=scope.user.id),
+        db,
     )
 
 
@@ -156,6 +164,7 @@ async def reassign_holter(
             doctor_id=scope.doctor_id,
             device_id=device_id,
             patient_id=data.patientId,
+            actor_id=scope.user.id,
         ),
         db,
     )

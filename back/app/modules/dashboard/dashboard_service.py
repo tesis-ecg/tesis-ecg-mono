@@ -1,6 +1,5 @@
 """Dashboard service."""
 
-import math
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -20,12 +19,13 @@ from app.modules.dashboard.dashboard_schemas import (
     DashboardAlertsInput,
     DashboardKpisInput,
     DashboardKpisOut,
+    DashboardOverviewInput,
+    DashboardOverviewOut,
     DeviceWatchdogInput,
     DeviceWatchdogOut,
     RunningStudiesInput,
     RunningStudyOut,
 )
-from app.modules.devices import devices_service
 
 # Orden de prioridad del merge de alertas. Las 4 severities del ORM mapean 1:1
 # en minúsculas contra el SEVERITY del FE.
@@ -122,10 +122,9 @@ def _watchdog_out(device: Device, signal_quality: str | None, reason: str) -> De
 
 
 async def get_kpis(input_data: DashboardKpisInput, db: AsyncSession) -> DashboardKpisOut:
-    active_patients = await repo.count_active_patients(db, input_data.doctor_id)
-    running_studies = await repo.count_running_studies(db, input_data.doctor_id)
-    pending_alerts = await repo.count_pending_alerts(db, input_data.doctor_id)
-    stale_devices = await repo.count_stale_devices(db, input_data.doctor_id, _stale_before())
+    active_patients, running_studies, pending_alerts, stale_devices = await repo.get_kpi_counts(
+        db, input_data.doctor_id, _stale_before()
+    )
     return DashboardKpisOut(
         activePatients=active_patients,
         pendingAlerts=pending_alerts + stale_devices,
@@ -174,28 +173,40 @@ async def list_running_studies(
 async def list_device_watchdog(
     input_data: DeviceWatchdogInput, db: AsyncSession
 ) -> list[DeviceWatchdogOut]:
-    devices = await repo.list_watchdog_devices(db, input_data.doctor_id)
-    now = datetime.now(UTC)
+    rows = await repo.list_watchdog_devices(
+        db,
+        input_data.doctor_id,
+        _stale_before(),
+        settings.dashboard_low_battery_pct,
+        input_data.limit,
+    )
     items: list[DeviceWatchdogOut] = []
-    for device in devices:
-        hours_since = (
-            math.inf
-            if device.last_seen_at is None
-            else (now - device.last_seen_at).total_seconds() / 3600
-        )
-        battery = device.last_battery_pct
-        signal_quality = devices_service.signal_quality_for(device)
-        if hours_since > settings.dashboard_stale_hours:
-            reason = "offline"
-        elif battery is not None and battery < settings.dashboard_low_battery_pct:
-            reason = "low_battery"
-        elif signal_quality in ("poor", "none"):
-            # Rama inalcanzable con datos reales: el device no reporta señal, así que
-            # signal_quality_for() solo devuelve None o "good" (ver §5.5 del plan).
-            # Se mantiene porque el contrato del FE tipa DeviceWatchdogReason con las 3.
-            reason = "poor_signal"
-        else:
-            continue
-        items.append(_watchdog_out(device, signal_quality, reason))
-    # El limit se aplica DESPUÉS de filtrar, igual que el .slice(0, 6) del mock.
-    return items[: input_data.limit]
+    for device, reason in rows:
+        items.append(_watchdog_out(device, None, reason))
+    return items
+
+
+async def get_overview(
+    input_data: DashboardOverviewInput, db: AsyncSession
+) -> DashboardOverviewOut:
+    kpis = await get_kpis(DashboardKpisInput(doctor_id=input_data.doctor_id), db)
+    alerts = await list_alerts(
+        DashboardAlertsInput(doctor_id=input_data.doctor_id, limit=input_data.alerts_limit), db
+    )
+    attention_patients = await list_attention_patients(
+        AttentionPatientsInput(doctor_id=input_data.doctor_id, limit=input_data.widget_limit),
+        db,
+    )
+    running_studies = await list_running_studies(
+        RunningStudiesInput(doctor_id=input_data.doctor_id, limit=input_data.widget_limit), db
+    )
+    watchdog = await list_device_watchdog(
+        DeviceWatchdogInput(doctor_id=input_data.doctor_id, limit=input_data.widget_limit), db
+    )
+    return DashboardOverviewOut(
+        kpis=kpis,
+        alerts=alerts,
+        attentionPatients=attention_patients,
+        runningStudies=running_studies,
+        deviceWatchdog=watchdog,
+    )

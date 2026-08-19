@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Enum, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -23,6 +23,16 @@ class ProcessingStatus(enum.StrEnum):
 
 class ECGBatch(TimestampMixin, Base):
     __tablename__ = "ecg_batch"
+    __table_args__ = (
+        CheckConstraint("duration_seconds >= 0", name="ck_ecg_batch_duration"),
+        CheckConstraint("sample_rate > 0", name="ck_ecg_batch_sample_rate"),
+        CheckConstraint("num_channels > 0", name="ck_ecg_batch_channels"),
+        CheckConstraint("num_samples >= 0", name="ck_ecg_batch_samples"),
+        CheckConstraint(
+            "file_size_bytes IS NULL OR file_size_bytes >= 0",
+            name="ck_ecg_batch_file_size",
+        ),
+    )
 
     device_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("device.id"), nullable=False

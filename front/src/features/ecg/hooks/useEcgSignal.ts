@@ -15,9 +15,9 @@ import { getStudyEcg } from '../api/ecgApi'
 export function useEcgSignal(studyId: string | undefined) {
   return useQuery({
     queryKey: ['ecg', studyId],
-    queryFn: () => getStudyEcg(studyId!),
+    queryFn: ({ signal }) => getStudyEcg(studyId!, signal),
     enabled: Boolean(studyId),
     staleTime: Infinity,
-    gcTime: 5 * 60 * 1000,
+    gcTime: 60 * 1000,
   })
 }

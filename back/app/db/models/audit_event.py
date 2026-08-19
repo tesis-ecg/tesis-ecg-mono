@@ -2,7 +2,7 @@ import enum
 import uuid
 from typing import Any
 
-from sqlalchemy import Enum, ForeignKey, String
+from sqlalchemy import Enum, ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,11 +14,22 @@ class AuditEventType(enum.StrEnum):
     LOGIN_FAILED = "LOGIN_FAILED"
     LOGOUT = "LOGOUT"
     REGISTER = "REGISTER"
-    PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"
+    PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED"  # nosec B105
+    USER_UPDATED = "USER_UPDATED"
+    USER_DELETED = "USER_DELETED"
+    PATIENT_CREATED = "PATIENT_CREATED"
+    PATIENT_UPDATED = "PATIENT_UPDATED"
+    PATIENT_DELETED = "PATIENT_DELETED"
+    DEVICE_CREATED = "DEVICE_CREATED"
+    DEVICE_UPDATED = "DEVICE_UPDATED"
+    DEVICE_RETIRED = "DEVICE_RETIRED"
+    DEVICE_ASSIGNED = "DEVICE_ASSIGNED"
+    ECG_ACCESSED = "ECG_ACCESSED"
 
 
 class AuditEvent(TimestampMixin, Base):
     __tablename__ = "audit_event"
+    __table_args__ = (Index("ix_audit_user_created", "user_id", "created_at"),)
 
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("user.id"), nullable=True

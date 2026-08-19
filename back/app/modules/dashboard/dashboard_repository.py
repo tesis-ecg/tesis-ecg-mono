@@ -101,6 +101,67 @@ async def count_stale_devices(
     return await db.scalar(statement) or 0
 
 
+async def get_kpi_counts(
+    db: AsyncSession, doctor_id: uuid.UUID | None, stale_before: datetime
+) -> tuple[int, int, int, int]:
+    patient_scope = [] if doctor_id is None else [Patient.doctor_id == doctor_id]
+    active_patients = (
+        select(func.count())
+        .select_from(Patient)
+        .where(
+            Patient.deleted_at.is_(None),
+            Patient.study_status == PatientStudyStatus.ACTIVE,
+            *patient_scope,
+        )
+        .scalar_subquery()
+    )
+    running_studies = (
+        select(func.count())
+        .select_from(Study)
+        .join(Patient, Study.patient_id == Patient.id)
+        .join(Device, Study.device_id == Device.id)
+        .where(
+            Study.deleted_at.is_(None),
+            Study.status == StudyStatus.IN_PROGRESS,
+            Patient.deleted_at.is_(None),
+            Device.deleted_at.is_(None),
+            *patient_scope,
+        )
+        .scalar_subquery()
+    )
+    pending_alerts = (
+        select(func.count())
+        .select_from(Alert)
+        .join(Patient, Alert.patient_id == Patient.id)
+        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .where(
+            Alert.deleted_at.is_(None),
+            Alert.acknowledged_at.is_(None),
+            Patient.deleted_at.is_(None),
+            ECGEvent.deleted_at.is_(None),
+            *patient_scope,
+        )
+        .scalar_subquery()
+    )
+    stale_devices = (
+        select(func.count())
+        .select_from(Device)
+        .join(Patient, Device.patient_id == Patient.id)
+        .where(
+            Device.deleted_at.is_(None),
+            Device.status == DeviceStatus.ASSIGNED,
+            or_(Device.last_seen_at.is_(None), Device.last_seen_at < stale_before),
+            Patient.deleted_at.is_(None),
+            *patient_scope,
+        )
+        .scalar_subquery()
+    )
+    row = (
+        await db.execute(select(active_patients, running_studies, pending_alerts, stale_devices))
+    ).one()
+    return tuple(int(value or 0) for value in row)  # type: ignore[return-value]
+
+
 async def list_pending_alerts(
     db: AsyncSession, doctor_id: uuid.UUID | None, limit: int
 ) -> list[tuple[Alert, Patient, ECGEventType, uuid.UUID | None]]:
@@ -211,20 +272,30 @@ async def list_running_studies(
     return [(study, patient, device) for study, patient, device in result.all()]
 
 
-async def list_watchdog_devices(db: AsyncSession, doctor_id: uuid.UUID | None) -> list[Device]:
-    # Sin limit: el service aplica el if/elif de prioridad y recién ahí corta.
+async def list_watchdog_devices(
+    db: AsyncSession,
+    doctor_id: uuid.UUID | None,
+    stale_before: datetime,
+    low_battery_pct: int,
+    limit: int,
+) -> list[tuple[Device, str]]:
+    offline = or_(Device.last_seen_at.is_(None), Device.last_seen_at < stale_before)
+    low_battery = Device.last_battery_pct < low_battery_pct
+    reason = case((offline, "offline"), (low_battery, "low_battery"), else_=None)
+    priority = case((offline, 0), (low_battery, 1), else_=2)
     statement = (
-        select(Device)
+        select(Device, reason.label("reason"))
         .join(Patient, Device.patient_id == Patient.id)
         .where(
             Device.deleted_at.is_(None),
             Device.status == DeviceStatus.ASSIGNED,
             Device.patient_id.is_not(None),
             Patient.deleted_at.is_(None),
+            or_(offline, low_battery),
         )
-        .order_by(Device.last_seen_at.asc().nullsfirst())
+        .order_by(priority.asc(), Device.last_seen_at.asc().nullsfirst(), Device.id.asc())
     )
     if doctor_id is not None:
         statement = statement.where(Patient.doctor_id == doctor_id)
-    result = await db.execute(statement)
-    return list(result.scalars().all())
+    result = await db.execute(statement.limit(limit))
+    return [(device, str(reason_value)) for device, reason_value in result.all()]

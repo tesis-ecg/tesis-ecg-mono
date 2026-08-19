@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { assignHolter } from '../api/devicesApi'
 import type { AssignHolterInput } from '../types'
+import { invalidateClinicalData } from '@/lib/queryKeys'
 
 /**
  * Asigna un Holter a un paciente. Invalida tanto `['devices']` (cambia el
@@ -13,8 +14,7 @@ export function useAssignHolter() {
   return useMutation({
     mutationFn: (input: AssignHolterInput) => assignHolter(input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['devices'] })
-      void queryClient.invalidateQueries({ queryKey: ['patients'] })
+      void invalidateClinicalData(queryClient)
     },
   })
 }

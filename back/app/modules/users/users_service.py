@@ -3,18 +3,18 @@
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth0_client import (
     Auth0Error,
     block_auth0_user,
     create_auth0_user,
-    delete_auth0_user,
     trigger_password_reset,
     update_auth0_user_email,
 )
 from app.db.models.audit_event import AuditEventType
-from app.db.models.user import User, UserRole
+from app.db.models.user import IdentityStatus, User, UserRole
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.doctors import doctors_repository as doctors_repo
 from app.modules.users import users_repository as repo
@@ -36,6 +36,7 @@ def _user_account_out(user: User) -> UserAccountOut:
         fullName=user.full_name,
         role=user.role,
         isActive=user.is_active,
+        identityStatus=user.identity_status,
         createdAt=user.created_at,
     )
 
@@ -75,29 +76,54 @@ async def create_user(input_data: UserCreateInput, db: AsyncSession) -> UserAcco
         )
 
     existing = await repo.get_user_by_email_any(db, input_data.data.email)
-    if existing is not None:
+    can_retry_failed_provision = (
+        existing is not None
+        and existing.identity_status == IdentityStatus.ERROR
+        and existing.auth0_id is None
+        and existing.deleted_at is None
+    )
+    if existing is not None and not can_retry_failed_provision:
         raise _email_conflict()
+
+    if can_retry_failed_provision:
+        if existing is None:  # Defensive guard for the narrowed invariant above.
+            raise RuntimeError("Failed identity provisioning requires an existing user")
+        user = existing
+        user.full_name = input_data.data.fullName.strip()
+        user.role = input_data.data.role
+        user.identity_status = IdentityStatus.PENDING
+    else:
+        user = await repo.create_user(
+            db,
+            auth0_id=None,
+            email=str(input_data.data.email),
+            full_name=input_data.data.fullName.strip(),
+            role=input_data.data.role,
+            is_active=False,
+            identity_status=IdentityStatus.PENDING,
+        )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise _email_conflict() from exc
 
     try:
         auth0_id = await create_auth0_user(
-            input_data.data.email,
-            input_data.data.password,
-            input_data.data.fullName,
+            str(input_data.data.email), input_data.data.password, input_data.data.fullName.strip()
         )
     except Auth0Error as exc:
+        user.identity_status = IdentityStatus.ERROR
+        await db.commit()
         raise HTTPException(
             status_code=exc.status,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
 
     try:
-        user = await repo.create_user(
-            db,
-            auth0_id=auth0_id,
-            email=input_data.data.email,
-            full_name=input_data.data.fullName,
-            role=input_data.data.role,
-        )
+        user.auth0_id = auth0_id
+        user.is_active = True
+        user.identity_status = IdentityStatus.ACTIVE
         if user.role == UserRole.MEDICO:
             await doctors_repo.create(db, user.id)
         await auth_repo.log_audit_event(
@@ -107,10 +133,15 @@ async def create_user(input_data: UserCreateInput, db: AsyncSession) -> UserAcco
             ip_address=input_data.ip,
             metadata={"new_user_id": str(user.id), "role": user.role.value},
         )
+        await db.commit()
     except Exception:
-        # get_db() recién hace rollback cuando la route propaga la excepción, así
-        # que la compensación tiene que ocurrir acá o queda un huérfano en Auth0.
-        await delete_auth0_user(auth0_id)
+        await db.rollback()
+        pending_user = await repo.get_user_by_id(db, user.id)
+        if pending_user is not None:
+            pending_user.auth0_id = auth0_id
+            pending_user.identity_status = IdentityStatus.ERROR
+            pending_user.is_active = False
+            await db.commit()
         raise
 
     return _user_account_out(user)
@@ -121,7 +152,7 @@ async def update_user_email(input_data: UserUpdateEmailInput, db: AsyncSession) 
     if user is None:
         raise _not_found()
 
-    email = input_data.data.email
+    email = str(input_data.data.email)
     if email == user.email:
         return _user_account_out(user)
 
@@ -129,17 +160,42 @@ async def update_user_email(input_data: UserUpdateEmailInput, db: AsyncSession) 
     if existing is not None:
         raise _email_conflict()
 
+    user.pending_email = email
+    user.identity_status = IdentityStatus.PENDING
+    await db.commit()
+
     if user.auth0_id is not None:
         try:
             await update_auth0_user_email(user.auth0_id, email)
         except Auth0Error as exc:
+            user.pending_email = None
+            user.identity_status = IdentityStatus.ACTIVE
+            await db.commit()
             raise HTTPException(
                 status_code=exc.status,
                 detail={"code": exc.code, "message": exc.message},
             ) from exc
 
     user.email = email
-    await db.flush()
+    user.pending_email = None
+    user.identity_status = IdentityStatus.ACTIVE
+    await auth_repo.log_audit_event(
+        db,
+        AuditEventType.USER_UPDATED,
+        user_id=input_data.requesting_user.id,
+        metadata={"target_user_id": str(user.id), "field": "email"},
+    )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        inconsistent_user = await repo.get_user_by_id(db, user.id)
+        if inconsistent_user is not None:
+            inconsistent_user.pending_email = email
+            inconsistent_user.identity_status = IdentityStatus.ERROR
+            inconsistent_user.is_active = False
+            await db.commit()
+        raise _email_conflict() from exc
     return _user_account_out(user)
 
 
@@ -150,23 +206,38 @@ async def delete_user(input_data: UserIdInput, db: AsyncSession) -> None:
             detail={"code": "CANNOT_DELETE_SELF", "message": "No podés eliminar tu propia cuenta."},
         )
 
-    user = await repo.get_user_by_id(db, input_data.user_id)
-    if user is None:
+    candidate = await repo.get_user_by_id(db, input_data.user_id)
+    if candidate is None:
         raise _not_found()
 
-    if user.role == UserRole.ADMIN and await repo.count_active_admins(db) <= 1:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "LAST_ADMIN",
-                "message": "No se puede eliminar al último administrador activo.",
-            },
-        )
+    if candidate.role == UserRole.ADMIN:
+        active_admins = await repo.lock_active_admins(db)
+        if len(active_admins) <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "LAST_ADMIN",
+                    "message": "No se puede eliminar al último administrador activo.",
+                },
+            )
+        user = next((admin for admin in active_admins if admin.id == input_data.user_id), None)
+        if user is None:
+            raise _not_found()
+    else:
+        user = await repo.get_user_by_id_for_update(db, input_data.user_id)
+        if user is None:
+            raise _not_found()
+
+    user.is_active = False
+    user.identity_status = IdentityStatus.PENDING
+    await db.commit()
 
     if user.auth0_id is not None:
         try:
             await block_auth0_user(user.auth0_id)
         except Auth0Error as exc:
+            user.identity_status = IdentityStatus.ERROR
+            await db.commit()
             raise HTTPException(
                 status_code=exc.status,
                 detail={"code": exc.code, "message": exc.message},
@@ -175,8 +246,15 @@ async def delete_user(input_data: UserIdInput, db: AsyncSession) -> None:
     # deleted_at lo saca de GET /users; is_active=False corta la sesión viva con
     # un 401 en el próximo request (get_current_user chequea is_active).
     user.deleted_at = datetime.now(UTC)
-    user.is_active = False
-    await db.flush()
+    user.identity_status = IdentityStatus.ACTIVE
+    await auth_repo.log_audit_event(
+        db,
+        AuditEventType.USER_DELETED,
+        user_id=input_data.requesting_user.id,
+        ip_address=input_data.ip,
+        metadata={"target_user_id": str(user.id)},
+    )
+    await db.commit()
 
 
 async def send_password_reset(input_data: UserIdInput, db: AsyncSession) -> None:
@@ -190,5 +268,6 @@ async def send_password_reset(input_data: UserIdInput, db: AsyncSession) -> None
         AuditEventType.PASSWORD_RESET_REQUESTED,
         user_id=input_data.requesting_user.id,
         ip_address=input_data.ip,
-        metadata={"target_user_id": str(user.id), "email": user.email},
+        metadata={"target_user_id": str(user.id)},
     )
+    await db.commit()

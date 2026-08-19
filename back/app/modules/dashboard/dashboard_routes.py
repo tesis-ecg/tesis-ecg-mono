@@ -12,6 +12,8 @@ from app.modules.dashboard.dashboard_schemas import (
     DashboardAlertsInput,
     DashboardKpisInput,
     DashboardKpisOut,
+    DashboardOverviewInput,
+    DashboardOverviewOut,
     DeviceWatchdogInput,
     DeviceWatchdogOut,
     RunningStudiesInput,
@@ -19,6 +21,21 @@ from app.modules.dashboard.dashboard_schemas import (
 )
 
 router = APIRouter()
+
+
+@router.get("/overview", response_model=DashboardOverviewOut)
+async def get_overview(
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> DashboardOverviewOut:
+    return await service.get_overview(
+        DashboardOverviewInput(
+            doctor_id=scope.doctor_id,
+            widget_limit=settings.dashboard_widget_limit,
+            alerts_limit=settings.dashboard_alerts_limit,
+        ),
+        db,
+    )
 
 
 @router.get("/kpis", response_model=DashboardKpisOut)

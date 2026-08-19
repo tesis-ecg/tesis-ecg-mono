@@ -15,6 +15,7 @@ export function patientFormToInput(values: PatientFormValues): CreatePatientInpu
     sex: values.sex,
     contactEmail: email === '' ? null : email,
     contactPhone: phone === '' ? null : phone,
+    ...(values.doctorId ? { doctorId: values.doctorId } : {}),
   }
 }
 
@@ -30,6 +31,7 @@ export function patientToFormValues(patient: Patient): PatientFormValues {
     sex: patient.sex,
     contactEmail: patient.contactEmail ?? '',
     contactPhone: patient.contactPhone ?? '',
+    doctorId: undefined,
   }
 }
 

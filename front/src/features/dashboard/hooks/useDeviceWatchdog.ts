@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getDeviceWatchdog } from '../api/dashboardApi'
+import { getDashboardOverview } from '../api/dashboardApi'
 
 export function useDeviceWatchdog() {
   return useQuery({
-    queryKey: ['dashboard', 'device-watchdog'],
-    queryFn: getDeviceWatchdog,
+    queryKey: ['dashboard', 'overview'],
+    queryFn: getDashboardOverview,
+    select: (overview) => overview.deviceWatchdog,
   })
 }

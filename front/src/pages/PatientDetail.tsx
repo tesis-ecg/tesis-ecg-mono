@@ -20,15 +20,6 @@ import { Spinner } from '@/components/Spinner'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AssignHolterDialog } from '@/features/devices/components/AssignHolterDialog'
@@ -186,7 +177,6 @@ export function PatientDetail() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <NewStudyButton />
           <KebabMenu
             label={`Acciones para ${p.fullName}`}
             actions={[
@@ -285,13 +275,6 @@ export function PatientDetail() {
               />
             </div>
           )}
-          <Card className="flex h-64 flex-col items-center justify-center p-6 text-gray-500">
-            <FileSearch className="mb-2 size-8 text-gray-300" aria-hidden />
-            <p className="text-body2">Gráfico de ECG / variabilidad — placeholder</p>
-            <p className="text-body3 text-gray-400">
-              Implementación del visualizador en otro ticket.
-            </p>
-          </Card>
         </TabsContent>
 
         <TabsContent value="estudios">
@@ -379,29 +362,5 @@ function BackToList({ navigate }: { navigate: ReturnType<typeof useNavigate> }) 
       <ArrowLeft className="mr-1 size-4" aria-hidden />
       Volver al listado
     </Button>
-  )
-}
-
-function NewStudyButton() {
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <Button>Iniciar nuevo estudio</Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Iniciar nuevo estudio</DialogTitle>
-          <DialogDescription>
-            Próximamente. La configuración del estudio (duración, dispositivo, parámetros) se
-            implementa en otro ticket.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" type="button">
-            Cerrar
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   )
 }

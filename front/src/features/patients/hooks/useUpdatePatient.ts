@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { updatePatient } from '../api/patientsApi'
 import type { UpdatePatientInput } from '../types'
+import { invalidateClinicalData } from '@/lib/queryKeys'
 
 export function useUpdatePatient() {
   const queryClient = useQueryClient()
@@ -9,7 +10,7 @@ export function useUpdatePatient() {
     mutationFn: ({ id, input }: { id: string; input: UpdatePatientInput }) =>
       updatePatient(id, input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['patients'] })
+      void invalidateClinicalData(queryClient)
     },
   })
 }

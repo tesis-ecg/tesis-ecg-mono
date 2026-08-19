@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: front
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run test:coverage
+      - run: npm run build
+      - run: npm run budget
+      - run: npm audit --audit-level=high
+
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.10-alpine
+        env:
+          POSTGRES_USER: holter
+          POSTGRES_PASSWORD: holter
+          POSTGRES_DB: holter_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U holter -d holter_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: back
+    env:
+      DATABASE_URL: postgresql+asyncpg://holter:holter@localhost:5432/holter_test
+      S3_BUCKET_NAME: holter-test
+      AWS_ACCESS_KEY_ID: test-access
+      AWS_SECRET_ACCESS_KEY: test-secret
+      AUTH0_DOMAIN: tenant.example.auth0.com
+      AUTH0_CLIENT_ID: test-client
+      AUTH0_CLIENT_SECRET: test-secret
+      AUTH0_AUDIENCE: https://api.holter.test
+      AUTH0_MGMT_CLIENT_ID: test-mgmt
+      AUTH0_MGMT_CLIENT_SECRET: test-secret
+      JWT_SECRET: test-secret-with-at-least-thirty-two-characters
+      READINESS_TOKEN: test-readiness-token-with-at-least-thirty-two-characters
+      ENVIRONMENT: test
+      FRONTEND_URL: http://localhost:5173
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev
+      - run: uv run ruff check app tests alembic index.py
+      - run: uv run ruff format --check app tests alembic index.py
+      - run: uv run mypy app
+      - run: uv run python -m app.scripts.export_openapi --check
+      - run: uv run alembic upgrade head
+      - run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=50
+      - run: uvx bandit -q -r app
+      - run: uv export --frozen --no-dev --no-hashes -o /tmp/runtime-requirements.txt
+      - run: uvx pip-audit -r /tmp/runtime-requirements.txt
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: cp back/.env.example back/.env
+      - run: docker compose config --quiet
+      - run: python -m json.tool back/vercel.json > /dev/null
+      - run: docker build -t holter-backend:test back
+      - uses: trufflesecurity/trufflehog@main

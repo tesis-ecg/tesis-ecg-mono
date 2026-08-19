@@ -32,7 +32,10 @@ const SIGNAL_LABEL: Record<HolterSignalQuality, string> = {
 }
 
 export function HolterHealthCard({ health }: HolterHealthCardProps) {
-  const storagePct = Math.round((health.storageUsedMb / health.storageTotalMb) * 100)
+  const storagePct =
+    health.storageUsedMb !== null && health.storageTotalMb
+      ? Math.round((health.storageUsedMb / health.storageTotalMb) * 100)
+      : null
   return (
     <Card className="flex flex-col gap-5 p-6">
       <header className="flex flex-col gap-1">
@@ -42,46 +45,61 @@ export function HolterHealthCard({ health }: HolterHealthCardProps) {
             {health.model}
           </Badge>
         </div>
-        <p className="text-body3 text-gray-600">Firmware v{health.firmwareVersion}</p>
+        <p className="text-body3 text-gray-600">
+          {health.firmwareVersion ? `Firmware v${health.firmwareVersion}` : 'Firmware sin dato'}
+        </p>
+        {!health.telemetryAvailable ? (
+          <p className="text-body3 text-gray-500">Sin telemetría operativa disponible.</p>
+        ) : null}
       </header>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Row
           icon={Battery}
           label="Batería"
-          value={`${health.batteryPercent}%`}
+          value={health.batteryPercent === null ? 'Sin dato' : `${health.batteryPercent}%`}
           badge={
-            <Badge variant={batteryVariant(health.batteryPercent)}>
-              {health.batteryPercent >= 50
-                ? 'OK'
-                : health.batteryPercent >= 20
-                  ? 'Baja'
-                  : 'Crítica'}
-            </Badge>
+            health.batteryPercent === null ? undefined : (
+              <Badge variant={batteryVariant(health.batteryPercent)}>
+                {health.batteryPercent >= 50
+                  ? 'OK'
+                  : health.batteryPercent >= 20
+                    ? 'Baja'
+                    : 'Crítica'}
+              </Badge>
+            )
           }
         />
         <Row
           icon={Radio}
-          label="Señal celular"
-          value={`${health.signalDbm} dBm`}
+          label="Señal WiFi"
+          value={health.signalDbm === null ? 'Sin dato' : `${health.signalDbm} dBm`}
           badge={
-            <Badge variant={signalVariant(health.signalQuality)}>
-              {SIGNAL_LABEL[health.signalQuality]}
-            </Badge>
+            health.signalQuality ? (
+              <Badge variant={signalVariant(health.signalQuality)}>
+                {SIGNAL_LABEL[health.signalQuality]}
+              </Badge>
+            ) : undefined
           }
         />
         <Row icon={Cpu} label="Último ping" value={formatRelativeTime(health.lastPingAt)} />
         <Row
           icon={Upload}
           label="Próximo envío"
-          value={formatDateTime(health.nextScheduledUploadAt)}
-          hint={`${health.uploadsToday} envíos hoy`}
+          value={
+            health.nextScheduledUploadAt ? formatDateTime(health.nextScheduledUploadAt) : 'Sin dato'
+          }
+          hint={health.uploadsToday === null ? undefined : `${health.uploadsToday} envíos hoy`}
         />
         <Row
           icon={HardDrive}
           label="Almacenamiento"
-          value={`${health.storageUsedMb} / ${health.storageTotalMb} MB`}
-          hint={`${storagePct}% usado`}
+          value={
+            health.storageUsedMb === null || health.storageTotalMb === null
+              ? 'Sin dato'
+              : `${health.storageUsedMb} / ${health.storageTotalMb} MB`
+          }
+          hint={storagePct === null ? undefined : `${storagePct}% usado`}
         />
       </div>
     </Card>
