@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getRunningStudies } from '../api/dashboardApi'
+import { getDashboardOverview } from '../api/dashboardApi'
 
 export function useRunningStudies() {
   return useQuery({
-    queryKey: ['dashboard', 'running-studies'],
-    queryFn: getRunningStudies,
+    queryKey: ['dashboard', 'overview'],
+    queryFn: getDashboardOverview,
+    select: (overview) => overview.runningStudies,
   })
 }

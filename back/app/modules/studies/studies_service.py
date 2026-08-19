@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Any, cast
 
@@ -8,20 +8,27 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
+from app.modules.auth import auth_repository as auth_repo
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.studies_schemas import (
     PatientStudiesInput,
     PatientStudiesResponse,
     PatientStudyOut,
     StudyDetailOut,
+    StudyEcgLevelOut,
+    StudyEcgManifestOut,
+    StudyEcgObjectOut,
     StudyEcgOut,
     StudyIdInput,
     StudyListInput,
     StudyListResponse,
 )
+
+MAX_LEGACY_ECG_BYTES = 5 * 1024 * 1024
 
 
 def _duration_ms(study: Study) -> int:
@@ -105,7 +112,7 @@ def _build_presigned_ecg_url(key: str) -> str:
         _get_s3_client().generate_presigned_url(
             "get_object",
             Params={"Bucket": settings.s3_bucket_name, "Key": key},
-            ExpiresIn=3600,
+            ExpiresIn=settings.s3_presign_expire_seconds,
         ),
     )
 
@@ -163,10 +170,77 @@ async def get_study_ecg(input_data: StudyIdInput, db: AsyncSession) -> StudyEcgO
             status_code=404,
             detail={"code": "ECG_NOT_FOUND", "message": "ECG no disponible para este estudio."},
         )
+    byte_length = study.ecg_byte_length or study.samples_count * 4
+    if byte_length > MAX_LEGACY_ECG_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "ECG_LEGACY_TOO_LARGE",
+                "message": "Este ECG requiere el protocolo de manifest.",
+            },
+        )
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.s3_presign_expire_seconds)
+    if input_data.actor_id is not None:
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.ECG_ACCESSED,
+            user_id=input_data.actor_id,
+            metadata={"target_study_id": str(study.id), "protocol": "legacy"},
+        )
+        await db.commit()
     return StudyEcgOut(
         url=_build_presigned_ecg_url(study.ecg_s3_key),
         sampleRate=study.sample_rate,
         startTimestamp=int(study.started_at.timestamp() * 1000),
         durationMs=_duration_ms(study),
         sampleCount=study.samples_count,
+        expiresAt=expires_at,
+    )
+
+
+async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> StudyEcgManifestOut:
+    result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
+    if result is None:
+        raise _not_found()
+    study, _, _, _ = result
+    if study.ecg_s3_key is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ECG_NOT_FOUND", "message": "ECG no disponible para este estudio."},
+        )
+
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.s3_presign_expire_seconds)
+    byte_length = study.ecg_byte_length or study.samples_count * 4
+    levels = [
+        StudyEcgLevelOut(
+            url=_build_presigned_ecg_url(str(level["key"])),
+            expiresAt=expires_at,
+            byteLength=int(level["byteLength"]),
+            sha256=str(level["sha256"]),
+            samplesPerBucket=int(level["samplesPerBucket"]),
+            pointCount=int(level["pointCount"]),
+        )
+        for level in study.ecg_pyramid_levels
+    ]
+    if input_data.actor_id is not None:
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.ECG_ACCESSED,
+            user_id=input_data.actor_id,
+            metadata={"target_study_id": str(study.id), "protocol": "manifest-v1"},
+        )
+        await db.commit()
+    return StudyEcgManifestOut(
+        encoding=study.ecg_encoding,
+        sampleRate=study.sample_rate,
+        sampleCount=study.samples_count,
+        startTimestamp=int(study.started_at.timestamp() * 1000),
+        durationMs=_duration_ms(study),
+        raw=StudyEcgObjectOut(
+            url=_build_presigned_ecg_url(study.ecg_s3_key),
+            expiresAt=expires_at,
+            byteLength=byte_length,
+            sha256=study.ecg_sha256,
+        ),
+        levels=levels,
     )

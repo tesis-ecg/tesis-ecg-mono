@@ -32,6 +32,7 @@ export interface CreatePatientInput {
   sex: PatientSex
   contactEmail: string | null
   contactPhone: string | null
+  doctorId?: string
 }
 
 export type UpdatePatientInput = Partial<CreatePatientInput>
@@ -43,6 +44,7 @@ export interface PatientListParams {
   offset?: number
   sort?: 'name' | 'lastDataReceivedAt'
   order?: 'asc' | 'desc'
+  hasDevice?: boolean
 }
 
 export interface PatientListResponse {

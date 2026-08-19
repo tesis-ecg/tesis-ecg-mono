@@ -2,12 +2,15 @@
 
 import hashlib
 import secrets
-from datetime import timedelta
+import uuid
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device, DeviceStatus
+from app.modules.auth import auth_repository as auth_repo
 from app.modules.devices import devices_repository as repo
 from app.modules.devices.devices_schemas import (
     AssignDoctorInput,
@@ -21,13 +24,6 @@ from app.modules.devices.devices_schemas import (
     HolterOut,
     HolterUpdateInput,
 )
-
-SD_TOTAL_MB = 128
-
-
-def signal_quality_for(device: Device) -> str | None:
-    """Calidad de señal derivada. TODO: el device no reporta RSSI todavía."""
-    return None if device.last_seen_at is None else "good"
 
 
 def _holter_out(device: Device, doctor_name: str | None) -> HolterOut:
@@ -53,10 +49,7 @@ def _not_found() -> HTTPException:
 
 
 def _not_owned() -> HTTPException:
-    return HTTPException(
-        status_code=403,
-        detail={"code": "DEVICE_NOT_OWNED", "message": "Este Holter no está asignado a tu cuenta."},
-    )
+    return _not_found()
 
 
 def _in_use() -> HTTPException:
@@ -79,20 +72,22 @@ def holter_health_out(device: Device) -> HolterHealthOut:
                 "message": "Este Holter no se ha conectado todavía.",
             },
         )
-    free_mb = device.last_sd_free_mb if device.last_sd_free_mb is not None else SD_TOTAL_MB
     return HolterHealthOut(
         deviceId=device.id,
         serial=device.serial_number,
         model=device.model,
-        firmwareVersion=device.firmware_version or "unknown",
-        batteryPercent=device.last_battery_pct if device.last_battery_pct is not None else 0,
-        signalDbm=0,
-        signalQuality=signal_quality_for(device) or "none",
+        firmwareVersion=device.firmware_version,
+        telemetryAvailable=any(
+            value is not None for value in (device.last_battery_pct, device.last_sd_free_mb)
+        ),
+        batteryPercent=device.last_battery_pct,
+        signalDbm=None,
+        signalQuality=None,
         lastPingAt=device.last_seen_at,
-        nextScheduledUploadAt=device.last_seen_at + timedelta(hours=1),
-        uploadsToday=0,
-        storageUsedMb=max(SD_TOTAL_MB - free_mb, 0),
-        storageTotalMb=SD_TOTAL_MB,
+        nextScheduledUploadAt=None,
+        uploadsToday=None,
+        storageUsedMb=None,
+        storageTotalMb=None,
     )
 
 
@@ -133,19 +128,28 @@ async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> Holt
 
     api_key = secrets.token_urlsafe(32)
     api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-    device = await repo.create_device(
-        db,
-        serial=input_data.data.serial,
-        model=input_data.data.model,
-        firmware_version=input_data.data.firmwareVersion,
-        api_key_hash=api_key_hash,
-    )
+    try:
+        device = await repo.create_device(
+            db,
+            serial=input_data.data.serial.strip(),
+            model=input_data.data.model.strip(),
+            firmware_version=input_data.data.firmwareVersion,
+            api_key_hash=api_key_hash,
+        )
+        await _audit_device(db, AuditEventType.DEVICE_CREATED, input_data.actor_id, device.id)
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "SERIAL_CONFLICT", "message": "Ya existe un Holter con ese serial."},
+        ) from exc
     out = _holter_out(device, None)
     return HolterCreateOut(**out.model_dump(), apiKey=api_key)
 
 
 async def update_holter(input_data: HolterUpdateInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
 
@@ -174,22 +178,25 @@ async def update_holter(input_data: HolterUpdateInput, db: AsyncSession) -> Holt
     if "status" in update_data:
         device.status = update_data["status"]
 
-    await db.flush()
+    await _audit_device(db, AuditEventType.DEVICE_UPDATED, input_data.actor_id, device.id)
+    await db.commit()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
     return _holter_out(device, doctor_name)
 
 
 async def delete_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     await repo.retire_device(db, device)
+    await _audit_device(db, AuditEventType.DEVICE_RETIRED, input_data.actor_id, device.id)
+    await db.commit()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
     return _holter_out(device, doctor_name)
 
 
 async def assign_holter_doctor(input_data: AssignDoctorInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     if device.patient_id is not None:
@@ -206,21 +213,37 @@ async def assign_holter_doctor(input_data: AssignDoctorInput, db: AsyncSession) 
         )
 
     await repo.assign_doctor(db, device, input_data.data.doctorId)
+    await _audit_device(
+        db,
+        AuditEventType.DEVICE_ASSIGNED,
+        input_data.actor_id,
+        device.id,
+        {"doctor_id": str(input_data.data.doctorId)},
+    )
+    await db.commit()
     return _holter_out(device, doctor_name)
 
 
 async def unassign_holter_doctor(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     if device.patient_id is not None:
         raise _in_use()
     await repo.unassign_doctor(db, device)
+    await _audit_device(
+        db,
+        AuditEventType.DEVICE_ASSIGNED,
+        input_data.actor_id,
+        device.id,
+        {"doctor_id": None},
+    )
+    await db.commit()
     return _holter_out(device, None)
 
 
 async def assign_holter(input_data: AssignHolterInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     if input_data.doctor_id is not None and device.doctor_id != input_data.doctor_id:
@@ -234,13 +257,15 @@ async def assign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Holt
             },
         )
 
-    patient = await repo.get_patient_for_doctor(db, input_data.patient_id, input_data.doctor_id)
+    patient = await repo.get_patient_for_doctor_for_update(
+        db, input_data.patient_id, input_data.doctor_id
+    )
     if patient is None:
         raise HTTPException(
             status_code=404,
             detail={"code": "PATIENT_NOT_FOUND", "message": "Paciente no encontrado."},
         )
-    existing = await repo.get_assigned_device_for_patient(db, patient.id)
+    existing = await repo.get_assigned_device_for_patient_for_update(db, patient.id)
     if existing is not None:
         raise HTTPException(
             status_code=409,
@@ -250,13 +275,31 @@ async def assign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Holt
             },
         )
 
-    await repo.assign_device(db, device, patient)
+    try:
+        await repo.assign_device(db, device, patient)
+        await _audit_device(
+            db,
+            AuditEventType.DEVICE_ASSIGNED,
+            input_data.actor_id,
+            device.id,
+            {"patient_id": str(patient.id)},
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PATIENT_ALREADY_ASSIGNED",
+                "message": "El paciente ya tiene un Holter asignado.",
+            },
+        ) from exc
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
     return _holter_out(device, doctor_name)
 
 
 async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     if input_data.doctor_id is not None and device.doctor_id != input_data.doctor_id:
@@ -270,12 +313,20 @@ async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> Holter
             },
         )
     await repo.unassign_device(db, device)
+    await _audit_device(
+        db,
+        AuditEventType.DEVICE_ASSIGNED,
+        input_data.actor_id,
+        device.id,
+        {"patient_id": None},
+    )
+    await db.commit()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
     return _holter_out(device, doctor_name)
 
 
 async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> HolterOut:
-    device = await repo.get_device_by_id(db, input_data.device_id)
+    device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     if input_data.doctor_id is not None and device.doctor_id != input_data.doctor_id:
@@ -289,13 +340,15 @@ async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Ho
             },
         )
 
-    patient = await repo.get_patient_for_doctor(db, input_data.patient_id, input_data.doctor_id)
+    patient = await repo.get_patient_for_doctor_for_update(
+        db, input_data.patient_id, input_data.doctor_id
+    )
     if patient is None:
         raise HTTPException(
             status_code=404,
             detail={"code": "PATIENT_NOT_FOUND", "message": "Paciente no encontrado."},
         )
-    existing = await repo.get_assigned_device_for_patient(db, patient.id)
+    existing = await repo.get_assigned_device_for_patient_for_update(db, patient.id)
     if existing is not None and existing.id != device.id:
         raise HTTPException(
             status_code=409,
@@ -305,7 +358,25 @@ async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Ho
             },
         )
 
-    await repo.assign_device(db, device, patient)
+    try:
+        await repo.assign_device(db, device, patient)
+        await _audit_device(
+            db,
+            AuditEventType.DEVICE_ASSIGNED,
+            input_data.actor_id,
+            device.id,
+            {"patient_id": str(patient.id)},
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PATIENT_ALREADY_ASSIGNED",
+                "message": "El paciente destino ya tiene un Holter asignado.",
+            },
+        ) from exc
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
     return _holter_out(device, doctor_name)
 
@@ -317,3 +388,18 @@ async def get_holter_health(input_data: HolterIdInput, db: AsyncSession) -> Holt
     if input_data.doctor_id is not None and device.doctor_id != input_data.doctor_id:
         raise _not_owned()
     return holter_health_out(device)
+
+
+async def _audit_device(
+    db: AsyncSession,
+    event_type: AuditEventType,
+    actor_id: uuid.UUID | None,
+    device_id: uuid.UUID,
+    metadata: dict[str, str | None] | None = None,
+) -> None:
+    if actor_id is None:
+        return
+    event_metadata: dict[str, object] = {"target_device_id": str(device_id)}
+    if metadata:
+        event_metadata.update(metadata)
+    await auth_repo.log_audit_event(db, event_type, user_id=actor_id, metadata=event_metadata)

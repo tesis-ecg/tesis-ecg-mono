@@ -1,10 +1,11 @@
 """Patients schemas."""
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.db.models.patient import PatientSex, PatientStudyStatus
 from app.db.models.user import User
@@ -66,6 +67,19 @@ class PatientCreateRequest(CamelModel):
     sex: PatientSex
     contactEmail: str | None = Field(default=None, max_length=320)
     contactPhone: str | None = Field(default=None, max_length=50)
+    doctorId: uuid.UUID | None = None
+
+    @field_validator("birthDate")
+    @classmethod
+    def validate_birth_date(cls, value: date) -> date:
+        if value > date.today():
+            raise ValueError("La fecha de nacimiento no puede ser futura")
+        return value
+
+    @field_validator("contactEmail")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        return _normalize_optional_email(value)
 
 
 class PatientUpdateRequest(CamelModel):
@@ -75,6 +89,27 @@ class PatientUpdateRequest(CamelModel):
     sex: PatientSex | None = None
     contactEmail: str | None = Field(default=None, max_length=320)
     contactPhone: str | None = Field(default=None, max_length=50)
+
+    @field_validator("birthDate")
+    @classmethod
+    def validate_birth_date(cls, value: date | None) -> date | None:
+        if value is not None and value > date.today():
+            raise ValueError("La fecha de nacimiento no puede ser futura")
+        return value
+
+    @field_validator("contactEmail")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        return _normalize_optional_email(value)
+
+
+def _normalize_optional_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        raise ValueError("Email inválido")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -103,6 +138,7 @@ class PatientListInput:
     offset: int
     sort: str
     order: str
+    has_device: bool | None
 
 
 @dataclass(frozen=True)
@@ -117,12 +153,14 @@ class PatientUpdateInput:
     doctor_id: uuid.UUID | None
     patient_id: uuid.UUID
     data: PatientUpdateRequest
+    actor_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
 class PatientIdInput:
     doctor_id: uuid.UUID | None
     patient_id: uuid.UUID
+    actor_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)

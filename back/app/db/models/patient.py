@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -33,6 +33,13 @@ class PatientStudyStatus(enum.StrEnum):
 
 class Patient(TimestampMixin, Base):
     __tablename__ = "patient"
+    __table_args__ = (
+        CheckConstraint(
+            "date_of_birth IS NULL OR date_of_birth <= created_at::date",
+            name="ck_patient_birth_not_future",
+        ),
+        Index("ix_patient_doctor_active_status", "doctor_id", "deleted_at", "study_status"),
+    )
 
     doctor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("doctor.id"), nullable=False

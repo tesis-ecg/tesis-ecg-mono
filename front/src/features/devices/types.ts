@@ -77,13 +77,14 @@ export interface HolterHealth {
   deviceId: string
   serial: string
   model: string
-  firmwareVersion: string
-  batteryPercent: number
-  signalDbm: number
-  signalQuality: HolterSignalQuality
+  firmwareVersion: string | null
+  telemetryAvailable: boolean
+  batteryPercent: number | null
+  signalDbm: number | null
+  signalQuality: HolterSignalQuality | null
   lastPingAt: string
-  nextScheduledUploadAt: string
-  uploadsToday: number
-  storageUsedMb: number
-  storageTotalMb: number
+  nextScheduledUploadAt: string | null
+  uploadsToday: number | null
+  storageUsedMb: number | null
+  storageTotalMb: number | null
 }

@@ -21,6 +21,8 @@ export interface ApiError {
   code: ApiErrorCode
   message: string
   fields?: Record<string, string>
+  serverCode?: string
+  requestId?: string
   cause?: unknown
 }
 
@@ -38,6 +40,8 @@ export function createApiError(
     code: partial.code,
     message: partial.message,
     fields: partial.fields,
+    serverCode: partial.serverCode,
+    requestId: partial.requestId,
     cause: partial.cause,
   }
 }
@@ -92,7 +96,13 @@ export function mapAxiosError(err: AxiosError): ApiError {
 
   const status = err.response.status
   const body = err.response.data as
-    | { message?: string; detail?: string; fields?: Record<string, string> }
+    | {
+        code?: string
+        message?: string
+        detail?: string
+        fields?: Record<string, string>
+        requestId?: string
+      }
     | undefined
 
   const code: ApiErrorCode = STATUS_TO_CODE[status] ?? (status >= 500 ? 'SERVER' : 'UNKNOWN')
@@ -101,7 +111,15 @@ export function mapAxiosError(err: AxiosError): ApiError {
     (typeof body?.detail === 'string' ? body.detail : undefined) ??
     FRIENDLY_MESSAGES[code]
 
-  return createApiError({ status, code, message, fields: body?.fields, cause: err })
+  return createApiError({
+    status,
+    code,
+    message,
+    fields: body?.fields,
+    serverCode: body?.code,
+    requestId: body?.requestId,
+    cause: err,
+  })
 }
 
 export function unwrapError(err: unknown): string {

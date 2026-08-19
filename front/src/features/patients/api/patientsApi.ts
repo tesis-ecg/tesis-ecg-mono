@@ -27,10 +27,7 @@ export async function getPatientStudies(id: string): Promise<PatientStudiesRespo
   return data
 }
 
-export async function getPatientSummary(
-  id: string,
-  windowHours?: number,
-): Promise<PatientSummary> {
+export async function getPatientSummary(id: string, windowHours?: number): Promise<PatientSummary> {
   const params = windowHours === undefined ? undefined : { windowHours }
   const { data } = await api.get<PatientSummary>(`/patients/${id}/summary`, { params })
   return data

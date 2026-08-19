@@ -1,9 +1,7 @@
 import axios, { AxiosError } from 'axios'
 
 import { mapAxiosError } from './apiError'
-import { attachRetry } from './apiRetry'
-
-const baseURL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+const baseURL = '/api'
 
 interface AuthHandler {
   onUnauthorized: () => void
@@ -25,10 +23,7 @@ export const api = axios.create({
   baseURL,
   timeout: 15000,
   withCredentials: true,
-  headers: { 'Content-Type': 'application/json' },
 })
-
-attachRetry(api)
 
 api.interceptors.response.use(
   (response) => response,

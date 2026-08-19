@@ -3,8 +3,7 @@ import { QueryClient } from '@tanstack/react-query'
 /**
  * QueryClient global de la app. Defaults conservadores:
  * - `staleTime` 30s: balance entre frescura y evitar refetch agresivo
- * - `retry: 1`: el cliente HTTP (apiRetry.ts) ya retenta GETs sobre 5xx y network;
- *   acá un sólo reintento adicional cubre el caso de race conditions del cache.
+ * - `retry: 1`: una solicitud idempotente tiene como máximo dos intentos totales.
  *   Excepción: errores 4xx (`UNAUTHORIZED`, `NOT_FOUND`, `VALIDATION`) no se reintentan.
  * - `refetchOnWindowFocus: false`: evita ruido en una app de dashboard que tiene
  *   muchos tabs abiertos. Para datos en vivo (señal del dispositivo, etc.) usar
@@ -29,6 +28,8 @@ export const queryClient = new QueryClient({
         }
         return failureCount < 1
       },
+      retryDelay: (attempt) => Math.min(500 * 2 ** attempt + Math.random() * 250, 4000),
     },
+    mutations: { retry: false },
   },
 })

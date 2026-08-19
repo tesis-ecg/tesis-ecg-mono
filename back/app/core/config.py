@@ -1,5 +1,15 @@
-from pydantic import Field
+from enum import StrEnum
+from typing import Literal
+
+from pydantic import AnyHttpUrl, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Environment(StrEnum):
+    DEVELOPMENT = "development"
+    TEST = "test"
+    PREVIEW = "preview"
+    PRODUCTION = "production"
 
 
 class Settings(BaseSettings):
@@ -17,7 +27,7 @@ class Settings(BaseSettings):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_region: str = "us-east-1"
-    environment: str = "development"
+    environment: Environment = Environment.DEVELOPMENT
 
     # Auth0
     auth0_domain: str
@@ -29,11 +39,16 @@ class Settings(BaseSettings):
     auth0_connection: str = "Username-Password-Authentication"
 
     # Session JWT (our own, not Auth0's)
-    jwt_secret: str
-    jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 60
+    jwt_secret: str = Field(min_length=32)
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    jwt_expire_minutes: int = Field(default=60, ge=5, le=1440)
+    jwt_issuer: str = "holter-api"
+    jwt_audience: str = "holter-dashboard"
+    auth_rate_limit_secret: str | None = Field(default=None, min_length=32)
+    readiness_token: str | None = Field(default=None, min_length=32)
 
-    frontend_url: str = "http://localhost:5173"
+    frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:5173")
+    s3_presign_expire_seconds: int = Field(default=600, ge=60, le=3600)
 
     # Dashboard / watchdog
     dashboard_stale_hours: int = 10
@@ -43,6 +58,31 @@ class Settings(BaseSettings):
     # pasaría sin chistar cuando el FE llama sin query params.
     dashboard_widget_limit: int = Field(default=6, ge=1, le=50)
     dashboard_alerts_limit: int = Field(default=10, ge=1, le=50)
+
+    @property
+    def is_secure_environment(self) -> bool:
+        return self.environment in {Environment.PREVIEW, Environment.PRODUCTION}
+
+    @property
+    def rate_limit_secret(self) -> str:
+        return self.auth_rate_limit_secret or self.jwt_secret
+
+    @model_validator(mode="after")
+    def validate_production_settings(self) -> "Settings":
+        if self.is_secure_environment and self.frontend_url.scheme != "https":
+            raise ValueError("FRONTEND_URL debe usar HTTPS fuera de development/test")
+        if self.environment == Environment.PRODUCTION and self.s3_endpoint_url.startswith(
+            "http://"
+        ):
+            raise ValueError("S3_ENDPOINT_URL no puede usar HTTP en producción")
+        if self.is_secure_environment and (
+            len(set(self.jwt_secret)) < 8
+            or self.jwt_secret.lower() in {"change-me", "changeme", "secret"}
+        ):
+            raise ValueError("JWT_SECRET es demasiado predecible para preview/producción")
+        if self.is_secure_environment and not self.readiness_token:
+            raise ValueError("READINESS_TOKEN es obligatorio en preview/producción")
+        return self
 
 
 # `BaseSettings` values are provided from environment variables at runtime.

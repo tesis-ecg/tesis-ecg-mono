@@ -4,7 +4,7 @@ import enum
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Enum, Float, ForeignKey
+from sqlalchemy import CheckConstraint, Enum, Float, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,6 +34,17 @@ class ECGEventSeverity(enum.StrEnum):
 
 class ECGEvent(TimestampMixin, Base):
     __tablename__ = "ecg_event"
+    __table_args__ = (
+        CheckConstraint("timestamp_in_recording >= 0", name="ck_ecg_event_timestamp"),
+        CheckConstraint(
+            "duration_seconds IS NULL OR duration_seconds >= 0",
+            name="ck_ecg_event_duration",
+        ),
+        CheckConstraint(
+            "confidence_score IS NULL OR confidence_score BETWEEN 0 AND 1",
+            name="ck_ecg_event_confidence",
+        ),
+    )
 
     batch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("ecg_batch.id"), nullable=False

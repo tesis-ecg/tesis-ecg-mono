@@ -7,6 +7,7 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
+from app.core.jwt_codec import JwtValidationError, decode_rs256, unverified_header
 
 
 class Auth0Error(Exception):
@@ -60,9 +61,38 @@ def _mgmt_user_url(auth0_id: str) -> str:
     return f"https://{settings.auth0_domain}/api/v2/users/{quote(auth0_id, safe='')}"
 
 
-async def authenticate_user(email: str, password: str) -> str:
+class _JwksCache:
+    def __init__(self) -> None:
+        self.keys: list[dict[str, object]] = []
+        self.expires_at: datetime = datetime.min.replace(tzinfo=UTC)
+        self.lock = asyncio.Lock()
+
+
+_jwks_cache = _JwksCache()
+
+
+async def _get_jwks() -> list[dict[str, object]]:
+    async with _jwks_cache.lock:
+        if _jwks_cache.keys and datetime.now(UTC) < _jwks_cache.expires_at:
+            return _jwks_cache.keys
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://{settings.auth0_domain}/.well-known/jwks.json", timeout=10
+            )
+        if response.status_code != 200:
+            raise Auth0Error("AUTH0_JWKS_ERROR", "No se pudo validar la identidad.", 502)
+        keys = response.json().get("keys", [])
+        if not isinstance(keys, list):
+            raise Auth0Error("AUTH0_JWKS_ERROR", "JWKS inválido.", 502)
+        _jwks_cache.keys = [key for key in keys if isinstance(key, dict)]
+        _jwks_cache.expires_at = datetime.now(UTC) + timedelta(hours=1)
+        return _jwks_cache.keys
+
+
+async def authenticate_user(email: str, password: str, client_ip: str | None = None) -> str:
     """ROPG login → returns auth0_id (sub claim). Raises Auth0Error on failure."""
     async with httpx.AsyncClient() as client:
+        headers = {"auth0-forwarded-for": client_ip} if client_ip else None
         resp = await client.post(
             f"https://{settings.auth0_domain}/oauth/token",
             json={
@@ -75,15 +105,34 @@ async def authenticate_user(email: str, password: str) -> str:
                 "client_secret": settings.auth0_client_secret,
                 "connection": settings.auth0_connection,
             },
+            headers=headers,
             timeout=15,
         )
 
     if resp.status_code == 200:
-        # Decode without verification — we trust our own Auth0 tenant
-        import jose.jwt as _jwt
-
-        claims = _jwt.get_unverified_claims(resp.json()["access_token"])
-        return str(claims["sub"])
+        access_token = str(resp.json()["access_token"])
+        try:
+            header = unverified_header(access_token)
+            kid = header.get("kid")
+            keys = await _get_jwks()
+            signing_key = next((key for key in keys if key.get("kid") == kid), None)
+            if signing_key is None:
+                _jwks_cache.expires_at = datetime.min.replace(tzinfo=UTC)
+                keys = await _get_jwks()
+                signing_key = next((key for key in keys if key.get("kid") == kid), None)
+            if signing_key is None:
+                raise Auth0Error("AUTH0_TOKEN_INVALID", "Clave de firma desconocida.", 502)
+            claims = decode_rs256(
+                access_token,
+                signing_key,
+                audience=settings.auth0_audience,
+                issuer=f"https://{settings.auth0_domain}/",
+            )
+            return str(claims["sub"])
+        except (JwtValidationError, KeyError) as exc:
+            raise Auth0Error(
+                "AUTH0_TOKEN_INVALID", "Auth0 devolvió un token inválido.", 502
+            ) from exc
 
     body = resp.json()
     error_code = body.get("error", "")

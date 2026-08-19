@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { getDashboardKpis } from '../api/dashboardApi'
+import { getDashboardOverview } from '../api/dashboardApi'
 
 export function useDashboardKpis() {
   return useQuery({
-    queryKey: ['dashboard', 'kpis'],
-    queryFn: getDashboardKpis,
+    queryKey: ['dashboard', 'overview'],
+    queryFn: getDashboardOverview,
+    select: (overview) => overview.kpis,
   })
 }

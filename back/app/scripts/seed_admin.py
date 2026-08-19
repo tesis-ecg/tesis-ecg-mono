@@ -4,8 +4,7 @@ El login pasa por Auth0 (ROPG), así que para poder iniciar sesión el usuario
 debe existir en Auth0. De ahí los dos modos:
 
   • Promover (default): toma una cuenta que ya existe en la DB y le pone rol
-    admin. Lo más simple para probar: logueate una vez con tu cuenta de Auth0
-    (el backend la crea automáticamente como `medico`) y después corré esto.
+    admin. Las cuentas nunca se crean automáticamente durante el login.
 
   • Crear (--create): crea la cuenta en Auth0 (requiere credenciales de
     Management API en .env) y además la fila en la DB con rol admin y el
@@ -49,7 +48,7 @@ async def _run(email: str, name: str, password: str | None, create: bool) -> Non
             raise SystemExit(
                 f"No existe un usuario con email {email}.\n"
                 "Opciones:\n"
-                "  • Logueate una vez con esa cuenta (se crea como medico) y reintentá; o\n"
+                "  • Creala desde la administración de usuarios; o\n"
                 "  • Pasá --create --password '...' para crearla desde cero (también en Auth0)."
             )
 

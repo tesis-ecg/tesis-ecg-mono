@@ -12,6 +12,8 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { unwrapError } from '@/lib/api'
+import { useAuth } from '@/features/auth/AuthContext'
+import { useDoctors } from '@/features/devices/hooks/useDoctors'
 
 import { useCreatePatient } from '../hooks/useCreatePatient'
 import type { PatientFormValues } from '../patientSchema'
@@ -21,8 +23,15 @@ import { PatientForm } from './PatientForm'
 export function NewPatientDialog() {
   const [open, setOpen] = useState(false)
   const createPatient = useCreatePatient()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
+  const doctors = useDoctors(isAdmin && open)
 
   const handleSubmit = (values: PatientFormValues) => {
+    if (isAdmin && !values.doctorId) {
+      toast.error('Seleccioná el médico responsable del paciente.')
+      return
+    }
     createPatient.mutate(patientFormToInput(values), {
       onSuccess: (patient) => {
         toast.success(`Paciente ${patient.fullName} creado.`)
@@ -53,6 +62,8 @@ export function NewPatientDialog() {
           onSubmit={handleSubmit}
           isSubmitting={createPatient.isPending}
           submitLabel="Crear paciente"
+          requireDoctor={isAdmin}
+          doctorOptions={doctors.data ?? []}
         />
       </DialogContent>
     </Dialog>

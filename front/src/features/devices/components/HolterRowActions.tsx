@@ -68,7 +68,7 @@ export function HolterRowActions({ holter }: { holter: Holter }) {
         ]
       : []
 
-  // Otros roles (investigador / asistente): solo lectura, sin menú de acciones.
+  // Cualquier rol no reconocido queda sin acciones (fail-closed).
   if (actions.length === 0) return null
 
   return (

@@ -30,6 +30,20 @@ async def get_by_user_id(db: AsyncSession, user_id: uuid.UUID) -> Doctor | None:
     return result.scalar_one_or_none()
 
 
+async def get_active_by_id(db: AsyncSession, doctor_id: uuid.UUID) -> Doctor | None:
+    result = await db.execute(
+        select(Doctor)
+        .join(User, Doctor.user_id == User.id)
+        .where(
+            Doctor.id == doctor_id,
+            Doctor.deleted_at.is_(None),
+            User.deleted_at.is_(None),
+            User.is_active.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def create(db: AsyncSession, user_id: uuid.UUID) -> Doctor:
     doctor = Doctor(user_id=user_id)
     db.add(doctor)

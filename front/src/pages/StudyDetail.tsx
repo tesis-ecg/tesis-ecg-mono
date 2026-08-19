@@ -23,7 +23,12 @@ export function StudyDetail() {
   const navigate = useNavigate()
 
   const studyQ = useStudy(id)
-  const ecgQ = useEcgSignal(id)
+  const studyHasSignal =
+    studyQ.data !== undefined &&
+    studyQ.data.durationMs > 0 &&
+    studyQ.data.status !== 'scheduled' &&
+    studyQ.data.status !== 'cancelled'
+  const ecgQ = useEcgSignal(studyHasSignal ? id : undefined)
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
@@ -122,7 +127,17 @@ export function StudyDetail() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
         <Card className="flex flex-col gap-3 p-4 lg:col-span-3">
-          {ecgQ.isLoading ? (
+          {!studyHasSignal ? (
+            <EmptyState
+              icon={FileSearch}
+              title={study.status === 'scheduled' ? 'Estudio todavía no iniciado' : 'Sin señal ECG'}
+              description={
+                study.status === 'scheduled'
+                  ? 'La señal estará disponible cuando comience el estudio y el Holter envíe sus primeras muestras.'
+                  : 'Este estudio no contiene muestras de ECG para visualizar.'
+              }
+            />
+          ) : ecgQ.isLoading ? (
             <div className="flex h-[480px] items-center justify-center">
               <Spinner label="Cargando señal ECG…" />
             </div>

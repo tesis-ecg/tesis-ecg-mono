@@ -18,11 +18,12 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { useAuth } from '@/features/auth/AuthContext'
+import { safeInternalPath } from '@/features/auth/safeRedirect'
 import { cn } from '@/lib/utils'
 
 const schema = z.object({
-  email: z.string().min(1, 'Ingresá tu email').email('Email inválido'),
-  password: z.string().min(1, 'Ingresá tu contraseña'),
+  email: z.string().trim().min(1, 'Ingresá tu email').email('Email inválido').max(320),
+  password: z.string().min(1, 'Ingresá tu contraseña').max(128),
 })
 
 type LoginFormValues = z.infer<typeof schema>
@@ -56,8 +57,7 @@ export function Login() {
     setServerError(null)
     try {
       await login(values.email, values.password)
-      const from = searchParams.get('from')
-      navigate(from && from.startsWith('/') ? from : '/', { replace: true })
+      navigate(safeInternalPath(searchParams.get('from')), { replace: true })
     } catch (err) {
       setServerError(parseAuthError(err))
     }

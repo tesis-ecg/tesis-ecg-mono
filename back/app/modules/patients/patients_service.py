@@ -1,8 +1,12 @@
 """Patients service."""
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.audit_event import AuditEventType
+from app.db.models.user import UserRole
+from app.modules.auth import auth_repository as auth_repo
 from app.modules.devices.devices_schemas import HolterHealthOut
 from app.modules.devices.devices_service import holter_health_out
 from app.modules.doctors import doctors_repository as doctors_repo
@@ -64,6 +68,7 @@ async def list_patients(input_data: PatientListInput, db: AsyncSession) -> Patie
         offset=input_data.offset,
         sort=input_data.sort,
         order=input_data.order,
+        has_device=input_data.has_device,
     )
     return PatientListResponse(
         items=[_patient_out(row) for row in rows],
@@ -84,21 +89,34 @@ async def get_patient(input_data: PatientIdInput, db: AsyncSession) -> PatientOu
 
 
 async def create_patient(input_data: PatientCreateInput, db: AsyncSession) -> PatientOut:
-    # Patient.doctor_id es NOT NULL y get_role_scope devuelve doctor_id=None al admin
-    # para darle la vista global. Antes de rechazar se busca su propio perfil médico:
-    # un admin promovido desde una cuenta médico conserva la fila Doctor.
-    doctor_id = input_data.doctor_id
-    if doctor_id is None:
-        doctor = await doctors_repo.get_by_user_id(db, input_data.requesting_user.id)
-        if doctor is None:
+    if input_data.requesting_user.role == UserRole.ADMIN:
+        if input_data.data.doctorId is None:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "code": "DOCTOR_REQUIRED",
-                    "message": "Un admin no puede crear pacientes sin un médico asignado.",
+                    "message": "Seleccioná el médico responsable del paciente.",
                 },
             )
+        doctor = await doctors_repo.get_active_by_id(db, input_data.data.doctorId)
+        if doctor is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "DOCTOR_NOT_FOUND", "message": "Médico no encontrado."},
+            )
         doctor_id = doctor.id
+    else:
+        if input_data.data.doctorId is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "DOCTOR_FORBIDDEN", "message": "No podés elegir otro médico."},
+            )
+        if input_data.doctor_id is None:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "FORBIDDEN", "message": "Sin perfil médico."},
+            )
+        doctor_id = input_data.doctor_id
 
     existing = await repo.get_patient_by_dni(db, input_data.data.dni)
     if existing is not None:
@@ -108,17 +126,33 @@ async def create_patient(input_data: PatientCreateInput, db: AsyncSession) -> Pa
         )
 
     first_name, last_name = _split_full_name(input_data.data.fullName)
-    patient = await repo.create_patient(
-        db,
-        doctor_id=doctor_id,
-        first_name=first_name,
-        last_name=last_name,
-        dni=input_data.data.dni,
-        date_of_birth=input_data.data.birthDate,
-        sex=input_data.data.sex,
-        email=input_data.data.contactEmail,
-        phone=input_data.data.contactPhone,
-    )
+    try:
+        patient = await repo.create_patient(
+            db,
+            doctor_id=doctor_id,
+            first_name=first_name,
+            last_name=last_name,
+            dni=input_data.data.dni.strip(),
+            date_of_birth=input_data.data.birthDate,
+            sex=input_data.data.sex,
+            email=(
+                str(input_data.data.contactEmail).lower() if input_data.data.contactEmail else None
+            ),
+            phone=input_data.data.contactPhone.strip() if input_data.data.contactPhone else None,
+        )
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.PATIENT_CREATED,
+            user_id=input_data.requesting_user.id,
+            metadata={"target_patient_id": str(patient.id)},
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DNI_CONFLICT", "message": "Ya existe un paciente con ese DNI."},
+        ) from exc
     row = await repo.get_patient_row(db, patient.id, input_data.doctor_id)
     if row is None:
         raise HTTPException(status_code=500, detail="Created patient not found")
@@ -126,7 +160,9 @@ async def create_patient(input_data: PatientCreateInput, db: AsyncSession) -> Pa
 
 
 async def update_patient(input_data: PatientUpdateInput, db: AsyncSession) -> PatientOut:
-    patient = await repo.get_patient_model(db, input_data.patient_id, input_data.doctor_id)
+    patient = await repo.get_patient_model_for_update(
+        db, input_data.patient_id, input_data.doctor_id
+    )
     if patient is None:
         raise HTTPException(
             status_code=404,
@@ -164,7 +200,21 @@ async def update_patient(input_data: PatientUpdateInput, db: AsyncSession) -> Pa
     if "contactPhone" in update_data:
         patient.phone = update_data["contactPhone"]
 
-    await db.flush()
+    if input_data.actor_id is not None:
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.PATIENT_UPDATED,
+            user_id=input_data.actor_id,
+            metadata={"target_patient_id": str(patient.id)},
+        )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DNI_CONFLICT", "message": "Ya existe un paciente con ese DNI."},
+        ) from exc
     row = await repo.get_patient_row(db, patient.id, input_data.doctor_id)
     if row is None:
         raise HTTPException(status_code=500, detail="Updated patient not found")
@@ -172,13 +222,23 @@ async def update_patient(input_data: PatientUpdateInput, db: AsyncSession) -> Pa
 
 
 async def delete_patient(input_data: PatientIdInput, db: AsyncSession) -> None:
-    patient = await repo.get_patient_model(db, input_data.patient_id, input_data.doctor_id)
+    patient = await repo.get_patient_model_for_update(
+        db, input_data.patient_id, input_data.doctor_id
+    )
     if patient is None:
         raise HTTPException(
             status_code=404,
             detail={"code": "PATIENT_NOT_FOUND", "message": "Paciente no encontrado."},
         )
     await repo.soft_delete_patient(db, patient)
+    if input_data.actor_id is not None:
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.PATIENT_DELETED,
+            user_id=input_data.actor_id,
+            metadata={"target_patient_id": str(patient.id)},
+        )
+    await db.commit()
 
 
 async def get_patient_device(input_data: PatientIdInput, db: AsyncSession) -> HolterHealthOut:

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.request_context import client_ip
 from app.db.models.user import User
 from app.dependencies.auth_dependencies import get_current_user, require_admin
 from app.dependencies.common_dependencies import get_db
@@ -25,25 +26,26 @@ from app.modules.auth.auth_service import (
 
 router = APIRouter()
 
-_COOKIE_NAME = "session"
-
-
-def _client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+_LEGACY_COOKIE_NAME = "session"
+_COOKIE_NAME = "holter_session_v2"
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
-    # In production the dashboard and API live on different *.vercel.app
-    # subdomains. Because `vercel.app` is on the Public Suffix List, those
-    # count as cross-site, so the cookie must be `SameSite=None; Secure` for
-    # the browser to attach it to cross-site XHR/fetch requests. Locally
-    # (http, same-site) we fall back to `lax` since `None` requires `Secure`.
-    is_secure = settings.environment != "development"
+    # La cookie v2 viaja por el proxy same-origin `/api`. La legacy conserva
+    # temporalmente el modo cross-site para una ventana de migración de un TTL.
+    is_secure = settings.is_secure_environment
     response.set_cookie(
         key=_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=is_secure,
+        samesite="lax",
+        max_age=settings.jwt_expire_minutes * 60,
+        path="/api",
+    )
+    # Compatibilidad de un TTL con el frontend que todavía llama al backend directo.
+    response.set_cookie(
+        key=_LEGACY_COOKIE_NAME,
         value=token,
         httponly=True,
         secure=is_secure,
@@ -61,7 +63,7 @@ async def login_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     token, result = await login(
-        LoginInput(email=body.email, password=body.password, ip=_client_ip(request)), db
+        LoginInput(email=str(body.email), password=body.password, ip=client_ip(request)), db
     )
     _set_session_cookie(response, token)
     return result
@@ -74,10 +76,16 @@ async def logout_endpoint(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    await logout(LogoutInput(user=current_user, ip=_client_ip(request)), db)
-    is_secure = settings.environment != "development"
+    await logout(LogoutInput(user=current_user, ip=client_ip(request)), db)
+    is_secure = settings.is_secure_environment
     response.delete_cookie(
         key=_COOKIE_NAME,
+        path="/api",
+        secure=is_secure,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        key=_LEGACY_COOKIE_NAME,
         path="/",
         secure=is_secure,
         samesite="none" if is_secure else "lax",
@@ -90,11 +98,16 @@ async def me_endpoint(current_user: User = Depends(get_current_user)) -> UserOut
         id=str(current_user.id),
         email=current_user.email,
         fullName=current_user.full_name,
-        role=current_user.role.value,
+        role=current_user.role,
     )
 
 
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    deprecated=True,
+)
 async def register_endpoint(
     body: RegisterRequest,
     request: Request,
@@ -102,7 +115,7 @@ async def register_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> UserOut:
     return await register(
-        RegisterInput(data=body, requesting_user=current_user, ip=_client_ip(request)), db
+        RegisterInput(data=body, requesting_user=current_user, ip=client_ip(request)), db
     )
 
 
@@ -112,4 +125,4 @@ async def forgot_password_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    await forgot_password(ForgotPasswordInput(email=body.email, ip=_client_ip(request)), db)
+    await forgot_password(ForgotPasswordInput(email=str(body.email), ip=client_ip(request)), db)

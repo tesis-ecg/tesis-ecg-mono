@@ -16,11 +16,10 @@ Uso (con el stack de docker compose levantado, desde la raíz del repo):
 
 Fuera de Docker (requiere que DATABASE_URL y S3_ENDPOINT_URL apunten al host):
 
-    cd back && uv run python -m app.scripts.seed_demo
+    cd back && uv run --group seed python -m app.scripts.seed_demo
 
-Los pacientes se cuelgan del médico `--doctor-email` (default `dev@tesis.com`);
-si ese usuario no existe se crea sin `auth0_id` — sirve para ver datos en el
-dashboard, pero para loguearse la cuenta tiene que existir en Auth0.
+Los pacientes se cuelgan del médico `--doctor-email` (default `dev@tesis.com`).
+El usuario debe estar previamente habilitado para poder iniciar sesión.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ from botocore.config import Config
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.core.config import Environment, settings
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.doctor import Doctor
@@ -55,6 +54,7 @@ SAMPLE_RATE = 250
 SD_TOTAL_MB = 128
 
 NOW = datetime.now(UTC).replace(microsecond=0)
+PYRAMID_BUCKETS = (16, 64, 256, 1024, 4096, 16384)
 
 
 # --------------------------------------------------------------------------- #
@@ -440,19 +440,19 @@ def _put(client: Any, key: str, payload: bytes) -> None:
 
 async def _get_or_create_doctor(db: AsyncSession, email: str) -> Doctor:
     user = await db.scalar(select(User).where(User.email == email))
-    if user is None:
-        user = User(
-            email=email,
-            full_name=email.split("@")[0],
-            role=UserRole.MEDICO,
-            is_active=True,
+    if user is None or not user.is_active:
+        raise SystemExit(
+            f"El usuario {email} no existe o no está activo. "
+            "Crealo previamente desde la administración de usuarios."
         )
-        db.add(user)
-        await db.flush()
-        print(f"  · usuario {email} creado (sin auth0_id — no puede loguearse todavía)")
 
     doctor = await db.scalar(select(Doctor).where(Doctor.user_id == user.id))
     if doctor is None:
+        if user.role != UserRole.MEDICO:
+            raise SystemExit(
+                f"El admin {email} no tiene un perfil de médico al cual asignar los datos de demo. "
+                "Usá --doctor-email con un médico activo."
+            )
         doctor = Doctor(user_id=user.id, specialty="Cardiología", license_number="MN 12345")
         db.add(doctor)
         await db.flush()
@@ -593,8 +593,38 @@ async def _seed_study(
     db.add(study)
     await db.flush()
 
+    raw_signal = signal.astype("<f4", copy=False)
+    raw_bytes = raw_signal.tobytes()
     study.ecg_s3_key = f"studies/{study.id}/ecg.f32"
-    _put(client, study.ecg_s3_key, signal.tobytes())
+    study.ecg_encoding = "float32-le"
+    study.ecg_byte_length = len(raw_bytes)
+    study.ecg_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    _put(client, study.ecg_s3_key, raw_bytes)
+    pyramid_levels: list[dict[str, int | str]] = []
+    for bucket_size in PYRAMID_BUCKETS:
+        bucket_count = (raw_signal.size + bucket_size - 1) // bucket_size
+        if bucket_count * 2 >= raw_signal.size:
+            continue
+        envelope = np.empty(bucket_count * 2, dtype="<f4")
+        for bucket_index in range(bucket_count):
+            bucket = raw_signal[
+                bucket_index * bucket_size : min((bucket_index + 1) * bucket_size, raw_signal.size)
+            ]
+            envelope[bucket_index * 2] = bucket.min()
+            envelope[bucket_index * 2 + 1] = bucket.max()
+        level_bytes = envelope.tobytes()
+        level_key = f"studies/{study.id}/ecg.minmax.{bucket_size}.f32"
+        _put(client, level_key, level_bytes)
+        pyramid_levels.append(
+            {
+                "key": level_key,
+                "samplesPerBucket": bucket_size,
+                "pointCount": int(envelope.size),
+                "byteLength": len(level_bytes),
+                "sha256": hashlib.sha256(level_bytes).hexdigest(),
+            }
+        )
+    study.ecg_pyramid_levels = pyramid_levels
 
     # Un `ecg_batch` por cada tramo que el dispositivo habría subido.
     chunk = int(batch_minutes * 60 * SAMPLE_RATE)
@@ -662,7 +692,12 @@ async def _seed_study(
     return study
 
 
-async def _run(doctor_email: str, reset: bool, batch_minutes: float) -> None:
+async def _run(doctor_email: str, reset: bool, confirm_reset: bool, batch_minutes: float) -> None:
+    if reset and settings.environment not in {Environment.DEVELOPMENT, Environment.TEST}:
+        raise SystemExit("--reset está permitido únicamente en development/test.")
+    if reset and not confirm_reset:
+        raise SystemExit("--reset requiere también --confirm-reset.")
+
     client = _s3_client()
     _ensure_bucket(client)
 
@@ -703,6 +738,7 @@ async def _run(doctor_email: str, reset: bool, batch_minutes: float) -> None:
                     f"{SERIAL_PREFIX}{i:03d}", DeviceStatus.ASSIGNED, spec.firmware
                 )
                 device.patient_id = patient.id
+                device.doctor_id = doctor.id
                 device.last_battery_pct = spec.battery_pct
                 device.last_sd_free_mb = spec.sd_free_mb
                 device.last_seen_at = NOW - timedelta(minutes=7 * i)
@@ -717,6 +753,7 @@ async def _run(doctor_email: str, reset: bool, batch_minutes: float) -> None:
                     f"{SERIAL_PREFIX}{i:03d}", DeviceStatus.AVAILABLE, spec.firmware
                 )
                 device.last_seen_at = NOW - timedelta(days=2 * i)
+                device.doctor_id = doctor.id
                 device.last_battery_pct = 100
                 device.last_sd_free_mb = SD_TOTAL_MB
                 db.add(device)
@@ -725,7 +762,8 @@ async def _run(doctor_email: str, reset: bool, batch_minutes: float) -> None:
 
             last_data: datetime | None = None
             for index, study_spec in enumerate(spec.studies):
-                assert device is not None
+                if device is None:
+                    raise RuntimeError("A seeded study requires a device")
                 study = await _seed_study(
                     db, client, patient, device, study_spec, index, batch_minutes
                 )
@@ -769,13 +807,18 @@ def main() -> None:
         help="Borra los datos de demo previos antes de cargar.",
     )
     parser.add_argument(
+        "--confirm-reset",
+        action="store_true",
+        help="Confirmación explícita requerida junto con --reset.",
+    )
+    parser.add_argument(
         "--batch-minutes",
         type=float,
         default=5,
         help="Minutos de señal por ecg_batch (default: 5).",
     )
     args = parser.parse_args()
-    asyncio.run(_run(args.doctor_email, args.reset, args.batch_minutes))
+    asyncio.run(_run(args.doctor_email, args.reset, args.confirm_reset, args.batch_minutes))
 
 
 if __name__ == "__main__":

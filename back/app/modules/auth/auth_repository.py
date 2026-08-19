@@ -2,10 +2,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.audit_event import AuditEvent, AuditEventType
+from app.db.models.auth_rate_limit import AuthRateLimit
 from app.db.models.user import User, UserRole
 
 
@@ -45,8 +47,41 @@ async def create_user(
 
 async def set_last_logout(db: AsyncSession, user_id: uuid.UUID) -> None:
     await db.execute(
-        update(User).where(User.id == user_id).values(last_logout_at=datetime.now(UTC))
+        update(User)
+        .where(User.id == user_id)
+        .values(
+            last_logout_at=datetime.now(UTC),
+            session_version=User.session_version + 1,
+        )
     )
+
+
+async def consume_rate_limit(
+    db: AsyncSession,
+    *,
+    key: str,
+    bucket_start: datetime,
+    limit: int,
+) -> bool:
+    statement = (
+        insert(AuthRateLimit)
+        .values(key=key, bucket_start=bucket_start, attempts=1)
+        .on_conflict_do_update(
+            index_elements=[AuthRateLimit.key, AuthRateLimit.bucket_start],
+            set_={"attempts": AuthRateLimit.attempts + 1},
+        )
+        .returning(AuthRateLimit.attempts)
+    )
+    attempts = await db.scalar(statement)
+    return bool(attempts is not None and attempts <= limit)
+
+
+async def clear_rate_limit(db: AsyncSession, key: str) -> None:
+    await db.execute(delete(AuthRateLimit).where(AuthRateLimit.key == key))
+
+
+async def prune_rate_limits(db: AsyncSession, before: datetime) -> None:
+    await db.execute(delete(AuthRateLimit).where(AuthRateLimit.bucket_start < before))
 
 
 async def log_audit_event(

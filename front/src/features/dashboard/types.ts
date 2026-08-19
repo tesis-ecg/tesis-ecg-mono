@@ -70,3 +70,11 @@ export interface DeviceWatchdogItem {
   lastSeenAt: string | null
   reason: DeviceWatchdogReason
 }
+
+export interface DashboardOverview {
+  kpis: DashboardKpis
+  alerts: DashboardAlert[]
+  attentionPatients: AttentionPatient[]
+  runningStudies: RunningStudy[]
+  deviceWatchdog: DeviceWatchdogItem[]
+}

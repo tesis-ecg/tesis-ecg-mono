@@ -62,15 +62,16 @@ class HolterHealthOut(CamelModel):
     deviceId: uuid.UUID
     serial: str
     model: str
-    firmwareVersion: str
-    batteryPercent: int
-    signalDbm: int
-    signalQuality: str
+    firmwareVersion: str | None
+    telemetryAvailable: bool
+    batteryPercent: int | None
+    signalDbm: int | None
+    signalQuality: str | None
     lastPingAt: datetime
-    nextScheduledUploadAt: datetime
-    uploadsToday: int
-    storageUsedMb: int
-    storageTotalMb: int
+    nextScheduledUploadAt: datetime | None
+    uploadsToday: int | None
+    storageUsedMb: int | None
+    storageTotalMb: int | None
 
 
 @dataclass(frozen=True)
@@ -85,12 +86,14 @@ class HolterListInput:
 @dataclass(frozen=True)
 class HolterCreateInput:
     data: HolterCreateRequest
+    actor_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
 class HolterUpdateInput:
     device_id: uuid.UUID
     data: HolterUpdateRequest
+    actor_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,7 @@ class HolterIdInput:
     # None => admin (vista global, sin chequeo de ownership) o rol de solo lectura
     doctor_id: uuid.UUID | None
     device_id: uuid.UUID
+    actor_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -106,9 +110,11 @@ class AssignHolterInput:
     doctor_id: uuid.UUID | None
     device_id: uuid.UUID
     patient_id: uuid.UUID
+    actor_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
 class AssignDoctorInput:
     device_id: uuid.UUID
     data: AssignDoctorRequest
+    actor_id: uuid.UUID | None = None

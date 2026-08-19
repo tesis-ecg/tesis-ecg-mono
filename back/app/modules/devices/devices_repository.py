@@ -68,6 +68,13 @@ async def get_device_by_id(db: AsyncSession, device_id: uuid.UUID) -> Device | N
     return result.scalar_one_or_none()
 
 
+async def get_device_by_id_for_update(db: AsyncSession, device_id: uuid.UUID) -> Device | None:
+    result = await db.execute(
+        select(Device).where(Device.id == device_id, Device.deleted_at.is_(None)).with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_device_by_serial(db: AsyncSession, serial: str) -> Device | None:
     result = await db.execute(
         select(Device).where(Device.serial_number == serial, Device.deleted_at.is_(None))
@@ -106,6 +113,20 @@ async def get_patient_for_doctor(
     return result.scalar_one_or_none()
 
 
+async def get_patient_for_doctor_for_update(
+    db: AsyncSession, patient_id: uuid.UUID, doctor_id: uuid.UUID | None
+) -> Patient | None:
+    statement = (
+        select(Patient)
+        .where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if doctor_id is not None:
+        statement = statement.where(Patient.doctor_id == doctor_id)
+    result = await db.execute(statement)
+    return result.scalar_one_or_none()
+
+
 async def get_assigned_device_for_patient(db: AsyncSession, patient_id: uuid.UUID) -> Device | None:
     # first() y no scalar_one_or_none(): nada impide dos devices ASSIGNED sobre el
     # mismo paciente (los chequeos son check-then-write sin lock) y esa carrera
@@ -118,6 +139,23 @@ async def get_assigned_device_for_patient(db: AsyncSession, patient_id: uuid.UUI
             Device.deleted_at.is_(None),
         )
         .order_by(Device.created_at.desc(), Device.id.asc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def get_assigned_device_for_patient_for_update(
+    db: AsyncSession, patient_id: uuid.UUID
+) -> Device | None:
+    result = await db.execute(
+        select(Device)
+        .where(
+            Device.patient_id == patient_id,
+            Device.status == DeviceStatus.ASSIGNED,
+            Device.deleted_at.is_(None),
+        )
+        .order_by(Device.id)
+        .with_for_update()
         .limit(1)
     )
     return result.scalars().first()

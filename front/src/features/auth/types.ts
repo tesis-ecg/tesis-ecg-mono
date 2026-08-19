@@ -1,11 +1,7 @@
-export type Role = 'medico' | 'admin' | 'investigador' | 'asistente'
+import type { UserOut, UserRole } from '@/generated/openapi'
 
-export interface User {
-  id: string
-  email: string
-  fullName: string
-  role: Role
-}
+export type Role = UserRole
+export type User = UserOut
 
 export interface Session {
   user: User
