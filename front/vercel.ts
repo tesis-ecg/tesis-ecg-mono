@@ -10,7 +10,6 @@ function requiredHttpsOrigin(name: string): string {
 }
 
 const backendOrigin = requiredHttpsOrigin('BACKEND_ORIGIN')
-const s3PublicOrigin = requiredHttpsOrigin('S3_PUBLIC_ORIGIN')
 
 export const config = {
   framework: 'vite',
@@ -34,7 +33,8 @@ export const config = {
         { key: 'Strict-Transport-Security', value: 'max-age=31536000; includeSubDomains' },
         {
           key: 'Content-Security-Policy-Report-Only',
-          value: `default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; connect-src 'self' ${s3PublicOrigin}`,
+          value:
+            "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; connect-src 'self' https:",
         },
       ],
     },

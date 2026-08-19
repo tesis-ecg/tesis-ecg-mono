@@ -80,8 +80,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - run: cp back/.env.example back/.env
       - run: docker compose config --quiet
       - run: python -m json.tool back/vercel.json > /dev/null
       - run: docker build -t holter-backend:test back
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: trufflesecurity/trufflehog@main
