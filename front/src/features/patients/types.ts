@@ -9,6 +9,8 @@ export interface Patient {
   birthDate: string
   sex: PatientSex
   assignedDeviceId: string | null
+  /** Serial del Holter asignado. Es lo que se muestra en la grilla, no el id. */
+  assignedDeviceSerial: string | null
   studyStatus: PatientStudyStatus
   lastDataReceivedAt: string | null
   contactEmail: string | null

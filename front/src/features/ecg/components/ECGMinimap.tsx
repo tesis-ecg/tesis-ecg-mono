@@ -28,7 +28,7 @@ export function ECGMinimap({ signal, viewport, onViewportChange, height = 64 }: 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
 
-  const durationSec = signal.samples.length / signal.sampleRate
+  const durationSec = signal.durationMs / 1000
   const endTimestamp = signal.startTimestamp + durationSec * 1000
 
   const tokens = useMemo(() => readTokens(), [])

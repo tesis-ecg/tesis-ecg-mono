@@ -5,11 +5,44 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.expression import ScalarSelect
 
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.doctor import Doctor
 from app.db.models.patient import Patient
+from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User
+
+
+def _patient_name_subquery() -> ScalarSelect[str]:
+    """Nombre del paciente asignado. Reemplaza al UUID crudo en el listado."""
+    return (
+        select(func.concat(Patient.first_name, " ", Patient.last_name))
+        .where(Patient.id == Device.patient_id, Patient.deleted_at.is_(None))
+        .limit(1)
+        .scalar_subquery()
+    )
+
+
+def _active_study_subquery() -> ScalarSelect[uuid.UUID]:
+    """Estudio en curso del par paciente+equipo.
+
+    Se filtra por los dos porque un paciente puede haber tenido otro Holter
+    antes: el estudio que le corresponde a ESTE equipo es el que se graba con
+    él. Mismo criterio que usa la ingesta para resolver a qué estudio va un lote.
+    """
+    return (
+        select(Study.id)
+        .where(
+            Study.patient_id == Device.patient_id,
+            Study.device_id == Device.id,
+            Study.status == StudyStatus.IN_PROGRESS,
+            Study.deleted_at.is_(None),
+        )
+        .order_by(Study.started_at.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
 
 
 async def list_devices(
@@ -19,7 +52,7 @@ async def list_devices(
     statuses: list[DeviceStatus] | None,
     limit: int,
     offset: int,
-) -> tuple[list[tuple[Device, str | None]], int]:
+) -> tuple[list[tuple[Device, str | None, str | None, uuid.UUID | None]], int]:
     doctor_name = (
         select(User.full_name)
         .join(Doctor, Doctor.user_id == User.id)
@@ -32,7 +65,12 @@ async def list_devices(
         .limit(1)
         .scalar_subquery()
     )
-    statement = select(Device, doctor_name.label("doctor_name")).where(Device.deleted_at.is_(None))
+    statement = select(
+        Device,
+        doctor_name.label("doctor_name"),
+        _patient_name_subquery().label("patient_name"),
+        _active_study_subquery().label("active_study_id"),
+    ).where(Device.deleted_at.is_(None))
     count_statement = select(func.count()).select_from(Device).where(Device.deleted_at.is_(None))
 
     if doctor_id is not None:
@@ -57,7 +95,10 @@ async def list_devices(
         statement.order_by(Device.created_at.desc(), Device.id.asc()).limit(limit).offset(offset)
     )
     total = await db.scalar(count_statement)
-    rows = [(device, doctor_name_value) for device, doctor_name_value in result.all()]
+    rows = [
+        (device, doctor_name_value, patient_name, active_study_id)
+        for device, doctor_name_value, patient_name, active_study_id in result.all()
+    ]
     return rows, total or 0
 
 
@@ -80,6 +121,36 @@ async def get_device_by_serial(db: AsyncSession, serial: str) -> Device | None:
         select(Device).where(Device.serial_number == serial, Device.deleted_at.is_(None))
     )
     return result.scalar_one_or_none()
+
+
+async def get_patient_name(db: AsyncSession, patient_id: uuid.UUID | None) -> str | None:
+    if patient_id is None:
+        return None
+    name: str | None = await db.scalar(
+        select(func.concat(Patient.first_name, " ", Patient.last_name)).where(
+            Patient.id == patient_id, Patient.deleted_at.is_(None)
+        )
+    )
+    return name
+
+
+async def get_active_study_id(
+    db: AsyncSession, patient_id: uuid.UUID | None, device_id: uuid.UUID
+) -> uuid.UUID | None:
+    if patient_id is None:
+        return None
+    study_id: uuid.UUID | None = await db.scalar(
+        select(Study.id)
+        .where(
+            Study.patient_id == patient_id,
+            Study.device_id == device_id,
+            Study.status == StudyStatus.IN_PROGRESS,
+            Study.deleted_at.is_(None),
+        )
+        .order_by(Study.started_at.desc())
+        .limit(1)
+    )
+    return study_id
 
 
 async def get_doctor_name(db: AsyncSession, doctor_id: uuid.UUID | None) -> str | None:

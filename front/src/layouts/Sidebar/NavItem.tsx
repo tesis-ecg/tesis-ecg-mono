@@ -9,9 +9,16 @@ interface NavItemProps {
   label: string
   to: string
   onNavigate?: () => void
+  /** Contador sobre el ícono. `0` o `undefined` no renderiza nada. */
+  badgeCount?: number
 }
 
-export function NavItem({ icon: Icon, label, to, onNavigate }: NavItemProps) {
+export function NavItem({ icon: Icon, label, to, onNavigate, badgeCount }: NavItemProps) {
+  const showBadge = typeof badgeCount === 'number' && badgeCount > 0
+  // El sidebar es icon-only: sin el conteo en el aria-label, un lector de
+  // pantalla anuncia "Alertas" y se pierde que hay trabajo pendiente.
+  const accessibleLabel = showBadge ? `${label} (${badgeCount} pendientes)` : label
+
   return (
     <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
@@ -19,7 +26,7 @@ export function NavItem({ icon: Icon, label, to, onNavigate }: NavItemProps) {
           to={to}
           end={to === '/'}
           onClick={onNavigate}
-          aria-label={label}
+          aria-label={accessibleLabel}
           className={({ isActive }) =>
             cn(
               'group relative flex h-10 w-full items-center justify-center transition-colors',
@@ -33,6 +40,14 @@ export function NavItem({ icon: Icon, label, to, onNavigate }: NavItemProps) {
           {({ isActive }) => (
             <>
               <Icon size={20} strokeWidth={1.75} />
+              {showBadge && (
+                <span
+                  aria-hidden
+                  className="absolute top-1 right-2 min-w-4 rounded-full bg-destructive px-1 text-center text-[10px] leading-4 font-medium text-destructive-foreground"
+                >
+                  {badgeCount > 99 ? '99+' : badgeCount}
+                </span>
+              )}
               {isActive && (
                 <span
                   aria-hidden
@@ -44,7 +59,7 @@ export function NavItem({ icon: Icon, label, to, onNavigate }: NavItemProps) {
         </NavLink>
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={12} className="bg-gray-900 text-white">
-        {label}
+        {accessibleLabel}
       </TooltipContent>
     </Tooltip>
   )

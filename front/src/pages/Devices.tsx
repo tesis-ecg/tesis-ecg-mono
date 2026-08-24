@@ -4,7 +4,6 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/EmptyState'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -257,15 +256,24 @@ export function Devices() {
                   </TableCell>
                   <TableCell>
                     {h.assignedPatientId ? (
-                      <Link
-                        to={`/patients/${h.assignedPatientId}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-primary-500 hover:underline"
-                      >
-                        <Badge variant="outline" className="font-mono">
-                          {h.assignedPatientId}
-                        </Badge>
-                      </Link>
+                      <div className="flex flex-col items-start gap-0.5">
+                        <Link
+                          to={`/patients/${h.assignedPatientId}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="font-medium text-primary-500 hover:underline"
+                        >
+                          {h.assignedPatientName ?? 'Paciente sin nombre'}
+                        </Link>
+                        {h.activeStudyId && (
+                          <Link
+                            to={`/studies/${h.activeStudyId}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-body3 text-gray-600 hover:text-primary-500 hover:underline"
+                          >
+                            Ver estudio en curso →
+                          </Link>
+                        )}
+                      </div>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}

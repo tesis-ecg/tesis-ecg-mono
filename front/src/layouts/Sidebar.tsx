@@ -3,6 +3,7 @@ import { LogOut } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { usePendingAlertCount } from '@/features/alerts/hooks/useAlerts'
 import { useAuth } from '@/features/auth/AuthContext'
 
 import { NavItem } from './Sidebar/NavItem'
@@ -26,6 +27,7 @@ function deriveInitials(fullName: string | undefined): string {
  */
 export function Sidebar({ onNavigate }: SidebarProps) {
   const { user, logout } = useAuth()
+  const pendingAlerts = usePendingAlertCount()
   const initials = deriveInitials(user?.fullName)
   const tooltipName = user?.fullName ?? 'Usuario'
 
@@ -44,6 +46,7 @@ export function Sidebar({ onNavigate }: SidebarProps) {
             label={item.name}
             to={item.path}
             onNavigate={onNavigate}
+            badgeCount={item.badge === 'pendingAlerts' ? pendingAlerts.data : undefined}
           />
         ))}
       </nav>

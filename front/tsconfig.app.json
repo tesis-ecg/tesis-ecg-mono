@@ -26,5 +26,9 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Los tests se chequean con tsconfig.test.json, que sí trae los tipos de
+  // Node. Dejarlos acá obligaría a sumar `node` a `types` y los globals de
+  // Node (process, Buffer) quedarían visibles desde el código de la app.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

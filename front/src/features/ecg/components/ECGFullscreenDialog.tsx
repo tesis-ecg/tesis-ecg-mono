@@ -128,7 +128,7 @@ function ECGFullscreenBody({
     return () => ro.disconnect()
   }, [])
 
-  const fullSpanMs = (signal.samples.length / signal.sampleRate) * 1000
+  const fullSpanMs = signal.durationMs
 
   const handleViewportChange = (next: ECGViewportChange) => {
     setViewport(next)

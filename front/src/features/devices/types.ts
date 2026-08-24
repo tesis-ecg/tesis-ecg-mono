@@ -9,6 +9,13 @@ export interface Holter {
   firmwareVersion: string | null
   status: HolterStatus
   assignedPatientId: string | null
+  /** Nombre del paciente asignado. Es lo que se muestra: el id no le dice nada a nadie. */
+  assignedPatientName: string | null
+  /**
+   * Estudio `in_progress` que este equipo está grabando ahora, si lo hay.
+   * Permite saltar del inventario al registro en curso sin pasar por el paciente.
+   */
+  activeStudyId: string | null
   /**
    * Médico al que el admin asignó el dispositivo (ownership device→médico).
    * El médico solo ve/gestiona los dispositivos donde figura como dueño.

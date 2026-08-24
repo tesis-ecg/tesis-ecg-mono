@@ -146,3 +146,110 @@ async def get_detail(
         return None
     study, patient, device, name = row
     return study, patient, device, name
+
+
+#: Estados desde los que un estudio todavía puede cerrarse. El resto
+#: (`COMPLETED`, `CANCELLED`) son terminales.
+OPEN_STATUSES = (StudyStatus.IN_PROGRESS, StudyStatus.SCHEDULED)
+
+
+async def get_for_update(
+    db: AsyncSession, study_id: uuid.UUID, doctor_id: uuid.UUID | None
+) -> tuple[Study, Patient] | None:
+    """El estudio y su paciente, con la fila del estudio bloqueada.
+
+    El `FOR UPDATE` serializa el cierre contra la ingesta, que bloquea esa misma
+    fila para avanzar el cursor de ACK. Sin esto, un lote en vuelo podría
+    escribir sobre un estudio que el médico acaba de cerrar.
+
+    `of=Study` y no un bloqueo de toda la consulta: bloquear también `patient`
+    metería a este flujo en carreras con la edición del paciente, que no tienen
+    nada que ver.
+    """
+    statement = (
+        select(Study, Patient)
+        .join(Patient, Study.patient_id == Patient.id)
+        .where(
+            Study.id == study_id,
+            Study.deleted_at.is_(None),
+            Patient.deleted_at.is_(None),
+        )
+        .with_for_update(of=Study)
+    )
+    if doctor_id is not None:
+        statement = statement.where(Patient.doctor_id == doctor_id)
+    row = (await db.execute(statement)).one_or_none()
+    if row is None:
+        return None
+    study, patient = row
+    return study, patient
+
+
+async def list_open_for_device(
+    db: AsyncSession, patient_id: uuid.UUID, device_id: uuid.UUID
+) -> list[Study]:
+    """Estudios abiertos del par paciente+equipo, bloqueados.
+
+    Devuelve una lista y no un único estudio a propósito: los datos previos a
+    que existiera el cierre automático pueden tener más de uno abierto para el
+    mismo par, y dejar uno sin cerrar reproduce el bug que esto viene a arreglar.
+
+    A diferencia de `ingest_repository.get_open_study_for_update`, acá **no** se
+    filtra por `ecg_s3_key IS NULL`: para cerrar da lo mismo si la señal vive en
+    un blob o en segmentos.
+    """
+    result = await db.execute(
+        select(Study)
+        .where(
+            Study.patient_id == patient_id,
+            Study.device_id == device_id,
+            Study.status.in_(OPEN_STATUSES),
+            Study.deleted_at.is_(None),
+        )
+        .order_by(Study.started_at.desc())
+        .with_for_update()
+    )
+    return list(result.scalars().all())
+
+
+async def list_open_for_patient(db: AsyncSession, patient_id: uuid.UUID) -> list[Study]:
+    """Todos los estudios abiertos del paciente, con cualquier equipo."""
+    result = await db.execute(
+        select(Study)
+        .where(
+            Study.patient_id == patient_id,
+            Study.status.in_(OPEN_STATUSES),
+            Study.deleted_at.is_(None),
+        )
+        .order_by(Study.started_at.desc())
+        .with_for_update()
+    )
+    return list(result.scalars().all())
+
+
+async def has_open_study(db: AsyncSession, patient_id: uuid.UUID) -> bool:
+    """¿Al paciente le queda algún estudio abierto, con cualquier equipo?
+
+    Se consulta después de cerrar uno para decidir el `study_status` del
+    paciente. El autoflush de SQLAlchemy garantiza que el cierre pendiente en la
+    sesión ya esté escrito cuando corre este SELECT.
+    """
+    found = await db.scalar(
+        select(Study.id)
+        .where(
+            Study.patient_id == patient_id,
+            Study.status.in_(OPEN_STATUSES),
+            Study.deleted_at.is_(None),
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
+async def get_patient_for_update(db: AsyncSession, patient_id: uuid.UUID) -> Patient | None:
+    result = await db.execute(
+        select(Patient)
+        .where(Patient.id == patient_id, Patient.deleted_at.is_(None))
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()

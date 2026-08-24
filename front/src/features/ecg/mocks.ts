@@ -146,6 +146,7 @@ export function mockEcgSignal(
 
   return {
     sampleRate,
+    durationMs: durationSec * 1000,
     samples,
     startTimestamp,
   }

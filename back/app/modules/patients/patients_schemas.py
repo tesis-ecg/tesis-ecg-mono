@@ -19,6 +19,7 @@ class PatientOut(CamelModel):
     birthDate: date
     sex: PatientSex
     assignedDeviceId: uuid.UUID | None
+    assignedDeviceSerial: str | None
     studyStatus: PatientStudyStatus
     lastDataReceivedAt: datetime | None
     contactEmail: str | None
@@ -125,6 +126,7 @@ class PatientRow:
     email: str | None
     phone: str | None
     assigned_device_id: uuid.UUID | None
+    assigned_device_serial: str | None
     doctor_id: uuid.UUID
     doctor_name: str | None
 

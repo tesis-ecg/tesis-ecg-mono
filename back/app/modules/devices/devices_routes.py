@@ -18,6 +18,7 @@ from app.modules.devices.devices_schemas import (
     AssignDoctorRequest,
     AssignHolterInput,
     AssignHolterRequest,
+    HolterApiKeyOut,
     HolterCreateInput,
     HolterCreateOut,
     HolterCreateRequest,
@@ -167,6 +168,22 @@ async def reassign_holter(
             actor_id=scope.user.id,
         ),
         db,
+    )
+
+
+@router.post("/{device_id}/api-key", response_model=HolterApiKeyOut)
+async def rotate_holter_api_key(
+    device_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> HolterApiKeyOut:
+    """Rota la API key del equipo y la devuelve en claro **una sola vez**.
+
+    Solo admin: la key habilita a subir señal como ese dispositivo, así que
+    entregarla es equivalente a entregar el equipo.
+    """
+    return await service.rotate_api_key(
+        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db
     )
 
 

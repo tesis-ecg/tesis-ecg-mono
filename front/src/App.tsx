@@ -6,6 +6,7 @@ import { Spinner } from './components/Spinner'
 import { ProtectedRoute } from './router/ProtectedRoute'
 import { RoleRoute } from './router/RoleRoute'
 
+const Alerts = lazy(() => import('./pages/Alerts').then((module) => ({ default: module.Alerts })))
 const Dashboard = lazy(() =>
   import('./pages/Dashboard').then((module) => ({ default: module.Dashboard })),
 )
@@ -38,6 +39,9 @@ const StudyDetail = lazy(() =>
   import('./pages/StudyDetail').then((module) => ({ default: module.StudyDetail })),
 )
 const Users = lazy(() => import('./pages/Users').then((module) => ({ default: module.Users })))
+const VestSimulator = lazy(() =>
+  import('./pages/VestSimulator').then((module) => ({ default: module.VestSimulator })),
+)
 const DevEcgViewer = import.meta.env.DEV
   ? lazy(() => import('./pages/DevEcgViewer').then((module) => ({ default: module.DevEcgViewer })))
   : null
@@ -61,6 +65,7 @@ function App() {
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
             <Route index element={<Dashboard />} />
+            <Route path="alerts" element={<Alerts />} />
             <Route path="patients" element={<Patients />} />
             <Route path="patients/:id" element={<PatientDetail />} />
             <Route path="devices" element={<Devices />} />
@@ -69,6 +74,12 @@ function App() {
             <Route path="studies/:id" element={<StudyDetail />} />
             <Route element={<RoleRoute allow={['admin']} />}>
               <Route path="users" element={<Users />} />
+              {/* Simulador de chalecos: admin-only, con entrada en el menú.
+                  Antes solo se llegaba escribiendo la URL, lo que en la
+                  práctica lo volvía inencontrable incluso para quien lo
+                  necesitaba. No va gateado por DEV: tiene que poder validarse
+                  en producción. */}
+              <Route path="__sim/vest" element={<VestSimulator />} />
             </Route>
             {DevEcgViewer ? <Route path="__dev/ecg-viewer" element={<DevEcgViewer />} /> : null}
           </Route>

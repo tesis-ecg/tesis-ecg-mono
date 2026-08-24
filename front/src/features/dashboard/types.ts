@@ -30,6 +30,8 @@ export type AlertKind =
   | 'pvc'
   | 'pause'
   | 'noise'
+  | 'symptom_marker'
+  | 'other'
   | 'device_offline'
 
 export interface DashboardAlert {

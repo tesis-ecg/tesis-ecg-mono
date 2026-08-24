@@ -33,11 +33,11 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import numpy as np
-from botocore.config import Config
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Environment, settings
+from app.core.s3 import delete_keys, ensure_bucket, get_s3_client, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.doctor import Doctor
@@ -393,44 +393,19 @@ def synth_ecg(
 
 
 def _s3_client() -> Any:
-    import boto3
-
-    kwargs: dict[str, object] = {
-        "aws_access_key_id": settings.aws_access_key_id,
-        "aws_secret_access_key": settings.aws_secret_access_key,
-        "region_name": settings.aws_region,
-        "config": Config(signature_version="s3v4"),
-    }
-    if settings.s3_endpoint_url:
-        kwargs["endpoint_url"] = settings.s3_endpoint_url
-    return boto3.client("s3", **kwargs)
+    return get_s3_client()
 
 
 def _ensure_bucket(client: Any) -> None:
-    from botocore.exceptions import ClientError
-
-    try:
-        client.head_bucket(Bucket=settings.s3_bucket_name)
-    except ClientError:
-        client.create_bucket(Bucket=settings.s3_bucket_name)
-        print(f"  · bucket {settings.s3_bucket_name} creado")
+    ensure_bucket()
 
 
 def _delete_keys(client: Any, keys: list[str]) -> None:
-    for start in range(0, len(keys), 1000):  # `delete_objects` acepta hasta 1000 por llamada
-        client.delete_objects(
-            Bucket=settings.s3_bucket_name,
-            Delete={"Objects": [{"Key": key} for key in keys[start : start + 1000]]},
-        )
+    delete_keys(keys)
 
 
 def _put(client: Any, key: str, payload: bytes) -> None:
-    client.put_object(
-        Bucket=settings.s3_bucket_name,
-        Key=key,
-        Body=payload,
-        ContentType="application/octet-stream",
-    )
+    put_object(key, payload)
 
 
 # --------------------------------------------------------------------------- #

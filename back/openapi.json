@@ -24,6 +24,140 @@
         "title": "AdherenceMetric",
         "type": "object"
       },
+      "AlertListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AlertOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "pendingTotal": {
+            "title": "Pendingtotal",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "pendingTotal"
+        ],
+        "title": "AlertListResponse",
+        "type": "object"
+      },
+      "AlertOut": {
+        "description": "Una alerta real de la tabla `alert`.\n\nDiferencia con `DashboardAlertOut`: ese DTO mezcla estas alertas con las\nsintéticas de \"equipo sin transmitir\", que no existen como fila y por lo\ntanto no se pueden acusar. Acá solo viven las acusables, y por eso `id` es\nun UUID de verdad y no un string con prefijo.",
+        "properties": {
+          "acknowledgedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledgedat"
+          },
+          "acknowledgedByName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledgedbyname"
+          },
+          "detectedAt": {
+            "format": "date-time",
+            "title": "Detectedat",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "patientId": {
+            "format": "uuid",
+            "title": "Patientid",
+            "type": "string"
+          },
+          "patientName": {
+            "title": "Patientname",
+            "type": "string"
+          },
+          "seenAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seenat"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "studyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Studyid"
+          }
+        },
+        "required": [
+          "id",
+          "patientId",
+          "patientName",
+          "kind",
+          "severity",
+          "message",
+          "detectedAt",
+          "studyId",
+          "seenAt",
+          "acknowledgedAt",
+          "acknowledgedByName"
+        ],
+        "title": "AlertOut",
+        "type": "object"
+      },
       "AssignDoctorRequest": {
         "properties": {
           "doctorId": {
@@ -421,8 +555,51 @@
         "title": "HeartRateMetric",
         "type": "object"
       },
+      "HolterApiKeyOut": {
+        "description": "La API key en claro. Se devuelve UNA vez y no se puede volver a leer.",
+        "properties": {
+          "apiKey": {
+            "title": "Apikey",
+            "type": "string"
+          },
+          "deviceId": {
+            "format": "uuid",
+            "title": "Deviceid",
+            "type": "string"
+          },
+          "rotatedAt": {
+            "format": "date-time",
+            "title": "Rotatedat",
+            "type": "string"
+          },
+          "serial": {
+            "title": "Serial",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviceId",
+          "serial",
+          "apiKey",
+          "rotatedAt"
+        ],
+        "title": "HolterApiKeyOut",
+        "type": "object"
+      },
       "HolterCreateOut": {
         "properties": {
+          "activeStudyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activestudyid"
+          },
           "apiKey": {
             "title": "Apikey",
             "type": "string"
@@ -461,6 +638,17 @@
               }
             ],
             "title": "Assignedpatientid"
+          },
+          "assignedPatientName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignedpatientname"
           },
           "createdAt": {
             "format": "date-time",
@@ -514,6 +702,8 @@
           "firmwareVersion",
           "status",
           "assignedPatientId",
+          "assignedPatientName",
+          "activeStudyId",
           "assignedDoctorId",
           "assignedDoctorName",
           "lastSeenAt",
@@ -722,6 +912,18 @@
       },
       "HolterOut": {
         "properties": {
+          "activeStudyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activestudyid"
+          },
           "assignedDoctorId": {
             "anyOf": [
               {
@@ -756,6 +958,17 @@
               }
             ],
             "title": "Assignedpatientid"
+          },
+          "assignedPatientName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignedpatientname"
           },
           "createdAt": {
             "format": "date-time",
@@ -809,6 +1022,8 @@
           "firmwareVersion",
           "status",
           "assignedPatientId",
+          "assignedPatientName",
+          "activeStudyId",
           "assignedDoctorId",
           "assignedDoctorName",
           "lastSeenAt",
@@ -866,6 +1081,72 @@
         ],
         "title": "IdentityStatus",
         "type": "string"
+      },
+      "IngestAckOut": {
+        "description": "El ACK del protocolo, no un simple \"recibido\".\n\n`framesAccepted` es un **delta contiguo**: cuántas tramas nuevas puede dar\npor entregadas el equipo, contadas desde la más vieja sin confirmar y\ncortando en el primer hueco de `seq` (`INTEGRACION.md` §4.6). Si llegan la\n10, la 11 y la 13, se confirman 2 — la 12 falta y el cursor de lectura del\nequipo no la puede saltear.",
+        "properties": {
+          "batchId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batchid"
+          },
+          "framesAccepted": {
+            "title": "Framesaccepted",
+            "type": "integer"
+          },
+          "framesDuplicate": {
+            "title": "Framesduplicate",
+            "type": "integer"
+          },
+          "framesReceived": {
+            "title": "Framesreceived",
+            "type": "integer"
+          },
+          "framesRejected": {
+            "title": "Framesrejected",
+            "type": "integer"
+          },
+          "lastAcceptedSeq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastacceptedseq"
+          },
+          "serverTime": {
+            "format": "date-time",
+            "title": "Servertime",
+            "type": "string"
+          },
+          "studyId": {
+            "format": "uuid",
+            "title": "Studyid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "framesReceived",
+          "framesAccepted",
+          "framesRejected",
+          "framesDuplicate",
+          "lastAcceptedSeq",
+          "batchId",
+          "studyId",
+          "serverTime"
+        ],
+        "title": "IngestAckOut",
+        "type": "object"
       },
       "KpiDeltaOut": {
         "properties": {
@@ -1037,6 +1318,17 @@
             ],
             "title": "Assigneddeviceid"
           },
+          "assignedDeviceSerial": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigneddeviceserial"
+          },
           "birthDate": {
             "format": "date",
             "title": "Birthdate",
@@ -1126,6 +1418,7 @@
           "birthDate",
           "sex",
           "assignedDeviceId",
+          "assignedDeviceSerial",
           "studyStatus",
           "lastDataReceivedAt",
           "contactEmail",
@@ -1588,6 +1881,7 @@
         "type": "object"
       },
       "StudyEcgManifestOut": {
+        "description": "Manifest v2.\n\nDos formas de estudio conviven:\n\n- **Seedeado / legacy**: toda la señal en un solo objeto (`raw`), `segments`\n  vacío. Es lo que produce `seed_demo`.\n- **Ingestado**: `raw` en `null` y la señal repartida en `segments`, uno por\n  lote. S3 no soporta append, así que un blob único obligaría a reescribir\n  173 MB cada hora.\n\nEn los dos casos `levels` es lo que consume el visor para la vista general,\nasí que el cliente casi nunca necesita mirar `raw` ni `segments`.",
         "properties": {
           "channel": {
             "default": "ecg",
@@ -1603,9 +1897,13 @@
             "type": "string"
           },
           "formatVersion": {
-            "default": 1,
+            "default": 2,
             "title": "Formatversion",
             "type": "integer"
+          },
+          "isSimulated": {
+            "title": "Issimulated",
+            "type": "boolean"
           },
           "levels": {
             "items": {
@@ -1615,7 +1913,14 @@
             "type": "array"
           },
           "raw": {
-            "$ref": "#/components/schemas/StudyEcgObjectOut"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StudyEcgObjectOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "sampleCount": {
             "title": "Samplecount",
@@ -1625,9 +1930,20 @@
             "title": "Samplerate",
             "type": "integer"
           },
+          "segments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgSegmentOut"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
           "startTimestamp": {
             "title": "Starttimestamp",
             "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/StudyStatus"
           }
         },
         "required": [
@@ -1636,6 +1952,8 @@
           "sampleCount",
           "startTimestamp",
           "durationMs",
+          "status",
+          "isSimulated",
           "raw",
           "levels"
         ],
@@ -1715,6 +2033,53 @@
           "expiresAt"
         ],
         "title": "StudyEcgOut",
+        "type": "object"
+      },
+      "StudyEcgSegmentOut": {
+        "description": "Un tramo de señal decodificada, tal como llegó en un lote del chaleco.",
+        "properties": {
+          "byteLength": {
+            "title": "Bytelength",
+            "type": "integer"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "title": "Expiresat",
+            "type": "string"
+          },
+          "sampleCount": {
+            "title": "Samplecount",
+            "type": "integer"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "startSampleIndex": {
+            "title": "Startsampleindex",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expiresAt",
+          "byteLength",
+          "sha256",
+          "startSampleIndex",
+          "sampleCount"
+        ],
+        "title": "StudyEcgSegmentOut",
         "type": "object"
       },
       "StudyListResponse": {
@@ -1932,6 +2297,225 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/alerts": {
+      "get": {
+        "description": "Alertas clínicas del médico (o de todos, para el admin).\n\nSolo las alertas reales: las sintéticas de \"equipo sin transmitir\" que el\ndashboard intercala no son filas y no se pueden atender — esas viven en el\nwidget de watchdog.",
+        "operationId": "list_alerts_alerts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "acknowledged",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Acknowledged"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity[]",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity[]"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Alerts",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/alerts/{alert_id}/acknowledge": {
+      "post": {
+        "description": "Marca la alerta como atendida y deja constancia de quién y cuándo.",
+        "operationId": "acknowledge_alert_alerts__alert_id__acknowledge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alert_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Alert Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge Alert",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
     "/auth/forgot-password": {
       "post": {
         "operationId": "forgot_password_endpoint_auth_forgot_password_post",
@@ -3107,6 +3691,82 @@
         ]
       }
     },
+    "/devices/{device_id}/api-key": {
+      "post": {
+        "description": "Rota la API key del equipo y la devuelve en claro **una sola vez**.\n\nSolo admin: la key habilita a subir señal como ese dispositivo, así que\nentregarla es equivalente a entregar el equipo.",
+        "operationId": "rotate_holter_api_key_devices__device_id__api_key_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HolterApiKeyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Holter Api Key",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
     "/devices/{device_id}/assign": {
       "post": {
         "operationId": "assign_holter_devices__device_id__assign_post",
@@ -3720,6 +4380,133 @@
           }
         },
         "summary": "Health Ready"
+      }
+    },
+    "/ingest/ecg-frames": {
+      "post": {
+        "description": "Cuerpo binario crudo: N × 256 B, sin JSON, sin multipart, sin base64.\n\nEs lo que un ESP32-C3 puede transmitir con overhead cero. Los metadatos por\ntrama (`seq`, `t0Ms`, `bootId`, CRC) ya viajan dentro de cada trama; en los\nheaders va solo la identidad del equipo.\n\nResponde 202 y no 200: los bytes quedaron guardados de forma durable, pero\ntodavía no procesados.",
+        "operationId": "ingest_ecg_frames_ingest_ecg_frames_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-serial",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Serial"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-uptime-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Uptime-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-firmware-version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Firmware-Version"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-battery-pct",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Battery-Pct"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "description": "N tramas de 256 bytes concatenadas, little-endian.",
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestAckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recibe un lote de tramas ECG comprimidas del chaleco",
+        "tags": [
+          "ingest"
+        ]
       }
     },
     "/patients": {
@@ -4649,6 +5436,158 @@
           }
         },
         "summary": "Get Study",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/cancel": {
+      "post": {
+        "description": "Descarta el estudio: colocación fallida, datos de banco, error de carga.",
+        "operationId": "cancel_study_studies__study_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Study",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/complete": {
+      "post": {
+        "description": "Cierra el estudio: fija `endedAt` y lo pasa a `completed`.\n\nEs la contraparte del alta automática que hace la ingesta. Sin esto un\nestudio abierto no tenía forma de terminar.",
+        "operationId": "complete_study_studies__study_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Study",
         "tags": [
           "studies"
         ]

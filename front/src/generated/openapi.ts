@@ -6,6 +6,28 @@ export interface AdherenceMetric {
   "deltaPp": number
 }
 
+export interface AlertListResponse {
+  "items": Array<AlertOut>
+  "total": number
+  "limit": number
+  "offset": number
+  "pendingTotal": number
+}
+
+export interface AlertOut {
+  "id": string
+  "patientId": string
+  "patientName": string
+  "kind": string
+  "severity": string
+  "message": string
+  "detectedAt": string
+  "studyId": string | null
+  "seenAt": string | null
+  "acknowledgedAt": string | null
+  "acknowledgedByName": string | null
+}
+
 export interface AssignDoctorRequest {
   "doctorId": string
 }
@@ -86,6 +108,13 @@ export interface HeartRateMetric {
   "deltaBpm": number
 }
 
+export interface HolterApiKeyOut {
+  "deviceId": string
+  "serial": string
+  "apiKey": string
+  "rotatedAt": string
+}
+
 export interface HolterCreateOut {
   "id": string
   "serial": string
@@ -93,6 +122,8 @@ export interface HolterCreateOut {
   "firmwareVersion": string | null
   "status": DeviceStatus
   "assignedPatientId": string | null
+  "assignedPatientName": string | null
+  "activeStudyId": string | null
   "assignedDoctorId": string | null
   "assignedDoctorName": string | null
   "lastSeenAt": string | null
@@ -136,6 +167,8 @@ export interface HolterOut {
   "firmwareVersion": string | null
   "status": DeviceStatus
   "assignedPatientId": string | null
+  "assignedPatientName": string | null
+  "activeStudyId": string | null
   "assignedDoctorId": string | null
   "assignedDoctorName": string | null
   "lastSeenAt": string | null
@@ -149,6 +182,17 @@ export interface HolterUpdateRequest {
 }
 
 export type IdentityStatus = "pending" | "active" | "error"
+
+export interface IngestAckOut {
+  "framesReceived": number
+  "framesAccepted": number
+  "framesRejected": number
+  "framesDuplicate": number
+  "lastAcceptedSeq": number | null
+  "batchId": string | null
+  "studyId": string
+  "serverTime": string
+}
 
 export interface KpiDeltaOut {
   "value": number
@@ -189,6 +233,7 @@ export interface PatientOut {
   "birthDate": string
   "sex": PatientSex
   "assignedDeviceId": string | null
+  "assignedDeviceSerial": string | null
   "studyStatus": PatientStudyStatus
   "lastDataReceivedAt": string | null
   "contactEmail": string | null
@@ -284,8 +329,11 @@ export interface StudyEcgManifestOut {
   "sampleCount": number
   "startTimestamp": number
   "durationMs": number
-  "raw": StudyEcgObjectOut
+  "status": StudyStatus
+  "isSimulated": boolean
+  "raw": StudyEcgObjectOut | null
   "levels": Array<StudyEcgLevelOut>
+  "segments"?: Array<StudyEcgSegmentOut>
 }
 
 export interface StudyEcgObjectOut {
@@ -302,6 +350,15 @@ export interface StudyEcgOut {
   "durationMs": number
   "sampleCount": number
   "expiresAt": string
+}
+
+export interface StudyEcgSegmentOut {
+  "url": string
+  "expiresAt": string
+  "byteLength": number
+  "sha256": string | null
+  "startSampleIndex": number
+  "sampleCount": number
 }
 
 export interface StudyListResponse {

@@ -65,16 +65,40 @@ class StudyEcgLevelOut(StudyEcgObjectOut):
     encoding: str = "minmax-float32-le"
 
 
+class StudyEcgSegmentOut(StudyEcgObjectOut):
+    """Un tramo de señal decodificada, tal como llegó en un lote del chaleco."""
+
+    startSampleIndex: int
+    sampleCount: int
+
+
 class StudyEcgManifestOut(CamelModel):
-    formatVersion: int = 1
+    """Manifest v2.
+
+    Dos formas de estudio conviven:
+
+    - **Seedeado / legacy**: toda la señal en un solo objeto (`raw`), `segments`
+      vacío. Es lo que produce `seed_demo`.
+    - **Ingestado**: `raw` en `null` y la señal repartida en `segments`, uno por
+      lote. S3 no soporta append, así que un blob único obligaría a reescribir
+      173 MB cada hora.
+
+    En los dos casos `levels` es lo que consume el visor para la vista general,
+    así que el cliente casi nunca necesita mirar `raw` ni `segments`.
+    """
+
+    formatVersion: int = 2
     channel: str = "ecg"
     encoding: str
     sampleRate: int
     sampleCount: int
     startTimestamp: int
     durationMs: int
-    raw: StudyEcgObjectOut
+    status: StudyStatus
+    isSimulated: bool
+    raw: StudyEcgObjectOut | None
     levels: list[StudyEcgLevelOut]
+    segments: list[StudyEcgSegmentOut] = []
 
 
 @dataclass(frozen=True)
