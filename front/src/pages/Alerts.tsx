@@ -1,6 +1,6 @@
-import { AlertTriangle, Check, X } from 'lucide-react'
+import { AlertTriangle, X } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/EmptyState'
@@ -16,9 +16,9 @@ import {
   TablePagination,
   TableRow,
 } from '@/components/ui/table'
+import { AlertRowActions } from '@/features/alerts/components/AlertRowActions'
 import { AlertSeverityBadge } from '@/features/alerts/components/AlertSeverityBadge'
 import { ALERT_KIND_LABEL } from '@/features/alerts/labels'
-import { useAcknowledgeAlert } from '@/features/alerts/hooks/useAcknowledgeAlert'
 import { useAlerts } from '@/features/alerts/hooks/useAlerts'
 import type { AlertSeverity } from '@/features/alerts/types'
 import { unwrapError } from '@/lib/api'
@@ -38,7 +38,7 @@ type View = 'pending' | 'acknowledged' | 'all'
 
 const VIEW_OPTIONS: { value: View; label: string }[] = [
   { value: 'pending', label: 'Pendientes' },
-  { value: 'acknowledged', label: 'Atendidas' },
+  { value: 'acknowledged', label: 'Leídas' },
   { value: 'all', label: 'Todas' },
 ]
 
@@ -52,12 +52,13 @@ function parseSeverityParam(value: string | null): AlertSeverity[] {
  * Bandeja de alertas.
  *
  * Existe porque la ingesta venía generando alertas que solo se veían en un
- * widget del dashboard, sin forma de marcarlas como atendidas: la columna
+ * widget del dashboard, sin forma de marcarlas como leídas: la columna
  * `acknowledged_at` de la base no la escribía nadie. El default es
  * "Pendientes" — es la única vista que representa trabajo por hacer.
  */
 export function Alerts() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
 
   const viewParam = searchParams.get('view') as View | null
   const view: View =
@@ -72,7 +73,6 @@ export function Alerts() {
     limit: PAGE_SIZE,
     offset,
   })
-  const acknowledge = useAcknowledgeAlert()
 
   const setParam = (key: string, value: string | null) => {
     setSearchParams(
@@ -114,13 +114,6 @@ export function Alerts() {
       })
     }
   }, [isError, error, refetch])
-
-  const handleAcknowledge = (id: string, patientName: string) => {
-    acknowledge.mutate(id, {
-      onSuccess: () => toast.success(`Alerta de ${patientName} marcada como atendida.`),
-      onError: (mutationError) => toast.error(unwrapError(mutationError)),
-    })
-  }
 
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -205,7 +198,7 @@ export function Alerts() {
               <TableHead className="hidden md:table-cell">Hallazgo</TableHead>
               <TableHead className="hidden sm:table-cell">Detectada</TableHead>
               <TableHead className="hidden lg:table-cell">Estado</TableHead>
-              <TableHead className="w-44">
+              <TableHead className="w-16">
                 <span className="sr-only">Acciones</span>
               </TableHead>
             </TableRow>
@@ -236,67 +229,74 @@ export function Alerts() {
                 </TableCell>
               </TableRow>
             ) : (
-              items.map((alert) => (
-                <TableRow key={alert.id}>
-                  <TableCell>
-                    <AlertSeverityBadge severity={alert.severity} />
-                  </TableCell>
-                  <TableCell className="font-medium text-gray-900">
-                    <Link
-                      to={`/patients/${alert.patientId}`}
-                      className="text-primary-500 hover:underline"
-                    >
-                      {alert.patientName}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <span className="text-gray-900">
-                      {ALERT_KIND_LABEL[alert.kind] ?? 'Hallazgo'}
-                    </span>
-                    <span className="block text-body3 text-gray-600">{alert.message}</span>
-                  </TableCell>
-                  <TableCell
-                    className="hidden sm:table-cell text-gray-600"
-                    title={formatDateTime(alert.detectedAt)}
-                  >
-                    {formatRelativeTime(alert.detectedAt)}
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell text-body3 text-gray-600">
-                    {alert.acknowledgedAt ? (
-                      <>
-                        Atendida
-                        {alert.acknowledgedByName ? ` por ${alert.acknowledgedByName}` : ''}
-                      </>
-                    ) : (
-                      <span className="text-amber-700">Pendiente</span>
+              items.map((alert) => {
+                const openStudy = alert.studyId
+                  ? () => navigate(`/studies/${alert.studyId}`)
+                  : undefined
+                return (
+                  <TableRow
+                    key={alert.id}
+                    onClick={openStudy}
+                    onKeyDown={
+                      openStudy
+                        ? (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              openStudy()
+                            }
+                          }
+                        : undefined
+                    }
+                    tabIndex={openStudy ? 0 : undefined}
+                    role={openStudy ? 'button' : undefined}
+                    aria-label={openStudy ? `Abrir el estudio de ${alert.patientName}` : undefined}
+                    className={cn(
+                      openStudy &&
+                        'cursor-pointer focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 focus-visible:outline-none',
                     )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center justify-end gap-2">
-                      {alert.studyId && (
-                        <Button variant="ghost" size="sm" asChild>
-                          <Link to={`/studies/${alert.studyId}`}>Ver señal</Link>
-                        </Button>
+                  >
+                    <TableCell>
+                      <AlertSeverityBadge severity={alert.severity} />
+                    </TableCell>
+                    <TableCell className="font-medium text-gray-900">
+                      {/* La fila navega al estudio; el nombre sigue llevando al
+                          paciente, así que corta la propagación. */}
+                      <Link
+                        to={`/patients/${alert.patientId}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-primary-500 hover:underline"
+                      >
+                        {alert.patientName}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      <span className="text-gray-900">
+                        {ALERT_KIND_LABEL[alert.kind] ?? 'Hallazgo'}
+                      </span>
+                      <span className="block text-body3 text-gray-600">{alert.message}</span>
+                    </TableCell>
+                    <TableCell
+                      className="hidden sm:table-cell text-gray-600"
+                      title={formatDateTime(alert.detectedAt)}
+                    >
+                      {formatRelativeTime(alert.detectedAt)}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell text-body3 text-gray-600">
+                      {alert.acknowledgedAt ? (
+                        <>
+                          Leída
+                          {alert.acknowledgedByName ? ` por ${alert.acknowledgedByName}` : ''}
+                        </>
+                      ) : (
+                        <span className="text-amber-700">Pendiente</span>
                       )}
-                      {!alert.acknowledgedAt && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          // Solo la fila en vuelo, no todas: `isPending` a secas
-                          // congelaba la tabla entera en cada click.
-                          disabled={acknowledge.isPending && acknowledge.variables === alert.id}
-                          onClick={() => handleAcknowledge(alert.id, alert.patientName)}
-                        >
-                          <Check className="mr-1 size-4" aria-hidden />
-                          {acknowledge.isPending && acknowledge.variables === alert.id
-                            ? 'Guardando…'
-                            : 'Atender'}
-                        </Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
+                    </TableCell>
+                    <TableCell>
+                      <AlertRowActions alert={alert} />
+                    </TableCell>
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>

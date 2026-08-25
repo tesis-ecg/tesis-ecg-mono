@@ -149,5 +149,43 @@ export function mockEcgSignal(
     durationMs: durationSec * 1000,
     samples,
     startTimestamp,
+    annotations: [
+      {
+        id: 'mock-low',
+        kind: 'sqi_unanalyzable',
+        category: 'signal_quality',
+        severity: 'low',
+        startMs: startTimestamp + 60_000,
+        endMs: startTimestamp + 72_000,
+        confidenceScore: null,
+      },
+      {
+        id: 'mock-medium',
+        kind: 'lead_off',
+        category: 'signal_quality',
+        severity: 'medium',
+        startMs: startTimestamp + 150_000,
+        endMs: startTimestamp + 165_000,
+        confidenceScore: null,
+      },
+      {
+        id: 'mock-high',
+        kind: 'tachycardia',
+        category: 'clinical',
+        severity: 'high',
+        startMs: startTimestamp + 240_000,
+        endMs: startTimestamp + 285_000,
+        confidenceScore: 0.91,
+      },
+      {
+        id: 'mock-critical',
+        kind: 'afib',
+        category: 'clinical',
+        severity: 'critical',
+        startMs: startTimestamp + 360_000,
+        endMs: startTimestamp + 420_000,
+        confidenceScore: 0.97,
+      },
+    ],
   }
 }

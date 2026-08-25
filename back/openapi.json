@@ -1829,6 +1829,70 @@
         "title": "StudyDetailOut",
         "type": "object"
       },
+      "StudyEcgAnnotationOut": {
+        "description": "Rango significativo dentro de la señal, normalizado para el visor.",
+        "properties": {
+          "category": {
+            "enum": [
+              "signal_quality",
+              "clinical",
+              "patient_marker",
+              "technical"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "confidenceScore": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidencescore"
+          },
+          "endOffsetMs": {
+            "title": "Endoffsetms",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "startOffsetMs": {
+            "title": "Startoffsetms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "category",
+          "severity",
+          "startOffsetMs",
+          "endOffsetMs",
+          "confidenceScore"
+        ],
+        "title": "StudyEcgAnnotationOut",
+        "type": "object"
+      },
       "StudyEcgLevelOut": {
         "properties": {
           "byteLength": {
@@ -1883,6 +1947,13 @@
       "StudyEcgManifestOut": {
         "description": "Manifest v2.\n\nDos formas de estudio conviven:\n\n- **Seedeado / legacy**: toda la señal en un solo objeto (`raw`), `segments`\n  vacío. Es lo que produce `seed_demo`.\n- **Ingestado**: `raw` en `null` y la señal repartida en `segments`, uno por\n  lote. S3 no soporta append, así que un blob único obligaría a reescribir\n  173 MB cada hora.\n\nEn los dos casos `levels` es lo que consume el visor para la vista general,\nasí que el cliente casi nunca necesita mirar `raw` ni `segments`.",
         "properties": {
+          "annotations": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgAnnotationOut"
+            },
+            "title": "Annotations",
+            "type": "array"
+          },
           "channel": {
             "default": "ecg",
             "title": "Channel",
@@ -1931,7 +2002,6 @@
             "type": "integer"
           },
           "segments": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/StudyEcgSegmentOut"
             },

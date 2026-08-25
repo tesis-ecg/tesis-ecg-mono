@@ -2,12 +2,13 @@ import { useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { mockEcgSignal } from '@/features/ecg/mocks'
-import type { ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
+import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 
 /**
  * Página de desarrollo para validar el `<ECGViewer />` aislado de toda lógica
@@ -29,6 +30,7 @@ export function DevEcgViewer() {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
 
   // Demos de la API imperativa (TES-23).
   const handleJumpTo30s = () => {
@@ -60,6 +62,10 @@ export function DevEcgViewer() {
   // Sincronización mini-mapa → viewer.
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
+  }
+  const handleAnnotationSelect = (annotation: ECGAnnotation) => {
+    focusViewerOnAnnotation(viewerRef.current, annotation)
+    setSelectedAnnotationId(annotation.id)
   }
 
   // Fullscreen modal — al cerrar, sincroniza el viewport del viewer chico con
@@ -111,9 +117,22 @@ export function DevEcgViewer() {
             </Button>
           </div>
 
-          <ECGMinimap signal={signal} viewport={viewport} onViewportChange={handleMinimapChange} />
+          <ECGMinimap
+            signal={signal}
+            viewport={viewport}
+            onViewportChange={handleMinimapChange}
+            selectedAnnotationId={selectedAnnotationId}
+            onAnnotationSelect={handleAnnotationSelect}
+          />
 
-          <ECGViewer ref={viewerRef} signal={signal} height={400} onViewportChange={setViewport} />
+          <ECGViewer
+            ref={viewerRef}
+            signal={signal}
+            height={400}
+            onViewportChange={setViewport}
+            selectedAnnotationId={selectedAnnotationId}
+            onAnnotationSelect={handleAnnotationSelect}
+          />
 
           {viewport && (
             <p className="text-body3 mt-10 text-gray-600">
@@ -130,6 +149,8 @@ export function DevEcgViewer() {
         open={fullscreenOpen}
         onOpenChange={setFullscreenOpen}
         onClose={handleFullscreenClose}
+        selectedAnnotationId={selectedAnnotationId}
+        onAnnotationSelect={setSelectedAnnotationId}
       />
     </div>
   )

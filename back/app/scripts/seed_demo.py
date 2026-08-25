@@ -358,7 +358,8 @@ def synth_ecg(
     seed: str, duration_s: float, base_bpm: float, specs: list[EventSpec], fs: int = SAMPLE_RATE
 ) -> np.ndarray:
     """Señal de un canal en mV, muestreada a `fs`, con las arritmias de `specs`."""
-    rng = np.random.default_rng(abs(hash(seed)) % (2**32))
+    stable_seed = int.from_bytes(hashlib.sha256(seed.encode()).digest()[:8], "little")
+    rng = np.random.default_rng(stable_seed)
     n = int(duration_s * fs)
     signal = np.zeros(n, dtype=np.float64)
 

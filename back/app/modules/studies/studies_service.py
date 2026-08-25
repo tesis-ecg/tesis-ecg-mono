@@ -1,5 +1,7 @@
+import math
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +10,7 @@ from app.core.config import settings
 from app.core.s3 import build_presigned_url as _build_presigned_ecg_url
 from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device
+from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
 from app.modules.auth import auth_repository as auth_repo
@@ -17,6 +20,7 @@ from app.modules.studies.studies_schemas import (
     PatientStudiesResponse,
     PatientStudyOut,
     StudyDetailOut,
+    StudyEcgAnnotationOut,
     StudyEcgLevelOut,
     StudyEcgManifestOut,
     StudyEcgObjectOut,
@@ -28,6 +32,26 @@ from app.modules.studies.studies_schemas import (
 )
 
 MAX_LEGACY_ECG_BYTES = 5 * 1024 * 1024
+
+_SIGNAL_QUALITY_KINDS = {
+    "noise",
+    "lead_off",
+    "sqi_unanalyzable",
+    "adc_saturated",
+}
+_CLINICAL_EVENT_TYPES = {
+    ECGEventType.TACHYCARDIA,
+    ECGEventType.BRADYCARDIA,
+    ECGEventType.AFIB,
+    ECGEventType.PVC,
+    ECGEventType.PAUSE,
+}
+_ANNOTATION_SEVERITY: dict[ECGEventSeverity, Literal["low", "medium", "high", "critical"]] = {
+    ECGEventSeverity.LOW: "low",
+    ECGEventSeverity.MEDIUM: "medium",
+    ECGEventSeverity.HIGH: "high",
+    ECGEventSeverity.CRITICAL: "critical",
+}
 
 
 def _duration_ms(study: Study) -> int:
@@ -109,6 +133,82 @@ def _not_started() -> HTTPException:
             "message": "Un estudio programado todavía no grabó nada: solo se puede cancelar.",
         },
     )
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _event_offsets_ms(event: ECGEvent, study: Study) -> tuple[int, int] | None:
+    """Normaliza coordenadas nuevas y legacy al eje comprimido de muestras."""
+    metadata: dict[str, Any] = event.event_metadata or {}
+    start_sample = _finite_number(metadata.get("startSampleIndex"))
+    sample_count = _finite_number(metadata.get("sampleCount"))
+    duration_seconds = _finite_number(event.duration_seconds)
+
+    if start_sample is not None:
+        start_ms = start_sample * 1000 / study.sample_rate
+        if sample_count is not None:
+            end_ms = (start_sample + max(sample_count, 0)) * 1000 / study.sample_rate
+        else:
+            end_ms = start_ms + max(duration_seconds or 0, 0) * 1000
+    else:
+        offset_seconds = _finite_number(metadata.get("offsetInStudySeconds"))
+        if offset_seconds is None:
+            offset_seconds = _finite_number(event.timestamp_in_recording)
+        if offset_seconds is None:
+            return None
+        start_ms = offset_seconds * 1000
+        end_ms = start_ms + max(duration_seconds or 0, 0) * 1000
+
+    recording_duration_ms = study.samples_count * 1000 / study.sample_rate
+    clipped_start = min(max(start_ms, 0), recording_duration_ms)
+    clipped_end = min(max(end_ms, clipped_start), recording_duration_ms)
+    return round(clipped_start), round(clipped_end)
+
+
+def _annotation_kind(event: ECGEvent) -> str:
+    kind = (event.event_metadata or {}).get("kind")
+    if isinstance(kind, str) and kind.strip():
+        return kind.strip().lower()
+    return event.event_type.value.lower()
+
+
+def _annotation_category(
+    event: ECGEvent, kind: str
+) -> Literal["signal_quality", "clinical", "patient_marker", "technical"]:
+    if kind == "symptom_marker":
+        return "patient_marker"
+    if kind in _SIGNAL_QUALITY_KINDS or event.event_type is ECGEventType.NOISE:
+        return "signal_quality"
+    if event.event_type in _CLINICAL_EVENT_TYPES:
+        return "clinical"
+    return "technical"
+
+
+def _study_annotations(study: Study, events: list[ECGEvent]) -> list[StudyEcgAnnotationOut]:
+    annotations: list[StudyEcgAnnotationOut] = []
+    for event in events:
+        offsets = _event_offsets_ms(event, study)
+        if offsets is None:
+            continue
+        kind = _annotation_kind(event)
+        annotations.append(
+            StudyEcgAnnotationOut(
+                id=event.id,
+                kind=kind,
+                category=_annotation_category(event, kind),
+                severity=_ANNOTATION_SEVERITY[event.severity],
+                startOffsetMs=offsets[0],
+                endOffsetMs=offsets[1],
+                confidenceScore=event.confidence_score,
+            )
+        )
+    annotations.sort(key=lambda item: (item.startOffsetMs, item.endOffsetMs, str(item.id)))
+    return annotations
 
 
 async def list_studies(input_data: StudyListInput, db: AsyncSession) -> StudyListResponse:
@@ -238,6 +338,7 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         if study.ecg_s3_key is not None
         else None
     )
+    annotations = _study_annotations(study, await repo.list_ecg_events(db, study.id))
     if input_data.actor_id is not None:
         await auth_repo.log_audit_event(
             db,
@@ -257,6 +358,7 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         raw=raw,
         levels=levels,
         segments=segments,
+        annotations=annotations,
     )
 
 

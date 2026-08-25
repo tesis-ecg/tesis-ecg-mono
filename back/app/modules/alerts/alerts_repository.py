@@ -11,8 +11,8 @@ from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.doctor import Doctor
 from app.db.models.ecg_event import ECGEvent, ECGEventType
 from app.db.models.patient import Patient
-from app.db.models.study import Study
 from app.db.models.user import User
+from app.modules._alert_study import alert_study_id
 
 #: Mismo orden que usa el widget del dashboard: primero lo que puede matar a
 #: alguien. Duplicarlo acá evita importar un privado de otro módulo.
@@ -26,26 +26,6 @@ _SEVERITY_RANK = case(
     value=Alert.severity,
     else_=4,
 )
-
-
-def _study_id_subquery() -> ScalarSelect[uuid.UUID]:
-    """El estudio que estaba corriendo cuando se detectó la alerta.
-
-    Misma correlación que `dashboard_repository.list_pending_alerts`: la alerta
-    no guarda un FK al estudio, así que se lo ubica por ventana temporal.
-    """
-    return (
-        select(Study.id)
-        .where(
-            Study.patient_id == Alert.patient_id,
-            Study.deleted_at.is_(None),
-            Study.started_at <= Alert.created_at,
-            (Study.ended_at.is_(None)) | (Study.ended_at >= Alert.created_at),
-        )
-        .order_by(Study.started_at.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
 
 
 def _acknowledged_by_subquery() -> ScalarSelect[str]:
@@ -110,7 +90,7 @@ async def list_alerts(
             Patient,
             ECGEvent.event_type,
             ECGEvent.event_metadata,
-            _study_id_subquery().label("study_id"),
+            alert_study_id().label("study_id"),
             _acknowledged_by_subquery().label("acknowledged_by_name"),
         )
         .join(Patient, Alert.patient_id == Patient.id)
@@ -158,7 +138,7 @@ async def get_detail(
             Patient,
             ECGEvent.event_type,
             ECGEvent.event_metadata,
-            _study_id_subquery().label("study_id"),
+            alert_study_id().label("study_id"),
             _acknowledged_by_subquery().label("acknowledged_by_name"),
         )
         .join(Patient, Alert.patient_id == Patient.id)

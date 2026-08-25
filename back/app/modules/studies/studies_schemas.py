@@ -1,6 +1,9 @@
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
+
+from pydantic import Field
 
 from app.db.models.study import StudyStatus
 from app.modules._base_schema import CamelModel
@@ -72,6 +75,18 @@ class StudyEcgSegmentOut(StudyEcgObjectOut):
     sampleCount: int
 
 
+class StudyEcgAnnotationOut(CamelModel):
+    """Rango significativo dentro de la señal, normalizado para el visor."""
+
+    id: uuid.UUID
+    kind: str
+    category: Literal["signal_quality", "clinical", "patient_marker", "technical"]
+    severity: Literal["low", "medium", "high", "critical"]
+    startOffsetMs: int
+    endOffsetMs: int
+    confidenceScore: float | None
+
+
 class StudyEcgManifestOut(CamelModel):
     """Manifest v2.
 
@@ -98,7 +113,8 @@ class StudyEcgManifestOut(CamelModel):
     isSimulated: bool
     raw: StudyEcgObjectOut | None
     levels: list[StudyEcgLevelOut]
-    segments: list[StudyEcgSegmentOut] = []
+    segments: list[StudyEcgSegmentOut] = Field(default_factory=list)
+    annotations: list[StudyEcgAnnotationOut] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)

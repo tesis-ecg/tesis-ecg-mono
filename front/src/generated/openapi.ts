@@ -311,6 +311,16 @@ export interface StudyDetailOut {
   "doctorName": string | null
 }
 
+export interface StudyEcgAnnotationOut {
+  "id": string
+  "kind": string
+  "category": "signal_quality" | "clinical" | "patient_marker" | "technical"
+  "severity": "low" | "medium" | "high" | "critical"
+  "startOffsetMs": number
+  "endOffsetMs": number
+  "confidenceScore": number | null
+}
+
 export interface StudyEcgLevelOut {
   "url": string
   "expiresAt": string
@@ -334,6 +344,7 @@ export interface StudyEcgManifestOut {
   "raw": StudyEcgObjectOut | null
   "levels": Array<StudyEcgLevelOut>
   "segments"?: Array<StudyEcgSegmentOut>
+  "annotations"?: Array<StudyEcgAnnotationOut>
 }
 
 export interface StudyEcgObjectOut {

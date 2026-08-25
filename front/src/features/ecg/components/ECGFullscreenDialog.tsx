@@ -8,7 +8,9 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
-import type { ECGSignal, ECGViewerHandle, ECGViewportChange } from '../types'
+import { focusViewerOnAnnotation } from '../annotationMeta'
+import type { ECGAnnotation, ECGSignal, ECGViewerHandle, ECGViewportChange } from '../types'
+import { ECGFindingsPanel } from './ECGFindingsPanel'
 import { ECGMinimap } from './ECGMinimap'
 import { ECGViewer } from './ECGViewer'
 import { ECGZoomControls } from './ECGZoomControls'
@@ -31,6 +33,8 @@ interface ECGFullscreenDialogProps {
    * para que el viewer chico recupere la posición del viewer grande.
    */
   onClose?: (lastViewport: ECGViewportChange | null) => void
+  selectedAnnotationId?: string | null
+  onAnnotationSelect?: (annotationId: string) => void
 }
 
 /**
@@ -52,6 +56,8 @@ export function ECGFullscreenDialog({
   open,
   onOpenChange,
   onClose,
+  selectedAnnotationId = null,
+  onAnnotationSelect,
 }: ECGFullscreenDialogProps) {
   // Snapshot del viewport entregado por el padre cuando se abre la modal.
   // Sobrevive en una ref para que `onClose` lo pueda usar después de que el
@@ -87,6 +93,8 @@ export function ECGFullscreenDialog({
               closeViewportRef.current = vp
             }}
             onMinimize={closeDialog}
+            initialSelectedAnnotationId={selectedAnnotationId}
+            onAnnotationSelect={onAnnotationSelect}
           />
         )}
       </DialogContent>
@@ -99,6 +107,8 @@ interface ECGFullscreenBodyProps {
   initialViewport: ECGViewportChange | null
   onViewportChange: (viewport: ECGViewportChange) => void
   onMinimize: () => void
+  initialSelectedAnnotationId: string | null
+  onAnnotationSelect?: (annotationId: string) => void
 }
 
 function ECGFullscreenBody({
@@ -106,11 +116,16 @@ function ECGFullscreenBody({
   initialViewport,
   onViewportChange,
   onMinimize,
+  initialSelectedAnnotationId,
+  onAnnotationSelect,
 }: ECGFullscreenBodyProps) {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const viewerSlotRef = useRef<HTMLDivElement | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(initialViewport)
   const [viewerHeight, setViewerHeight] = useState(360)
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(
+    initialSelectedAnnotationId,
+  )
 
   // Mide el slot del viewer y descuenta espacio para la legend de uPlot. Sin
   // esto, el canvas se renderiza más alto que el espacio disponible y la
@@ -152,6 +167,11 @@ function ECGFullscreenBody({
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
+  const handleAnnotationSelect = (annotation: ECGAnnotation) => {
+    focusViewerOnAnnotation(viewerRef.current, annotation)
+    setSelectedAnnotationId(annotation.id)
+    onAnnotationSelect?.(annotation.id)
+  }
 
   return (
     <>
@@ -170,15 +190,32 @@ function ECGFullscreenBody({
         />
       </DialogHeader>
 
-      <ECGMinimap signal={signal} viewport={viewport} onViewportChange={handleMinimapChange} />
+      <ECGMinimap
+        signal={signal}
+        viewport={viewport}
+        onViewportChange={handleMinimapChange}
+        selectedAnnotationId={selectedAnnotationId}
+        onAnnotationSelect={handleAnnotationSelect}
+      />
 
-      <div ref={viewerSlotRef} className="min-h-0 flex-1">
-        <ECGViewer
-          ref={viewerRef}
-          signal={signal}
-          height={viewerHeight}
-          initialViewport={initialViewport ?? undefined}
-          onViewportChange={handleViewportChange}
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+        <div ref={viewerSlotRef} className="min-h-0">
+          <ECGViewer
+            ref={viewerRef}
+            signal={signal}
+            height={viewerHeight}
+            initialViewport={initialViewport ?? undefined}
+            onViewportChange={handleViewportChange}
+            selectedAnnotationId={selectedAnnotationId}
+            onAnnotationSelect={handleAnnotationSelect}
+          />
+        </div>
+        <ECGFindingsPanel
+          annotations={signal.annotations}
+          recordingStartMs={signal.startTimestamp}
+          selectedAnnotationId={selectedAnnotationId}
+          onAnnotationSelect={handleAnnotationSelect}
+          className="overflow-hidden rounded-md border border-border bg-card p-3"
         />
       </div>
 

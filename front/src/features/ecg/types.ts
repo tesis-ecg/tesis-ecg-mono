@@ -1,3 +1,19 @@
+export type ECGAnnotationSeverity = 'low' | 'medium' | 'high' | 'critical'
+
+export type ECGAnnotationCategory = 'signal_quality' | 'clinical' | 'patient_marker' | 'technical'
+
+export interface ECGAnnotation {
+  id: string
+  kind: string
+  category: ECGAnnotationCategory
+  severity: ECGAnnotationSeverity
+  /** Timestamp UNIX absoluto del inicio del aviso. */
+  startMs: number
+  /** Timestamp UNIX absoluto del final (igual a startMs para eventos puntuales). */
+  endMs: number
+  confidenceScore: number | null
+}
+
 /**
  * Señal ECG de un único canal. Los samples se guardan en `Float32Array` por
  * performance — pasarlos como `number[]` multiplicaría el uso de memoria y haría
@@ -15,6 +31,8 @@ export interface ECGSignal {
   samples: Float32Array
   /** Timestamp UNIX en ms del primer sample (`samples[0]`). */
   startTimestamp: number
+  /** Hallazgos y problemas de calidad alineados al mismo eje temporal. */
+  annotations: ECGAnnotation[]
 }
 
 export interface ECGViewerProps {
@@ -50,6 +68,10 @@ export interface ECGViewerProps {
    * a la API imperativa). Útil para sincronizar mini-mapa, panel lateral, etc.
    */
   onViewportChange?: (viewport: ECGViewportChange) => void
+  /** Aviso resaltado en el gráfico y el panel de hallazgos. */
+  selectedAnnotationId?: string | null
+  /** Selección de una banda directamente sobre el canvas. */
+  onAnnotationSelect?: (annotation: ECGAnnotation) => void
 }
 
 /**

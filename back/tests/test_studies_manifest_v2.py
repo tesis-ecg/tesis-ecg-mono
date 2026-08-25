@@ -6,9 +6,14 @@ señal completa (`raw` para los seedeados, `segments` para los ingestados).
 
 import hashlib
 import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import select
 
 from app.core.s3 import put_object
 from app.db.models.audit_event import AuditEvent, AuditEventType
+from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
+from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.user import UserRole
 from app.modules.ingest.processing import process_batch
 from tests.ingest_helpers import build_frames, post_frames
@@ -94,6 +99,35 @@ async def test_a_legacy_seeded_study_still_returns_raw(
     study.ecg_byte_length = len(payload)
     study.ecg_sha256 = hashlib.sha256(payload).hexdigest()
     study.samples_count = 1000
+    batch = ECGBatch(
+        device_id=device.id,
+        received_at=datetime.now(UTC),
+        batch_timestamp=0,
+        duration_seconds=4,
+        sample_rate=250,
+        num_channels=1,
+        num_samples=1000,
+        compression_type="raw-f32",
+        s3_key=f"batches/{device.id}/legacy.f32",
+        processing_status=ProcessingStatus.DONE,
+    )
+    db.add(batch)
+    await db.flush()
+    db.add(
+        ECGEvent(
+            batch_id=batch.id,
+            event_type=ECGEventType.NOISE,
+            severity=ECGEventSeverity.LOW,
+            timestamp_in_recording=0.0,
+            duration_seconds=0.5,
+            confidence_score=None,
+            event_metadata={
+                "kind": "sqi_unanalyzable",
+                "studyId": str(study.id),
+                "offsetInStudySeconds": 1.25,
+            },
+        )
+    )
     await db.flush()
     as_user(await make_user(UserRole.ADMIN))
 
@@ -102,6 +136,72 @@ async def test_a_legacy_seeded_study_still_returns_raw(
     assert manifest["raw"] is not None
     assert manifest["raw"]["byteLength"] == len(payload)
     assert manifest["segments"] == []
+    assert manifest["annotations"][0] == {
+        "id": manifest["annotations"][0]["id"],
+        "kind": "sqi_unanalyzable",
+        "category": "signal_quality",
+        "severity": "low",
+        "startOffsetMs": 1250,
+        "endOffsetMs": 1750,
+        "confidenceScore": None,
+    }
+
+
+async def test_manifest_normalizes_orders_and_clips_ingested_events(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    batch = await db.scalar(select(ECGBatch).where(ECGBatch.study_id == study_id))
+    assert batch is not None
+    hidden = ECGEvent(
+        batch_id=batch.id,
+        event_type=ECGEventType.PVC,
+        severity=ECGEventSeverity.HIGH,
+        timestamp_in_recording=0.1,
+        duration_seconds=0.1,
+        confidence_score=0.7,
+        event_metadata={"kind": "pvc", "startSampleIndex": 50, "sampleCount": 50},
+        deleted_at=datetime.now(UTC),
+    )
+    db.add_all(
+        [
+            ECGEvent(
+                batch_id=batch.id,
+                event_type=ECGEventType.AFIB,
+                severity=ECGEventSeverity.CRITICAL,
+                timestamp_in_recording=7.0,
+                duration_seconds=4.0,
+                confidence_score=0.96,
+                event_metadata={"kind": "afib", "startSampleIndex": 3500, "sampleCount": 2000},
+            ),
+            ECGEvent(
+                batch_id=batch.id,
+                event_type=ECGEventType.NOISE,
+                severity=ECGEventSeverity.MEDIUM,
+                timestamp_in_recording=1.0,
+                duration_seconds=0.5,
+                confidence_score=None,
+                event_metadata={
+                    "kind": "lead_off",
+                    "startSampleIndex": 500,
+                    "sampleCount": 250,
+                },
+            ),
+            hidden,
+        ]
+    )
+    await db.flush()
+    as_user(await make_user(UserRole.ADMIN))
+
+    manifest = await _manifest(client, study_id)
+
+    assert [item["kind"] for item in manifest["annotations"]] == ["lead_off", "afib"]
+    assert manifest["annotations"][0]["startOffsetMs"] == 1000
+    assert manifest["annotations"][0]["endOffsetMs"] == 1500
+    assert manifest["annotations"][1]["startOffsetMs"] == 7000
+    assert manifest["annotations"][1]["endOffsetMs"] == 8000
+    assert manifest["annotations"][1]["category"] == "clinical"
+    assert manifest["annotations"][1]["confidenceScore"] == 0.96
 
 
 async def test_a_study_without_any_signal_is_404(

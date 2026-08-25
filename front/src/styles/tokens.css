@@ -8,7 +8,9 @@
  * Documentación de uso y mapeo con ican: ./README.md
  */
 
-@theme {
+/* `static` evita que Tailwind pode tokens consumidos dinámicamente desde JS
+ * (`var(--ecg-alert-${severity})`) y garantiza las cuatro severidades. */
+@theme static {
   /* ---------- Primary (navy, brand) ---------- */
   --color-primary-50: #e5e7fe;
   --color-primary-100: #cbcefd;
@@ -116,6 +118,22 @@
   --ecg-bg: var(--color-white);
   --ecg-selector: #eab308;
   --ecg-selector-bg: rgba(234, 179, 8, 0.25);
+  --ecg-alert-low: var(--color-gray-600);
+  --ecg-alert-low-bg: rgba(114, 127, 135, 0.16);
+  --ecg-alert-low-timeline-bg: rgba(114, 127, 135, 0.32);
+  --ecg-alert-low-marker-bg: #e1e4e6;
+  --ecg-alert-medium: var(--color-info-500);
+  --ecg-alert-medium-bg: rgba(41, 77, 236, 0.14);
+  --ecg-alert-medium-timeline-bg: rgba(41, 77, 236, 0.28);
+  --ecg-alert-medium-marker-bg: #dbe3ff;
+  --ecg-alert-high: #b86a16;
+  --ecg-alert-high-bg: rgba(239, 196, 130, 0.24);
+  --ecg-alert-high-timeline-bg: rgba(239, 196, 130, 0.48);
+  --ecg-alert-high-marker-bg: #fae8ca;
+  --ecg-alert-critical: #c53f34;
+  --ecg-alert-critical-bg: rgba(236, 127, 116, 0.22);
+  --ecg-alert-critical-timeline-bg: rgba(236, 127, 116, 0.44);
+  --ecg-alert-critical-marker-bg: #f9d9d5;
 
   /* ---------- Tipografía ---------- */
   --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -227,6 +245,22 @@
   --ecg-bg: var(--color-gray-900);
   --ecg-selector: #facc15;
   --ecg-selector-bg: rgba(250, 204, 21, 0.3);
+  --ecg-alert-low: var(--color-gray-300);
+  --ecg-alert-low-bg: rgba(183, 188, 194, 0.18);
+  --ecg-alert-low-timeline-bg: rgba(183, 188, 194, 0.34);
+  --ecg-alert-low-marker-bg: #455660;
+  --ecg-alert-medium: var(--color-info-400);
+  --ecg-alert-medium-bg: rgba(156, 176, 247, 0.2);
+  --ecg-alert-medium-timeline-bg: rgba(156, 176, 247, 0.34);
+  --ecg-alert-medium-marker-bg: #263b80;
+  --ecg-alert-high: #f3d097;
+  --ecg-alert-high-bg: rgba(243, 208, 151, 0.22);
+  --ecg-alert-high-timeline-bg: rgba(243, 208, 151, 0.36);
+  --ecg-alert-high-marker-bg: #654c29;
+  --ecg-alert-critical: #ec7f74;
+  --ecg-alert-critical-bg: rgba(236, 127, 116, 0.24);
+  --ecg-alert-critical-timeline-bg: rgba(236, 127, 116, 0.38);
+  --ecg-alert-critical-marker-bg: #6b302b;
 }
 
 /* Custom variant para utilities `dark:*` consumibles desde clases.

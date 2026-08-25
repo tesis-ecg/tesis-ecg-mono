@@ -12,6 +12,7 @@ from app.db.models.device import Device, DeviceStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
+from app.modules._alert_study import alert_study_id
 
 # El LIMIT tiene que cortar por la misma clave con la que el service ordena, o las
 # alertas críticas viejas quedan afuera del widget cuando hay muchas recientes leves.
@@ -166,25 +167,13 @@ async def get_kpi_counts(
 async def list_pending_alerts(
     db: AsyncSession, doctor_id: uuid.UUID | None, limit: int
 ) -> list[tuple[Alert, Patient, ECGEventType, dict[str, Any], uuid.UUID | None]]:
-    study_id = (
-        select(Study.id)
-        .where(
-            Study.patient_id == Alert.patient_id,
-            Study.deleted_at.is_(None),
-            Study.started_at <= Alert.created_at,
-            or_(Study.ended_at.is_(None), Study.ended_at >= Alert.created_at),
-        )
-        .order_by(Study.started_at.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
     statement = (
         select(
             Alert,
             Patient,
             ECGEvent.event_type,
             ECGEvent.event_metadata,
-            study_id.label("study_id"),
+            alert_study_id().label("study_id"),
         )
         .join(Patient, Alert.patient_id == Patient.id)
         .join(ECGEvent, Alert.event_id == ECGEvent.id)

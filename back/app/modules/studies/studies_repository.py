@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.device import Device
 from app.db.models.doctor import Doctor
+from app.db.models.ecg_batch import ECGBatch
+from app.db.models.ecg_event import ECGEvent
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User
@@ -146,6 +148,27 @@ async def get_detail(
         return None
     study, patient, device, name = row
     return study, patient, device, name
+
+
+async def list_ecg_events(db: AsyncSession, study_id: uuid.UUID) -> list[ECGEvent]:
+    """Eventos del estudio, incluyendo seeds legacy sin ``ecg_batch.study_id``.
+
+    Todo lote producido por la ingesta moderna tiene FK al estudio. Los datos
+    demo previos a esa columna guardaban el vínculo únicamente en JSONB; el
+    fallback conserva su visualización hasta que se regeneren.
+    """
+    metadata_study_id = ECGEvent.event_metadata["studyId"].astext
+    result = await db.scalars(
+        select(ECGEvent)
+        .join(ECGBatch, ECGEvent.batch_id == ECGBatch.id)
+        .where(
+            ECGEvent.deleted_at.is_(None),
+            ECGBatch.deleted_at.is_(None),
+            or_(ECGBatch.study_id == study_id, metadata_study_id == str(study_id)),
+        )
+        .order_by(ECGEvent.timestamp_in_recording.asc(), ECGEvent.id.asc())
+    )
+    return list(result.all())
 
 
 #: Estados desde los que un estudio todavía puede cerrarse. El resto
