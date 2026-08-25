@@ -1,7 +1,7 @@
 import { api } from '@/lib/api'
 import { createApiError, isApiError } from '@/lib/apiError'
 
-import type { ECGSignal } from '../types'
+import type { ECGAnnotationCategory, ECGAnnotationSeverity, ECGSignal } from '../types'
 
 interface EcgUrlResponse {
   url: string
@@ -29,6 +29,16 @@ interface EcgSegment extends EcgObject {
   sampleCount: number
 }
 
+interface EcgAnnotation {
+  id: string
+  kind: string
+  category: ECGAnnotationCategory
+  severity: ECGAnnotationSeverity
+  startOffsetMs: number
+  endOffsetMs: number
+  confidenceScore: number | null
+}
+
 /**
  * Manifest v2. Dos formas de estudio conviven:
  *
@@ -52,6 +62,7 @@ interface EcgManifest {
   raw: EcgObject | null
   levels: EcgLevel[]
   segments?: EcgSegment[]
+  annotations?: EcgAnnotation[]
 }
 
 const MAX_INITIAL_POINTS = 20_000
@@ -109,6 +120,15 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     durationMs: recordingDurationMs(manifest.sampleCount, manifest.sampleRate),
     samples,
     startTimestamp: manifest.startTimestamp,
+    annotations: (manifest.annotations ?? []).map((annotation) => ({
+      id: annotation.id,
+      kind: annotation.kind,
+      category: annotation.category,
+      severity: annotation.severity,
+      startMs: manifest.startTimestamp + annotation.startOffsetMs,
+      endMs: manifest.startTimestamp + annotation.endOffsetMs,
+      confidenceScore: annotation.confidenceScore,
+    })),
   }
 }
 
@@ -136,6 +156,7 @@ export async function getStudyEcgLegacy(studyId: string, signal?: AbortSignal): 
     durationMs: recordingDurationMs(meta.sampleCount, meta.sampleRate),
     samples: await decodeEcgObject(buffer, { byteLength: expectedBytes, sha256: null }, signal),
     startTimestamp: meta.startTimestamp,
+    annotations: [],
   }
 }
 

@@ -89,6 +89,42 @@ describe('getStudyEcg', () => {
     expect([...signal.samples]).toEqual([1, 2, 3])
     expect(signal.durationMs).toBe(6)
   })
+
+  it('convierte las anotaciones relativas del manifest a timestamps absolutos', async () => {
+    installDecoderWorker()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        levels: [object({ samplesPerBucket: 16, pointCount: 4 })],
+        annotations: [
+          {
+            id: 'event-1',
+            kind: 'lead_off',
+            category: 'signal_quality',
+            severity: 'medium',
+            startOffsetMs: 1000,
+            endOffsetMs: 1500,
+            confidenceScore: null,
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.annotations).toEqual([
+      {
+        id: 'event-1',
+        kind: 'lead_off',
+        category: 'signal_quality',
+        severity: 'medium',
+        startMs: 1_700_000_001_000,
+        endMs: 1_700_000_001_500,
+        confidenceScore: null,
+      },
+    ])
+  })
 })
 
 function object(overrides: Record<string, unknown> = {}) {

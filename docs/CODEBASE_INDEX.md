@@ -35,7 +35,7 @@ Entrypoint: `back/app/main.py` — creates `FastAPI(title="Holter ECG API")`, co
 | `/auth` | `modules/auth` | **Implemented** | `POST /login`, `POST /logout`, `GET /me`, deprecated `POST /register`, `POST /forgot-password` |
 | `/patients` | `modules/patients` | **Implemented** | `GET ""`, `GET /{id}`, `GET /{id}/studies`, `GET /{id}/summary`, `GET /{id}/device`, `POST ""`, `PATCH /{id}`, `DELETE /{id}` |
 | `/devices` | `modules/devices` | **Implemented** | `GET ""`, `POST ""`, `GET /{id}`, `PATCH /{id}`, `DELETE /{id}`, `POST /{id}/assign`, `POST /{id}/unassign`, `POST /{id}/reassign`, `GET /{id}/health` |
-| `/studies` | `modules/studies` | **Implemented** | paginated `GET ""`, `GET /{id}`, `POST /{id}/complete`, `POST /{id}/cancel`, legacy `GET /{id}/ecg`, `GET /{id}/ecg/manifest` |
+| `/studies` | `modules/studies` | **Implemented** | paginated `GET ""`, `GET /{id}`, `POST /{id}/complete`, `POST /{id}/cancel`, legacy `GET /{id}/ecg`, `GET /{id}/ecg/manifest` (signal objects + normalized event annotations) |
 | `/alerts` | `modules/alerts` | **Implemented** | `GET ""` (paginado, filtros `acknowledged`/`severity`), `POST /{id}/acknowledge` |
 | `/doctors` | `modules/doctors` | **Implemented** | admin-only `GET ""` for active doctor options |
 | `/users` | `modules/users` | **Implemented** | admin-only list/create/email/reset/delete |
@@ -77,7 +77,7 @@ Entrypoint: `front/src/main.tsx` → `App.tsx` (routes). Feature-folder architec
 - `features/devices` — Holter ABM + assign/unassign/reassign + health (`useHolters`, `useHolter`, `useHolterHealth`, `useAssignHolter`, etc.).
 - `features/studies` — study metadata **and lifecycle**: `useStudy`, `useStudies`, `useCompleteStudy`, `useCancelStudy`, `StudyHeader` (carries the finish/cancel actions), `CloseStudyDialog`, `StudyBreadcrumb`.
 - `features/alerts` — clinical alert inbox: `useAlerts`, `usePendingAlertCount` (feeds the sidebar badge), `useAcknowledgeAlert`, `AlertSeverityBadge`, `labels.ts`.
-- `features/ecg` — high-fidelity ECG viewer: `ECGViewer.tsx` (uPlot), `ECGMinimap.tsx`, `ECGZoomControls.tsx`, `ECGFullscreenDialog.tsx`, `useEcgSignal.ts` (polls every 60 s while the study is `in_progress`).
+- `features/ecg` — high-fidelity ECG viewer: `ECGViewer.tsx` (uPlot signal + severity-colored event bands), `ECGMinimap.tsx` (overview + accessible event markers), `ECGFindingsPanel.tsx`, fullscreen/zoom controls, and `useEcgSignal.ts` (polls every 60 s while the study is `in_progress`). Annotation labels, severity rules and viewport navigation live in `annotationMeta.ts`; canvas painting lives in `annotationPlugin.ts`.
 - `features/vest-simulator` — Holter simulator: `codec/` (TypeScript port of the firmware's Rice encoder + a decoder used only by round-trip tests), `codec/batchBuilder.ts` (signal → frames → injected anomalies), `workers/vestWorker.ts` (one worker per vest), `hooks/useVestFleet.ts` (N concurrent vests), `storage.ts` (fleet persisted to `localStorage` under `holter:vest-fleet`), `components/`. **The plaintext device API key is returned only once by `POST /devices/{id}/api-key`**, so rotation applies to the vest immediately (outside the dialog's draft) and the fleet is persisted — otherwise a cancel or a reload left the vest holding a dead key and every ingest answered 401.
 
 **Shared infra** (`src/lib/`): `api.ts` (axios, `withCredentials`, fixed `/api`), `apiError.ts` (stable backend envelope mapping), `queryClient.ts` (GET-only bounded retry), centralized `queryKeys.ts`, `time.ts`, `utils.ts`. `src/generated/openapi.ts` is generated from `back/openapi.json`; CI checks drift through `app.scripts.export_openapi`.
@@ -92,7 +92,7 @@ Entrypoint: `front/src/main.tsx` → `App.tsx` (routes). Feature-folder architec
 
 **User provisioning**: login never auto-provisions. Admin-only `/users` owns the pending → active/error Auth0–DB workflow; deprecated `/auth/register` delegates to it. `app.scripts.reconcile_identities` repairs pending/error states. Inconsistent identities cannot authenticate.
 
-**ECG viewing**: StudyDetail prefers `GET /studies/{id}/ecg/manifest` (versioned little-endian raw metadata + SHA-256 + presigned raw/min-max levels, 10-minute expiry). The client selects a pyramid level capped at 20,000 points and validates size/checksum; raw is allowed only below 5 MB. A 404 falls back to deprecated `/ecg`. S3 downloads remain direct and private/presigned.
+**ECG viewing**: StudyDetail prefers `GET /studies/{id}/ecg/manifest` (versioned little-endian raw metadata + SHA-256 + presigned raw/min-max levels, 10-minute expiry, plus normalized `annotations`). `studies_repository.list_ecg_events` associates modern events through `ecg_batch.study_id` and falls back to legacy `metadata.studyId`; the service clips sample/time coordinates to the recording and exposes lower-case kind/category/severity. The client selects a pyramid level capped at 20,000 points, validates size/checksum, overlays annotations in uPlot/minimap, and drives the findings panel from the same payload. A 404 falls back to deprecated `/ecg` with no annotations. S3 downloads remain direct and private/presigned.
 
 **ECG ingestion (device → study)**: the vest POSTs `N × 256 B` Rice-compressed frames as `application/octet-stream` to `/ingest/ecg-frames`. The service validates each frame (magic → version → CRC-32), resolves `serial → device.patient_id → open in-progress study` (creating one if needed, and never joining a study that already holds a legacy `ecg_s3_key` blob), archives the accepted contiguous run to S3 and answers `202` with a go-back-N ACK delta. A `BackgroundTasks` job then decodes to float32 mV, writes one segment plus one bucket-16 envelope per batch, rebuilds the coarse pyramid levels from the envelopes, and derives `ecg_event`/`alert` rows. `/ingest` is exempt from the Origin check — it carries no cookie, so it has no CSRF surface, and the ESP32 co-processor sends no `Origin` header.
 
@@ -114,7 +114,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 | `device` | `device.py` | `serial_number`, `doctor_id`, `patient_id`, telemetry nullable, `status`; DB checks + one-active-device-per-patient partial unique index | `patient`, `ecg_batches` |
 | `study` | `study.py` | IDs/times/counts plus `ecg_encoding`, byte length, SHA-256 and JSONB pyramid levels | `patient`, `device` |
 | `auth_rate_limit` | `auth_rate_limit.py` | HMAC `key`, fixed `bucket_start`, attempts | — |
-| `ecg_batch` | `ecg_batch.py` | `device_id`, `received_at`, `batch_timestamp`, `duration_seconds`, `sample_rate`, `num_channels`, `compression_type`, `s3_key`, `processing_status` | `device`, `events` |
+| `ecg_batch` | `ecg_batch.py` | `device_id`, nullable legacy-compatible `study_id`, timing/sample metadata, processing state, raw/frame S3 keys and ingest sequence fields | `device`, optional `study`, `events` |
 | `ecg_event` | `ecg_event.py` | `batch_id`, `event_type`, `severity`, `timestamp_in_recording`, `duration_seconds`, `confidence_score`, `event_metadata` (JSONB) | `batch`, `alerts` |
 | `alert` | `alert.py` | `patient_id`, `event_id`, `severity`, `message`, `seen_at`, `acknowledged_at`, `acknowledged_by` (FK→doctor, nullable) | `patient`, `event`, `acknowledged_by_doctor` |
 | `audit_event` | `audit_event.py` | `user_id`, `event_type`, `ip_address`, `event_metadata` (JSONB) | — |
@@ -128,6 +128,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 - **Auth0** — identity provider, backend-mediated (ROPG + Management API). Client: `back/app/core/auth0_client.py`. Config: `auth0_*` settings.
 - **PostgreSQL** — primary DB. Async engine in `back/app/db/session.py` uses timeouts and `NullPool` in preview/production. Local via root docker-compose (`postgres:16.10-alpine`).
 - **S3 / MinIO** — ECG binary blob storage (pre-signed URLs). Client built in `studies_service._get_s3_client()` (boto3, s3v4). Local via docker-compose (`minio/minio`). Config: `s3_*`/`aws_*` settings.
+- **Local ECG annotation showcase** — `python -m app.scripts.seed_ecg_showcase` creates/replaces only `SHOWCASE-ECG-ALERTS` and `showcases/ecg-alerts/` in development/test. It writes one deterministic 10-minute study, raw + pyramid objects, and six quality/clinical/patient events across all severities; default owner is `dev@tesis.com`, which must be an active doctor.
 - **The Holter device (firmware)** — producer of `ecg_batch` rows + S3 objects through `POST /ingest/ecg-frames`, authenticated with `device.api_key_hash`. The frame format is normative and lives in the sibling repo `../Holter-ECG-System` (`INTEGRACION.md` §3-4). Admins mint credentials with `POST /devices/{id}/api-key`.
 
 ## Important Docs
@@ -142,7 +143,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 ## Suggested Reading Paths
 
 - **Add/modify a backend endpoint**: `back/app/main.py` → target route → service → repository → schemas; use `get_current_user` for identity and `get_doctor_scope` for explicit admin/doctor scoping. Regenerate OpenAPI/types.
-- **Work on the ECG viewer**: `StudyDetail.tsx` → `features/ecg/{api,hooks,components}` → `studies_service.get_study_ecg_manifest` → private S3 objects.
+- **Work on the ECG viewer or findings**: `StudyDetail.tsx` → `features/ecg/{api,hooks,components,annotationMeta.ts,annotationPlugin.ts}` → `studies_service.get_study_ecg_manifest` / `studies_repository.list_ecg_events` → private S3 objects + `ecg_event` rows.
 - **Auth changes**: `back/app/modules/auth/` + `core/auth0_client.py` + `core/security.py` + `dependencies/auth_dependencies.py`; FE `front/src/features/auth/` + `lib/api.ts`.
 - **Data model / migration**: `back/app/db/models/` → add Alembic migration in `back/alembic/versions/`.
 - **New frontend feature**: mirror an existing folder under `front/src/features/` (e.g. `patients`); follow shadcn flow in `CLAUDE.md`.

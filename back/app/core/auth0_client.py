@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -16,6 +17,40 @@ class Auth0Error(Exception):
         self.code = code
         self.message = message
         self.status = status
+
+
+def _json_body(resp: httpx.Response) -> dict[str, Any]:
+    """Cuerpo JSON de una respuesta de Auth0, o un 502 con un mensaje útil.
+
+    Auth0 no siempre contesta JSON. Un dominio mal configurado, una caída o un
+    proxy en el medio devuelven HTML o texto plano, y ahí un `resp.json()` pelado
+    tira un `JSONDecodeError` que sube hasta el handler genérico: el usuario ve
+    "Ocurrió un error interno" y en el log queda un stack de `json/decoder.py`
+    que no dice nada sobre la causa real.
+
+    El caso más común, y el más molesto de diagnosticar, es un `.env` sin
+    completar: `AUTH0_DOMAIN=your-tenant.auth0.com` no resuelve a ningún tenant.
+    """
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        preview = resp.text[:200].strip().replace("\n", " ")
+        raise Auth0Error(
+            "AUTH0_UNAVAILABLE",
+            (
+                f"Auth0 respondió {resp.status_code} sin JSON. "
+                "Revisar AUTH0_DOMAIN y las credenciales del .env. "
+                f"Respuesta: {preview!r}"
+            ),
+            502,
+        ) from exc
+    if not isinstance(body, dict):
+        raise Auth0Error(
+            "AUTH0_UNAVAILABLE",
+            f"Auth0 respondió {resp.status_code} con un cuerpo inesperado.",
+            502,
+        )
+    return body
 
 
 # --- Management API token cache (in-memory, single process) ---
@@ -49,7 +84,7 @@ async def _get_mgmt_token() -> str:
         if resp.status_code != 200:
             raise Auth0Error("MGMT_TOKEN_ERROR", "Failed to obtain Auth0 management token", 500)
 
-        data = resp.json()
+        data = _json_body(resp)
         _cache.token = data["access_token"]
         expires_in: int = data.get("expires_in", 86400)
         _cache.expires_at = datetime.now(UTC) + timedelta(seconds=expires_in - 60)
@@ -81,7 +116,7 @@ async def _get_jwks() -> list[dict[str, object]]:
             )
         if response.status_code != 200:
             raise Auth0Error("AUTH0_JWKS_ERROR", "No se pudo validar la identidad.", 502)
-        keys = response.json().get("keys", [])
+        keys = _json_body(response).get("keys", [])
         if not isinstance(keys, list):
             raise Auth0Error("AUTH0_JWKS_ERROR", "JWKS inválido.", 502)
         _jwks_cache.keys = [key for key in keys if isinstance(key, dict)]
@@ -110,7 +145,7 @@ async def authenticate_user(email: str, password: str, client_ip: str | None = N
         )
 
     if resp.status_code == 200:
-        access_token = str(resp.json()["access_token"])
+        access_token = str(_json_body(resp)["access_token"])
         try:
             header = unverified_header(access_token)
             kid = header.get("kid")
@@ -134,7 +169,7 @@ async def authenticate_user(email: str, password: str, client_ip: str | None = N
                 "AUTH0_TOKEN_INVALID", "Auth0 devolvió un token inválido.", 502
             ) from exc
 
-    body = resp.json()
+    body = _json_body(resp)
     error_code = body.get("error", "")
     description = body.get("error_description", "")
 
@@ -164,9 +199,9 @@ async def create_auth0_user(email: str, password: str, full_name: str) -> str:
         )
 
     if resp.status_code == 201:
-        return str(resp.json()["user_id"])
+        return str(_json_body(resp)["user_id"])
 
-    body = resp.json()
+    body = _json_body(resp)
     if resp.status_code == 409:
         raise Auth0Error("EMAIL_CONFLICT", "Email already registered.", 409)
     raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to create user."), 502)
@@ -187,7 +222,7 @@ async def update_auth0_user_email(auth0_id: str, email: str) -> None:
     if resp.status_code == 200:
         return
 
-    body = resp.json()
+    body = _json_body(resp)
     if resp.status_code == 409:
         raise Auth0Error("EMAIL_CONFLICT", "Email already registered.", 409)
     raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to update user email."), 502)
@@ -208,7 +243,7 @@ async def block_auth0_user(auth0_id: str) -> None:
     if resp.status_code == 200:
         return
 
-    body = resp.json()
+    body = _json_body(resp)
     raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to block user."), 502)
 
 

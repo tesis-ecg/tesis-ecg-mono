@@ -7,11 +7,12 @@ escribía: no había forma de que un médico dijera "esta ya la vi".
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
+from app.db.models.study import StudyStatus
 from app.db.models.user import User, UserRole
 
 
@@ -29,10 +30,12 @@ async def _make_alert(  # type: ignore[no-untyped-def]
     event_type: ECGEventType = ECGEventType.TACHYCARDIA,
     event_metadata: dict[str, object] | None = None,
     message: str = "Taquicardia sostenida",
+    study=None,
 ) -> Alert:
     """`batch → event → alert`, que es la cadena que arma la ingesta."""
     batch = ECGBatch(
         device_id=device.id,
+        study_id=study.id if study is not None else None,
         received_at=datetime.now(UTC),
         batch_timestamp=int(datetime.now(UTC).timestamp() * 1000),
         duration_seconds=60,
@@ -92,6 +95,62 @@ async def test_the_list_resolves_the_patient_name_and_the_kind(
     assert item["kind"] == "tachycardia"
     assert item["severity"] == "high"
     assert item["acknowledgedAt"] is None
+
+
+async def test_the_alert_links_to_the_study_of_its_batch(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """El batch es el vínculo exacto y gana sobre cualquier heurística temporal."""
+    doctor = await make_doctor()
+    patient = await make_patient(doctor=doctor)
+    device, _ = await make_device(patient=patient)
+    ingested = await make_study(
+        patient,
+        device,
+        started_at=datetime.now(UTC) - timedelta(days=5),
+        ended_at=datetime.now(UTC) - timedelta(days=4),
+        status=StudyStatus.COMPLETED,
+    )
+    # Un estudio abierto que sí cubre el instante de la alerta: si ganara la
+    # ventana temporal, el link llevaría a este y no al del batch.
+    await make_study(patient, device, started_at=datetime.now(UTC) - timedelta(hours=1))
+    await _make_alert(db, patient, device, study=ingested)
+    await db.commit()
+
+    body = (await as_user(await _doctor_user(db, doctor)).get("/alerts")).json()
+
+    assert body["items"][0]["studyId"] == str(ingested.id)
+
+
+async def test_an_alert_outside_every_study_window_still_links_to_the_last_one(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """Sin esto la fila queda muerta: no se puede abrir la señal desde la alerta.
+
+    Pasa con los batches que llegan sin `study_id` y con las alertas cuyo
+    `created_at` cae fuera de la ventana de todo estudio del paciente (las que
+    siembra el seed, por ejemplo).
+    """
+    doctor = await make_doctor()
+    patient = await make_patient(doctor=doctor)
+    device, _ = await make_device(patient=patient)
+    closed = await make_study(
+        patient,
+        device,
+        started_at=datetime.now(UTC) - timedelta(days=6),
+        ended_at=datetime.now(UTC) - timedelta(days=5),
+        status=StudyStatus.COMPLETED,
+    )
+    await _make_alert(db, patient, device)
+    await db.commit()
+    client = as_user(await _doctor_user(db, doctor))
+
+    inbox = (await client.get("/alerts")).json()["items"]
+    dashboard = (await client.get("/dashboard/alerts")).json()
+
+    assert inbox[0]["studyId"] == str(closed.id)
+    # El widget del dashboard usa la misma correlación y tiene que coincidir.
+    assert dashboard[0]["studyId"] == str(closed.id)
 
 
 async def test_symptom_marker_keeps_its_clinical_kind_in_alerts_and_dashboard(

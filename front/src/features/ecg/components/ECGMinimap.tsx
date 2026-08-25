@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useRef } from 'react'
 
 import { cn } from '@/lib/utils'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
-import type { ECGSignal, ECGViewportChange } from '../types'
+import {
+  ANNOTATION_SEVERITY,
+  annotationIcon,
+  annotationLabel,
+  compareAnnotationsForPainting,
+} from '../annotationMeta'
+import type { ECGAnnotation, ECGSignal, ECGViewportChange } from '../types'
 
 interface ECGMinimapProps {
   signal: ECGSignal
@@ -12,6 +19,8 @@ interface ECGMinimapProps {
   onViewportChange: (viewport: ECGViewportChange) => void
   /** Alto del mini-mapa en píxeles. Default 64. */
   height?: number
+  selectedAnnotationId?: string | null
+  onAnnotationSelect?: (annotation: ECGAnnotation) => void
 }
 
 /**
@@ -24,7 +33,14 @@ interface ECGMinimapProps {
  * El overlay con la ventana visible es un `<div>` absoluto sobre el canvas con
  * `pointer*` handlers para drag.
  */
-export function ECGMinimap({ signal, viewport, onViewportChange, height = 64 }: ECGMinimapProps) {
+export function ECGMinimap({
+  signal,
+  viewport,
+  onViewportChange,
+  height = 64,
+  selectedAnnotationId,
+  onAnnotationSelect,
+}: ECGMinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -32,6 +48,14 @@ export function ECGMinimap({ signal, viewport, onViewportChange, height = 64 }: 
   const endTimestamp = signal.startTimestamp + durationSec * 1000
 
   const tokens = useMemo(() => readTokens(), [])
+  const annotationDrawOrder = useMemo(() => {
+    const sorted = [...signal.annotations].sort(compareAnnotationsForPainting)
+    const selectedIndex = sorted.findIndex((annotation) => annotation.id === selectedAnnotationId)
+    if (selectedIndex < 0) return sorted
+    const [selected] = sorted.splice(selectedIndex, 1)
+    sorted.push(selected)
+    return sorted
+  }, [selectedAnnotationId, signal.annotations])
 
   // Dibuja la señal downsampleada (min/max por columna). Re-dibuja solo cuando
   // cambia la señal o el ancho del canvas (no cuando cambia el viewport).
@@ -164,30 +188,116 @@ export function ECGMinimap({ signal, viewport, onViewportChange, height = 64 }: 
   }
 
   return (
-    <div
-      ref={containerRef}
-      className={cn(
-        'relative w-full select-none rounded-md border border-border bg-card overflow-hidden',
-        'cursor-pointer',
+    <div className="flex w-full flex-col gap-1.5">
+      {signal.annotations.length > 0 && (
+        <TooltipProvider delayDuration={200}>
+          <div className="relative h-8 rounded-sm bg-gray-50" aria-label="Avisos del estudio">
+            {annotationDrawOrder.map((annotation) => {
+              const startPct = annotationPercent(annotation.startMs)
+              const endPct = annotationPercent(annotation.endMs)
+              const Icon = annotationIcon(annotation.category)
+              const severity = ANNOTATION_SEVERITY[annotation.severity]
+              const isSelected = annotation.id === selectedAnnotationId
+              return (
+                <div key={annotation.id}>
+                  <span
+                    data-testid={`timeline-annotation-range-${annotation.id}`}
+                    className={cn(
+                      'pointer-events-none absolute inset-y-0 rounded-sm border-x',
+                      isSelected && 'border-2',
+                    )}
+                    style={{
+                      left: `${startPct}%`,
+                      width: `${Math.max(endPct - startPct, 0.35)}%`,
+                      minWidth: annotation.endMs <= annotation.startMs ? 32 : 12,
+                      borderColor: `var(--ecg-alert-${annotation.severity})`,
+                      backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
+                      zIndex: isSelected ? 2 : 1,
+                    }}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label={`${annotationLabel(annotation.kind)}, severidad ${severity.label.toLowerCase()}`}
+                        aria-pressed={isSelected}
+                        onClick={() => onAnnotationSelect?.(annotation)}
+                        className={cn(
+                          'absolute top-1 flex size-6 -translate-x-1/2 cursor-pointer items-center justify-center rounded-full border shadow-sm',
+                          'focus-visible:z-20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+                          isSelected ? 'z-20 scale-110' : 'z-10 hover:z-20 hover:scale-105',
+                        )}
+                        style={{
+                          left: `${startPct}%`,
+                          color: `var(--ecg-alert-${annotation.severity})`,
+                          borderColor: `var(--ecg-alert-${annotation.severity})`,
+                          backgroundColor: `var(--ecg-alert-${annotation.severity}-marker-bg)`,
+                        }}
+                      >
+                        <Icon className="size-3.5" aria-hidden />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {annotationLabel(annotation.kind)} · {severity.label}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              )
+            })}
+          </div>
+        </TooltipProvider>
       )}
-      style={{ height }}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
-    >
-      <canvas ref={canvasRef} className="absolute inset-0 block" />
+
       <div
-        className="pointer-events-none absolute top-0 bottom-0 border-2"
-        style={{
-          left: `${viewportLeftPct}%`,
-          width: `${viewportWidthPct}%`,
-          borderColor: 'var(--ecg-selector)',
-          backgroundColor: 'var(--ecg-selector-bg)',
-        }}
-      />
+        ref={containerRef}
+        className={cn(
+          'relative w-full select-none overflow-hidden rounded-md border border-border bg-card',
+          'cursor-pointer',
+        )}
+        style={{ height }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+      >
+        <canvas ref={canvasRef} className="absolute inset-0 block" />
+        {annotationDrawOrder.map((annotation) => {
+          const startPct = annotationPercent(annotation.startMs)
+          const endPct = annotationPercent(annotation.endMs)
+          return (
+            <span
+              key={annotation.id}
+              className="pointer-events-none absolute top-0 bottom-0 border-x"
+              style={{
+                left: `${startPct}%`,
+                width: `${Math.max(endPct - startPct, 0.2)}%`,
+                minWidth: annotation.endMs <= annotation.startMs ? 8 : 4,
+                borderColor: `var(--ecg-alert-${annotation.severity})`,
+                backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
+              }}
+            />
+          )
+        })}
+        <div
+          className="pointer-events-none absolute top-0 bottom-0 border-2"
+          style={{
+            left: `${viewportLeftPct}%`,
+            width: `${viewportWidthPct}%`,
+            borderColor: 'var(--ecg-selector)',
+            backgroundColor: 'var(--ecg-selector-bg)',
+          }}
+        />
+      </div>
     </div>
   )
+
+  function annotationPercent(timestampMs: number): number {
+    if (durationSec <= 0) return 0
+    return Math.max(
+      0,
+      Math.min(100, ((timestampMs - signal.startTimestamp) / 1000 / durationSec) * 100),
+    )
+  }
 }
 
 function readTokens(): { trace: string; bg: string } {

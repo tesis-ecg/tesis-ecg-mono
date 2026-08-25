@@ -7,12 +7,14 @@ import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
+import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
-import type { ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
+import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 import { StudyBreadcrumb } from '@/features/studies/components/StudyBreadcrumb'
 import { StudyHeader } from '@/features/studies/components/StudyHeader'
 import { useStudy } from '@/features/studies/hooks/useStudy'
@@ -36,6 +38,7 @@ export function StudyDetail() {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
 
   // 404 → estado dedicado.
   if (studyQ.isError && isApiError(studyQ.error) && studyQ.error.code === 'NOT_FOUND') {
@@ -118,6 +121,11 @@ export function StudyDetail() {
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
+  const handleAnnotationSelect = (annotation: ECGAnnotation) => {
+    if (!ecgQ.data) return
+    focusViewerOnAnnotation(viewerRef.current, annotation)
+    setSelectedAnnotationId(annotation.id)
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -181,12 +189,16 @@ export function StudyDetail() {
                 signal={ecgQ.data}
                 viewport={viewport}
                 onViewportChange={handleMinimapChange}
+                selectedAnnotationId={selectedAnnotationId}
+                onAnnotationSelect={handleAnnotationSelect}
               />
               <ECGViewer
                 ref={viewerRef}
                 signal={ecgQ.data}
                 height={400}
                 onViewportChange={setViewport}
+                selectedAnnotationId={selectedAnnotationId}
+                onAnnotationSelect={handleAnnotationSelect}
               />
               <p className="text-body3 mt-10 text-gray-500">
                 Zoom:{' '}
@@ -199,10 +211,11 @@ export function StudyDetail() {
 
         <aside className="lg:col-span-1">
           <Card className="h-full p-4">
-            <EmptyState
-              icon={FileSearch}
-              title="Hallazgos"
-              description="La detección automática de eventos todavía no está disponible. Por ahora los hallazgos se revisan sobre la señal."
+            <ECGFindingsPanel
+              annotations={ecgQ.data?.annotations ?? []}
+              recordingStartMs={ecgQ.data?.startTimestamp ?? 0}
+              selectedAnnotationId={selectedAnnotationId}
+              onAnnotationSelect={handleAnnotationSelect}
             />
           </Card>
         </aside>
@@ -215,6 +228,8 @@ export function StudyDetail() {
           open={fullscreenOpen}
           onOpenChange={setFullscreenOpen}
           onClose={handleFullscreenClose}
+          selectedAnnotationId={selectedAnnotationId}
+          onAnnotationSelect={setSelectedAnnotationId}
         />
       )}
     </div>
