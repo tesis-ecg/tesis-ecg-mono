@@ -14,10 +14,14 @@ dependencies = [
     "cryptography>=44",
     "httpx>=0.27",
     "structlog>=24.0",
+    # Runtime, no solo para el seed: el decodificador de tramas y la pirámide
+    # min/max del ECG corren en el camino de ingesta (app/ml/decompression.py,
+    # app/modules/ingest/processing.py).
+    "numpy>=2.0",
 ]
 
 [dependency-groups]
-seed = ["numpy>=2.0"]
+seed = []
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
@@ -25,6 +29,7 @@ dev = [
     "ruff",
     "mypy",
     "faker",
+    "moto[s3]>=5.0",
 ]
 
 [tool.ruff]
@@ -39,6 +44,16 @@ python_version = "3.12"
 strict = true
 ignore_missing_imports = true
 
+[tool.coverage.run]
+# Los scripts son entrypoints de CLI (seed, export-openapi, reconcile), no
+# código del camino de request. CI ya los ejercita por otro lado
+# (`export_openapi --check`, `alembic upgrade head`), y contarlos en el gate
+# solo diluye la señal de la cobertura que sí importa.
+omit = ["app/scripts/*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "slow: tests que procesan un batch realista de 1 h (se excluyen con -m 'not slow')",
+]

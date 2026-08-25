@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:5173")
     s3_presign_expire_seconds: int = Field(default=600, ge=60, le=3600)
 
+    # Ingesta de tramas del chaleco.
+    # 8 MB ≈ 32.700 tramas ≈ 4,8 h de backlog a 1,8 tramas/s. Un equipo que
+    # estuvo más tiempo sin conexión tiene que trocear el envío — que es lo que
+    # hace igual, porque la flash de a bordo aguanta ~9,9 h.
+    ingest_max_batch_bytes: int = Field(default=8 * 1024 * 1024, ge=256, le=64 * 1024 * 1024)
+
     # Dashboard / watchdog
     dashboard_stale_hours: int = 10
     dashboard_low_battery_pct: int = 45

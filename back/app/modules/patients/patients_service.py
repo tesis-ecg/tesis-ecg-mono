@@ -22,6 +22,7 @@ from app.modules.patients.patients_schemas import (
     PatientSummaryOut,
     PatientUpdateInput,
 )
+from app.modules.studies import studies_service as studies
 
 
 def _split_full_name(full_name: str) -> tuple[str, str]:
@@ -49,6 +50,7 @@ def _patient_out(row: PatientRow) -> PatientOut:
         birthDate=row.date_of_birth,
         sex=row.sex,
         assignedDeviceId=row.assigned_device_id,
+        assignedDeviceSerial=row.assigned_device_serial,
         studyStatus=row.study_status,
         lastDataReceivedAt=row.last_data_received_at,
         contactEmail=row.email,
@@ -230,6 +232,13 @@ async def delete_patient(input_data: PatientIdInput, db: AsyncSession) -> None:
             status_code=404,
             detail={"code": "PATIENT_NOT_FOUND", "message": "Paciente no encontrado."},
         )
+    # Antes de la baja: `soft_delete_patient` desasigna los equipos, y con el
+    # `patient_id` en null ya no queda rastro de a qué paciente pertenecían los
+    # estudios abiertos. Se cancelan, no se completan: la baja del paciente no
+    # es el final normal de un Holter.
+    await studies.close_open_studies_for_patient(
+        db, patient, input_data.actor_id, "patient_deleted"
+    )
     await repo.soft_delete_patient(db, patient)
     if input_data.actor_id is not None:
         await auth_repo.log_audit_event(

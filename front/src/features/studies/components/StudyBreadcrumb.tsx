@@ -1,13 +1,16 @@
 import { ChevronRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
+import { formatDateTime } from '@/lib/time'
+
 interface StudyBreadcrumbProps {
   patientId: string
   patientName: string
-  studyId: string
+  /** Inicio del estudio. Un médico lo identifica por fecha, no por UUID. */
+  startedAt: string
 }
 
-export function StudyBreadcrumb({ patientId, patientName, studyId }: StudyBreadcrumbProps) {
+export function StudyBreadcrumb({ patientId, patientName, startedAt }: StudyBreadcrumbProps) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-body3 text-gray-600">
       <Link
@@ -25,7 +28,7 @@ export function StudyBreadcrumb({ patientId, patientName, studyId }: StudyBreadc
       </Link>
       <ChevronRight className="size-3.5 text-gray-300" aria-hidden />
       <span className="text-gray-900" aria-current="page">
-        Estudio {studyId}
+        Estudio del {formatDateTime(startedAt)}
       </span>
     </nav>
   )

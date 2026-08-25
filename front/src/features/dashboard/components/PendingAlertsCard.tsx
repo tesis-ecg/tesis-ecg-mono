@@ -34,6 +34,8 @@ const KIND_LABEL: Record<AlertKind, string> = {
   pvc: 'Extrasístole (PVC)',
   pause: 'Pausa',
   noise: 'Ruido / artefacto',
+  symptom_marker: 'Síntoma marcado por el paciente',
+  other: 'Hallazgo',
   device_offline: 'Dispositivo sin transmitir',
 }
 
@@ -45,7 +47,7 @@ export function PendingAlertsCard() {
     <WidgetCard
       title="Alertas pendientes"
       icon={AlertTriangle}
-      to="/patients"
+      to="/alerts"
       isLoading={isLoading}
       isError={isError}
       isEmpty={!data || data.length === 0}

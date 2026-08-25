@@ -55,7 +55,7 @@ export function StudiesTable({ studies }: StudiesTableProps) {
               }}
               tabIndex={0}
               role="button"
-              aria-label={`Abrir estudio ${s.id}`}
+              aria-label={`Abrir estudio del ${formatDateTime(s.startedAt)}`}
               className="cursor-pointer focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 focus-visible:outline-none"
             >
               <TableCell className="font-medium text-gray-900">

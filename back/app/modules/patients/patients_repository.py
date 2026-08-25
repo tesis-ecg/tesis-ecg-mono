@@ -12,21 +12,34 @@ from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
 from app.db.models.user import User
 from app.modules.patients.patients_schemas import PatientRow
 
+#: Criterio de desempate compartido por todas las subconsultas de "el device del
+#: paciente". Sin él, un paciente con dos devices asignados (estado alcanzable por
+#: carrera) devolvería una fila arbitraria distinta en cada request, y el id y el
+#: serial de la misma respuesta podrían venir de devices distintos.
+_DEVICE_TIEBREAK = (Device.created_at.desc(), Device.id.asc())
 
-def _patient_row_statement() -> Select[tuple[Patient, uuid.UUID | None, str | None]]:
+
+#: Filas de `device` que cuentan como "el Holter del paciente".
+_ASSIGNED_DEVICE = (
+    Device.patient_id == Patient.id,
+    Device.deleted_at.is_(None),
+    Device.status == DeviceStatus.ASSIGNED,
+)
+
+
+#: `(paciente, deviceId, deviceSerial, nombre del médico)`.
+type PatientRowSelect = Select[tuple[Patient, uuid.UUID | None, str | None, str | None]]
+
+
+def _patient_row_statement() -> PatientRowSelect:
+    # Las dos subconsultas comparten `_ASSIGNED_DEVICE` y `_DEVICE_TIEBREAK` para
+    # que el id y el serial de una misma fila salgan siempre del mismo device.
     assigned_device_id = (
-        select(Device.id)
-        .where(
-            Device.patient_id == Patient.id,
-            Device.deleted_at.is_(None),
-            Device.status == DeviceStatus.ASSIGNED,
-        )
-        # order_by explícito: sin él, un paciente con dos devices asignados (estado
-        # alcanzable por carrera) devolvería una fila arbitraria en cada request.
-        .order_by(Device.created_at.desc(), Device.id.asc())
-        .limit(1)
-        .scalar_subquery()
-    )
+        select(Device.id).where(*_ASSIGNED_DEVICE).order_by(*_DEVICE_TIEBREAK).limit(1)
+    ).scalar_subquery()
+    assigned_device_serial = (
+        select(Device.serial_number).where(*_ASSIGNED_DEVICE).order_by(*_DEVICE_TIEBREAK).limit(1)
+    ).scalar_subquery()
     doctor_name = (
         select(User.full_name)
         .join(Doctor, Doctor.user_id == User.id)
@@ -42,12 +55,16 @@ def _patient_row_statement() -> Select[tuple[Patient, uuid.UUID | None, str | No
     return select(
         Patient,
         assigned_device_id.label("assigned_device_id"),
+        assigned_device_serial.label("assigned_device_serial"),
         doctor_name.label("doctor_name"),
     )
 
 
 def _to_row(
-    patient: Patient, assigned_device_id: uuid.UUID | None, doctor_name: str | None
+    patient: Patient,
+    assigned_device_id: uuid.UUID | None,
+    assigned_device_serial: str | None,
+    doctor_name: str | None,
 ) -> PatientRow:
     return PatientRow(
         id=patient.id,
@@ -61,18 +78,19 @@ def _to_row(
         email=patient.email,
         phone=patient.phone,
         assigned_device_id=assigned_device_id,
+        assigned_device_serial=assigned_device_serial,
         doctor_id=patient.doctor_id,
         doctor_name=doctor_name,
     )
 
 
 def _apply_patient_filters(
-    statement: Select[tuple[Patient, uuid.UUID | None, str | None]] | Select[tuple[int]],
+    statement: PatientRowSelect | Select[tuple[int]],
     doctor_id: uuid.UUID | None,
     q: str | None,
     statuses: list[PatientStudyStatus] | None,
     has_device: bool | None,
-) -> Select[tuple[Patient, uuid.UUID | None, str | None]] | Select[tuple[int]]:
+) -> PatientRowSelect | Select[tuple[int]]:
     statement = statement.where(Patient.deleted_at.is_(None))
     if doctor_id is not None:
         statement = statement.where(Patient.doctor_id == doctor_id)
@@ -138,8 +156,8 @@ async def list_patients(
     result = await db.execute(statement.limit(limit).offset(offset))
     total = await db.scalar(count_statement)
     rows = [
-        _to_row(patient, assigned_device_id, doctor_name)
-        for patient, assigned_device_id, doctor_name in result.all()
+        _to_row(patient, assigned_device_id, assigned_device_serial, doctor_name)
+        for patient, assigned_device_id, assigned_device_serial, doctor_name in result.all()
     ]
     return rows, total or 0
 
@@ -157,8 +175,8 @@ async def get_patient_row(
     row = result.one_or_none()
     if row is None:
         return None
-    patient, assigned_device_id, doctor_name = row
-    return _to_row(patient, assigned_device_id, doctor_name)
+    patient, assigned_device_id, assigned_device_serial, doctor_name = row
+    return _to_row(patient, assigned_device_id, assigned_device_serial, doctor_name)
 
 
 async def get_patient_model(

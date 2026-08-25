@@ -17,6 +17,10 @@ class HolterOut(CamelModel):
     firmwareVersion: str | None
     status: DeviceStatus
     assignedPatientId: uuid.UUID | None
+    assignedPatientName: str | None
+    #: Estudio `in_progress` de este equipo, si lo hay. Es lo que permite saltar
+    #: del inventario al registro que se está grabando ahora mismo.
+    activeStudyId: uuid.UUID | None
     assignedDoctorId: uuid.UUID | None
     assignedDoctorName: str | None
     lastSeenAt: datetime | None
@@ -25,6 +29,15 @@ class HolterOut(CamelModel):
 
 class HolterCreateOut(HolterOut):
     apiKey: str
+
+
+class HolterApiKeyOut(CamelModel):
+    """La API key en claro. Se devuelve UNA vez y no se puede volver a leer."""
+
+    deviceId: uuid.UUID
+    serial: str
+    apiKey: str
+    rotatedAt: datetime
 
 
 class HolterListResponse(CamelModel):

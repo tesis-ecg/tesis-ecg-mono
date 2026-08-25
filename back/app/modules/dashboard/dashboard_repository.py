@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -164,7 +165,7 @@ async def get_kpi_counts(
 
 async def list_pending_alerts(
     db: AsyncSession, doctor_id: uuid.UUID | None, limit: int
-) -> list[tuple[Alert, Patient, ECGEventType, uuid.UUID | None]]:
+) -> list[tuple[Alert, Patient, ECGEventType, dict[str, Any], uuid.UUID | None]]:
     study_id = (
         select(Study.id)
         .where(
@@ -178,7 +179,13 @@ async def list_pending_alerts(
         .scalar_subquery()
     )
     statement = (
-        select(Alert, Patient, ECGEvent.event_type, study_id.label("study_id"))
+        select(
+            Alert,
+            Patient,
+            ECGEvent.event_type,
+            ECGEvent.event_metadata,
+            study_id.label("study_id"),
+        )
         .join(Patient, Alert.patient_id == Patient.id)
         .join(ECGEvent, Alert.event_id == ECGEvent.id)
         .where(
@@ -193,8 +200,8 @@ async def list_pending_alerts(
         statement = statement.where(Patient.doctor_id == doctor_id)
     result = await db.execute(statement.limit(limit))
     return [
-        (alert, patient, event_type, matched_study_id)
-        for alert, patient, event_type, matched_study_id in result.all()
+        (alert, patient, event_type, event_metadata, matched_study_id)
+        for alert, patient, event_type, event_metadata, matched_study_id in result.all()
     ]
 
 

@@ -54,22 +54,26 @@ def _duration_ms(study: Study) -> int:
     return 0
 
 
-def _alert_kind(event_type: ECGEventType) -> str:
-    # ECGEventType.OTHER no tiene equivalente en el AlertKind del FE: KIND_LABEL[kind]
-    # renderizaría una celda vacía, así que cae en "noise".
+def _alert_kind(event_type: ECGEventType, event_metadata: dict[str, object]) -> str:
+    if event_metadata.get("kind") == "symptom_marker":
+        return "symptom_marker"
     if event_type == ECGEventType.OTHER:
-        return "noise"
+        return "other"
     return event_type.value.lower()
 
 
 def _alert_out(
-    alert: Alert, patient: Patient, event_type: ECGEventType, study_id: uuid.UUID | None
+    alert: Alert,
+    patient: Patient,
+    event_type: ECGEventType,
+    event_metadata: dict[str, object],
+    study_id: uuid.UUID | None,
 ) -> DashboardAlertOut:
     return DashboardAlertOut(
         id=str(alert.id),
         patientId=patient.id,
         patientName=_patient_name(patient),
-        kind=_alert_kind(event_type),
+        kind=_alert_kind(event_type, event_metadata),
         severity=alert.severity.value.lower(),
         detectedAt=alert.created_at,
         studyId=study_id,
@@ -144,8 +148,8 @@ async def list_alerts(
         db, input_data.doctor_id, _stale_before(), input_data.limit
     )
     alerts = [
-        _alert_out(alert, patient, event_type, study_id)
-        for alert, patient, event_type, study_id in rows
+        _alert_out(alert, patient, event_type, event_metadata, study_id)
+        for alert, patient, event_type, event_metadata, study_id in rows
     ]
     alerts.extend(_device_alert_out(device, patient) for device, patient in stale_devices)
     # Cada fuente ya viene ordenada y cortada por su propia clave final (el repo

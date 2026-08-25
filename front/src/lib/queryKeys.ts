@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 
 export const queryKeys = {
+  alerts: ['alerts'] as const,
   dashboard: ['dashboard'] as const,
   devices: ['devices'] as const,
   patients: ['patients'] as const,

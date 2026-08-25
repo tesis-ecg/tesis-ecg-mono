@@ -1,10 +1,9 @@
 import { Search, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/EmptyState'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -31,9 +30,12 @@ import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 20
 
+// `paused` queda fuera del filtro a propósito: ninguna parte del sistema lo
+// escribe —no existe el concepto de pausar un estudio— así que ofrecerlo era
+// prometer un filtro que siempre devuelve vacío. El tipo lo sigue aceptando
+// para no romper datos viejos que ya lo tengan.
 const STATUS_OPTIONS: { value: PatientStudyStatus; label: string }[] = [
   { value: 'active', label: 'Activo' },
-  { value: 'paused', label: 'Pausado' },
   { value: 'completed', label: 'Completado' },
   { value: 'none', label: 'Sin estudio' },
 ]
@@ -259,9 +261,13 @@ export function Patients() {
                   </TableCell>
                   <TableCell className="hidden md:table-cell">
                     {p.assignedDeviceId ? (
-                      <Badge variant="outline" className="font-mono">
-                        {p.assignedDeviceId}
-                      </Badge>
+                      <Link
+                        to={`/devices/${p.assignedDeviceId}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="font-mono text-body3 text-primary-500 hover:underline"
+                      >
+                        {p.assignedDeviceSerial ?? 'Holter sin serial'}
+                      </Link>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}

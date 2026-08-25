@@ -50,6 +50,44 @@ async def get_study(
     return await service.get_study(StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db)
 
 
+@router.post("/{study_id}/complete", response_model=StudyDetailOut)
+async def complete_study(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyDetailOut:
+    """Cierra el estudio: fija `endedAt` y lo pasa a `completed`.
+
+    Es la contraparte del alta automática que hace la ingesta. Sin esto un
+    estudio abierto no tenía forma de terminar.
+    """
+    return await service.complete_study(
+        StudyIdInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+        ),
+        db,
+    )
+
+
+@router.post("/{study_id}/cancel", response_model=StudyDetailOut)
+async def cancel_study(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyDetailOut:
+    """Descarta el estudio: colocación fallida, datos de banco, error de carga."""
+    return await service.cancel_study(
+        StudyIdInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+        ),
+        db,
+    )
+
+
 @router.get("/{study_id}/ecg", response_model=StudyEcgOut, deprecated=True)
 async def get_study_ecg(
     study_id: uuid.UUID,

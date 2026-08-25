@@ -7,12 +7,15 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
+    SmallInteger,
     String,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -68,6 +71,28 @@ class Study(TimestampMixin, Base):
     )
     sample_rate: Mapped[int] = mapped_column(Integer, default=250, nullable=False)
     duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # --- Ingesta incremental desde el chaleco --------------------------------- #
+    # Un estudio seedeado tiene toda su señal en `ecg_s3_key`; uno ingestado la
+    # tiene repartida en segmentos, uno por batch. Los dos caminos conviven: el
+    # manifest expone `raw` o `segments` según cuál esté poblado.
+
+    #: Verdadero si ALGUNA trama trajo el bit de DATO SIMULADO (`hdrFlags` bit 3).
+    #: Un estudio de banco no se puede archivar como clínico (INTEGRACION.md §7.3),
+    #: y una vez marcado nunca vuelve a falso.
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: `[{key, startSampleIndex, sampleCount, byteLength, sha256}]` en orden.
+    ecg_segments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
+    #: Muestras sobrantes del último batch que no completaron un bucket de 16.
+    #: Se anteponen al batch siguiente para que los buckets de la pirámide queden
+    #: alineados a la grilla del ESTUDIO y no a la de cada batch — sin esto, 24
+    #: batches acumulan hasta 384 muestras (0,77 s) de deriva en el eje X.
+    ecg_envelope_carry: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    #: Cursor del ACK go-back-N: la última `seq` confirmada de forma contigua.
+    last_ingested_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: `bootId` de esa última trama. Un cambio de bootId invalida la comparación
+    #: de `seq` y de `t0Ms`: el equipo se reinició y su reloj volvió a cero.
+    last_boot_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
     patient: Mapped[Patient] = relationship()
     device: Mapped[Device] = relationship()

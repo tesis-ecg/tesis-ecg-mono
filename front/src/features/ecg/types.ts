@@ -9,6 +9,8 @@
 export interface ECGSignal {
   /** Frecuencia de muestreo en Hz (típicamente 250 Hz para Holter clínico). */
   sampleRate: number
+  /** Duración del eje visible; excluye intervalos en los que no hubo muestras. */
+  durationMs: number
   /** Muestras del canal único, en mV. */
   samples: Float32Array
   /** Timestamp UNIX en ms del primer sample (`samples[0]`). */

@@ -3,6 +3,7 @@
 import hashlib
 import secrets
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +16,7 @@ from app.modules.devices import devices_repository as repo
 from app.modules.devices.devices_schemas import (
     AssignDoctorInput,
     AssignHolterInput,
+    HolterApiKeyOut,
     HolterCreateInput,
     HolterCreateOut,
     HolterHealthOut,
@@ -24,9 +26,15 @@ from app.modules.devices.devices_schemas import (
     HolterOut,
     HolterUpdateInput,
 )
+from app.modules.studies import studies_service as studies
 
 
-def _holter_out(device: Device, doctor_name: str | None) -> HolterOut:
+def _holter_out(
+    device: Device,
+    doctor_name: str | None,
+    patient_name: str | None = None,
+    active_study_id: uuid.UUID | None = None,
+) -> HolterOut:
     return HolterOut(
         id=device.id,
         serial=device.serial_number,
@@ -34,6 +42,8 @@ def _holter_out(device: Device, doctor_name: str | None) -> HolterOut:
         firmwareVersion=device.firmware_version,
         status=device.status,
         assignedPatientId=device.patient_id,
+        assignedPatientName=patient_name,
+        activeStudyId=active_study_id,
         assignedDoctorId=device.doctor_id,
         assignedDoctorName=doctor_name,
         lastSeenAt=device.last_seen_at,
@@ -91,6 +101,21 @@ def holter_health_out(device: Device) -> HolterHealthOut:
     )
 
 
+async def _holter_out_resolved(
+    db: AsyncSession, device: Device, doctor_name: str | None
+) -> HolterOut:
+    """`_holter_out` resolviendo paciente y estudio en curso desde la base.
+
+    El listado los trae en subconsultas; los caminos de un solo equipo (detalle
+    y mutaciones) no pueden, así que se consultan acá. Las dos funciones
+    cortocircuitan si el equipo no tiene paciente, que es el caso más común
+    después de una desasignación.
+    """
+    patient_name = await repo.get_patient_name(db, device.patient_id)
+    active_study_id = await repo.get_active_study_id(db, device.patient_id, device.id)
+    return _holter_out(device, doctor_name, patient_name, active_study_id)
+
+
 async def list_holters(input_data: HolterListInput, db: AsyncSession) -> HolterListResponse:
     rows, total = await repo.list_devices(
         db,
@@ -101,7 +126,10 @@ async def list_holters(input_data: HolterListInput, db: AsyncSession) -> HolterL
         offset=input_data.offset,
     )
     return HolterListResponse(
-        items=[_holter_out(device, doctor_name) for device, doctor_name in rows],
+        items=[
+            _holter_out(device, doctor_name, patient_name, active_study_id)
+            for device, doctor_name, patient_name, active_study_id in rows
+        ],
         total=total,
         limit=input_data.limit,
         offset=input_data.offset,
@@ -115,7 +143,7 @@ async def get_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
     if input_data.doctor_id is not None and device.doctor_id != input_data.doctor_id:
         raise _not_owned()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> HolterCreateOut:
@@ -146,6 +174,38 @@ async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> Holt
         ) from exc
     out = _holter_out(device, None)
     return HolterCreateOut(**out.model_dump(), apiKey=api_key)
+
+
+async def rotate_api_key(input_data: HolterIdInput, db: AsyncSession) -> HolterApiKeyOut:
+    """Genera una API key nueva para un equipo existente y devuelve la anterior inútil.
+
+    Hace falta porque `create_holter` entrega la key en claro una sola vez y no
+    hay forma de recuperarla después (en la base solo vive el sha256). Sin esto,
+    un equipo ya dado de alta no se puede volver a aprovisionar — ni conectar al
+    simulador — sin borrarlo y crearlo de nuevo.
+
+    La rotación es inmediata: la key vieja deja de servir en el mismo commit.
+    """
+    device = await repo.get_device_by_id(db, input_data.device_id)
+    if device is None:
+        raise _not_found()
+
+    api_key = secrets.token_urlsafe(32)
+    device.api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    await _audit_device(
+        db,
+        AuditEventType.DEVICE_API_KEY_ROTATED,
+        input_data.actor_id,
+        device.id,
+        {"serial": device.serial_number},
+    )
+    await db.commit()
+    return HolterApiKeyOut(
+        deviceId=device.id,
+        serial=device.serial_number,
+        apiKey=api_key,
+        rotatedAt=datetime.now(UTC),
+    )
 
 
 async def update_holter(input_data: HolterUpdateInput, db: AsyncSession) -> HolterOut:
@@ -181,18 +241,21 @@ async def update_holter(input_data: HolterUpdateInput, db: AsyncSession) -> Holt
     await _audit_device(db, AuditEventType.DEVICE_UPDATED, input_data.actor_id, device.id)
     await db.commit()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def delete_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
     device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
+    # Antes de `retire_device`, que borra el `patient_id`: después ya no habría
+    # forma de saber de qué paciente era el estudio abierto.
+    await studies.close_open_studies_for_device(db, device, input_data.actor_id, "device_retired")
     await repo.retire_device(db, device)
     await _audit_device(db, AuditEventType.DEVICE_RETIRED, input_data.actor_id, device.id)
     await db.commit()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def assign_holter_doctor(input_data: AssignDoctorInput, db: AsyncSession) -> HolterOut:
@@ -221,7 +284,7 @@ async def assign_holter_doctor(input_data: AssignDoctorInput, db: AsyncSession) 
         {"doctor_id": str(input_data.data.doctorId)},
     )
     await db.commit()
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def unassign_holter_doctor(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
@@ -239,7 +302,7 @@ async def unassign_holter_doctor(input_data: HolterIdInput, db: AsyncSession) ->
         {"doctor_id": None},
     )
     await db.commit()
-    return _holter_out(device, None)
+    return await _holter_out_resolved(db, device, None)
 
 
 async def assign_holter(input_data: AssignHolterInput, db: AsyncSession) -> HolterOut:
@@ -295,7 +358,7 @@ async def assign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Holt
             },
         ) from exc
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
@@ -312,6 +375,11 @@ async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> Holter
                 "message": "No se puede desasignar un Holter retirado.",
             },
         )
+    # Sacarle el chaleco al paciente es la forma normal en que termina un
+    # Holter: el estudio abierto se cierra acá, antes de soltar el `patient_id`.
+    await studies.close_open_studies_for_device(
+        db, device, input_data.actor_id, "device_unassigned"
+    )
     await repo.unassign_device(db, device)
     await _audit_device(
         db,
@@ -322,7 +390,7 @@ async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> Holter
     )
     await db.commit()
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> HolterOut:
@@ -358,6 +426,13 @@ async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Ho
             },
         )
 
+    # Reasignar a OTRO paciente cierra el estudio del anterior. Si el destino es
+    # el mismo paciente no se cierra nada: es un no-op, no una interrupción.
+    if device.patient_id is not None and device.patient_id != patient.id:
+        await studies.close_open_studies_for_device(
+            db, device, input_data.actor_id, "device_reassigned"
+        )
+
     try:
         await repo.assign_device(db, device, patient)
         await _audit_device(
@@ -378,7 +453,7 @@ async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Ho
             },
         ) from exc
     doctor_name = await repo.get_doctor_name(db, device.doctor_id)
-    return _holter_out(device, doctor_name)
+    return await _holter_out_resolved(db, device, doctor_name)
 
 
 async def get_holter_health(input_data: HolterIdInput, db: AsyncSession) -> HolterHealthOut:

@@ -18,10 +18,12 @@ from starlette.middleware.base import RequestResponseEndpoint
 from app.core.config import settings as _settings
 from app.core.logging import setup_logging
 from app.db.session import engine
+from app.modules.alerts import router as alerts_router
 from app.modules.auth import router as auth_router
 from app.modules.dashboard import router as dashboard_router
 from app.modules.devices import router as devices_router
 from app.modules.doctors import router as doctors_router
+from app.modules.ingest import router as ingest_router
 from app.modules.patients import router as patients_router
 from app.modules.studies import router as studies_router
 from app.modules.users import router as users_router
@@ -48,11 +50,38 @@ app.add_middleware(
     allow_origins=[str(_settings.frontend_url).rstrip("/")],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Request-ID"],
+    # `Authorization` y `X-Device-*` los usa el simulador de chaleco, que
+    # postea a /ingest con bearer en vez de cookie.
+    allow_headers=[
+        "Content-Type",
+        "X-Request-ID",
+        "Authorization",
+        "X-Device-Serial",
+        "X-Device-Uptime-Ms",
+        "X-Firmware-Version",
+        "X-Battery-Pct",
+    ],
 )
 
 logger = structlog.get_logger(__name__)
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# Rutas exentas del chequeo de Origin.
+#
+# El chequeo existe para frenar CSRF: un sitio hostil que hace que el navegador
+# de un médico logueado dispare un POST con su cookie adjunta. `/ingest` no
+# tiene esa superficie — no lee ninguna cookie, se autentica con un bearer
+# explícito por dispositivo (ver `device_dependencies`), y una cookie de sesión
+# no sirve para nada ahí. Exceptuarlo no debilita nada.
+#
+# Y hace falta: el co-procesador WiFi del chaleco es un cliente HTTP, no un
+# navegador, así que no manda header `Origin`. Sin esta excepción, en preview y
+# producción todo lote del equipo real se rechazaría con ORIGIN_FORBIDDEN.
+_ORIGIN_EXEMPT_PREFIXES = ("/ingest/",)
+
+
+def _is_origin_exempt(path: str) -> bool:
+    return path.startswith(_ORIGIN_EXEMPT_PREFIXES)
 
 
 @app.middleware("http")
@@ -68,13 +97,12 @@ async def request_security_and_logging(
 
     origin = request.headers.get("origin")
     allowed_origin = str(_settings.frontend_url).rstrip("/")
+    origin_checked = request.method in _UNSAFE_METHODS and not _is_origin_exempt(request.url.path)
     origin_missing_in_secure_environment = (
-        request.method in _UNSAFE_METHODS and _settings.is_secure_environment and not origin
+        origin_checked and _settings.is_secure_environment and not origin
     )
     origin_is_invalid = (
-        request.method in _UNSAFE_METHODS
-        and origin is not None
-        and origin.rstrip("/") != allowed_origin
+        origin_checked and origin is not None and origin.rstrip("/") != allowed_origin
     )
     if origin_missing_in_secure_environment or origin_is_invalid:
         return JSONResponse(
@@ -171,6 +199,8 @@ app.include_router(patients_router, prefix="/patients", tags=["patients"])
 app.include_router(studies_router, prefix="/studies", tags=["studies"])
 app.include_router(users_router, prefix="/users", tags=["users"])
 app.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
+app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
+app.include_router(ingest_router, prefix="/ingest", tags=["ingest"])
 
 
 @app.get("/health")

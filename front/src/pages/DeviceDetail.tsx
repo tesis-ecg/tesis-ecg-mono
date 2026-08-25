@@ -1,4 +1,13 @@
-import { ArrowLeft, HeartPulse, Pencil, Stethoscope, Trash2, User, UserX } from 'lucide-react'
+import {
+  Activity,
+  ArrowLeft,
+  HeartPulse,
+  Pencil,
+  Stethoscope,
+  Trash2,
+  User,
+  UserX,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -20,8 +29,10 @@ import { UnassignHolterDialog } from '@/features/devices/components/UnassignHolt
 import { useHolter } from '@/features/devices/hooks/useHolter'
 import { useHolterHealth } from '@/features/devices/hooks/useHolterHealth'
 import { usePatient } from '@/features/patients/hooks/usePatient'
+import { useStudy } from '@/features/studies/hooks/useStudy'
+import { StudyStatusBadge } from '@/features/studies/components/StudyStatusBadge'
 import { isApiError, unwrapError } from '@/lib/api'
-import { formatDate, formatRelativeTime } from '@/lib/time'
+import { formatDate, formatDateTime, formatRelativeTime } from '@/lib/time'
 
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
@@ -35,6 +46,7 @@ export function DeviceDetail() {
   const holter = useHolter(id)
   const health = useHolterHealth(id)
   const assignedPatient = usePatient(holter.data?.assignedPatientId ?? undefined)
+  const activeStudy = useStudy(holter.data?.activeStudyId ?? undefined)
 
   useEffect(() => {
     if (
@@ -128,7 +140,13 @@ export function DeviceDetail() {
         {!isRetired && (isAdmin || isMedico) && (
           <div className="flex flex-wrap items-center gap-2">
             {isMedico && <ReassignHolterDialog holter={h} />}
-            {isMedico && isAssigned && <UnassignHolterDialog holterId={h.id} serial={h.serial} />}
+            {isMedico && isAssigned && (
+              <UnassignHolterDialog
+                holterId={h.id}
+                serial={h.serial}
+                hasActiveStudy={h.activeStudyId !== null}
+              />
+            )}
             {isAdmin && (
               <KebabMenu
                 label={`Acciones para ${h.serial}`}
@@ -215,6 +233,42 @@ export function DeviceDetail() {
           </div>
         )}
       </Card>
+
+      {/* Estudio en curso */}
+      {isAssigned && (
+        <Card className="p-6">
+          {activeStudy.data ? (
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-500">
+                  <Activity className="size-5" aria-hidden />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-body3 text-gray-600">Estudio en curso</span>
+                    <StudyStatusBadge status={activeStudy.data.status} />
+                  </div>
+                  <span className="text-body2 text-gray-900">
+                    Desde el {formatDateTime(activeStudy.data.startedAt)}
+                  </span>
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => navigate(`/studies/${activeStudy.data!.id}`)}
+              >
+                Ver estudio
+              </Button>
+            </div>
+          ) : (
+            <EmptyState
+              icon={Activity}
+              title="Sin estudio en curso"
+              description="El estudio se abre solo cuando el Holter manda su primer lote de señal. Si el equipo ya está colocado, puede tardar hasta una hora en transmitir."
+            />
+          )}
+        </Card>
+      )}
 
       {/* Health */}
       {health.isLoading ? (

@@ -28,7 +28,10 @@ export function StudyDetail() {
     studyQ.data.durationMs > 0 &&
     studyQ.data.status !== 'scheduled' &&
     studyQ.data.status !== 'cancelled'
-  const ecgQ = useEcgSignal(studyHasSignal ? id : undefined)
+  // Un estudio en curso sigue recibiendo lotes del chaleco: la señal crece
+  // mientras el médico la mira, así que el hook la vuelve a pedir cada tanto.
+  const isInProgress = studyQ.data?.status === 'in_progress'
+  const ecgQ = useEcgSignal(studyHasSignal ? id : undefined, isInProgress)
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
@@ -45,9 +48,9 @@ export function StudyDetail() {
             title="Estudio no encontrado"
             description="El estudio que estás buscando no existe o ya no está disponible."
             action={
-              <Button variant="outline" onClick={() => navigate('/patients')}>
+              <Button variant="outline" onClick={() => navigate('/studies')}>
                 <ArrowLeft className="mr-2 size-4" aria-hidden />
-                Volver al listado de pacientes
+                Volver al listado de estudios
               </Button>
             }
           />
@@ -121,7 +124,7 @@ export function StudyDetail() {
       <StudyBreadcrumb
         patientId={study.patientId}
         patientName={study.patientName}
-        studyId={study.id}
+        startedAt={study.startedAt}
       />
       <StudyHeader study={study} />
 
@@ -137,6 +140,10 @@ export function StudyDetail() {
                   : 'Este estudio no contiene muestras de ECG para visualizar.'
               }
             />
+          ) : ecgQ.isLoading && isInProgress ? (
+            <div className="flex h-[480px] items-center justify-center">
+              <Spinner label="Esperando el primer lote del Holter…" />
+            </div>
           ) : ecgQ.isLoading ? (
             <div className="flex h-[480px] items-center justify-center">
               <Spinner label="Cargando señal ECG…" />
@@ -154,7 +161,16 @@ export function StudyDetail() {
           ) : ecgQ.data ? (
             <>
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-h6 text-gray-900">Señal ECG</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-h6 text-gray-900">Señal ECG</h2>
+                  {isInProgress && (
+                    <span className="flex items-center gap-1.5 rounded-full bg-primary-50 px-2 py-0.5 text-body3 text-primary-500">
+                      <span className="size-1.5 animate-pulse rounded-full bg-primary-500" />
+                      Recibiendo datos
+                      {ecgQ.isFetching && ' · actualizando'}
+                    </span>
+                  )}
+                </div>
                 <ECGZoomControls
                   onZoomIn={handleZoomIn}
                   onZoomOut={handleZoomOut}
@@ -186,7 +202,7 @@ export function StudyDetail() {
             <EmptyState
               icon={FileSearch}
               title="Hallazgos"
-              description="El panel de hallazgos detectados se implementa en TES-25."
+              description="La detección automática de eventos todavía no está disponible. Por ahora los hallazgos se revisan sobre la señal."
             />
           </Card>
         </aside>
@@ -205,16 +221,27 @@ export function StudyDetail() {
   )
 }
 
+/**
+ * A un estudio se llega desde /studies, desde la ficha del paciente o desde el
+ * dispositivo. Mandar siempre a /patients descartaba el contexto del usuario;
+ * `navigate(-1)` lo devuelve de donde vino, con /studies como red de seguridad
+ * cuando entró por URL directa y no hay historia propia.
+ */
 function BackToList({ navigate }: { navigate: ReturnType<typeof useNavigate> }) {
+  const handleBack = () => {
+    if (window.history.length > 1) navigate(-1)
+    else navigate('/studies')
+  }
+
   return (
     <Button
       variant="ghost"
       size="sm"
-      onClick={() => navigate('/patients')}
+      onClick={handleBack}
       className="w-fit text-gray-600 hover:text-primary-500"
     >
       <ArrowLeft className="mr-1 size-4" aria-hidden />
-      Volver al listado
+      Volver
     </Button>
   )
 }

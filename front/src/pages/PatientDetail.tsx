@@ -25,6 +25,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AssignHolterDialog } from '@/features/devices/components/AssignHolterDialog'
 import { HolterHealthCard } from '@/features/devices/components/HolterHealthCard'
 import { UnassignHolterDialog } from '@/features/devices/components/UnassignHolterDialog'
+import { useHolter } from '@/features/devices/hooks/useHolter'
 import { DeletePatientDialog } from '@/features/patients/components/DeletePatientDialog'
 import { EditPatientDialog } from '@/features/patients/components/EditPatientDialog'
 import { MetricCard } from '@/features/patients/components/MetricCard'
@@ -65,6 +66,11 @@ export function PatientDetail() {
   const patient = usePatient(id)
   const summary = usePatientSummary(tab === 'resumen' ? id : undefined)
   const studies = usePatientStudies(tab === 'estudios' ? id : undefined)
+  // El health del equipo no dice si está grabando: eso vive en `HolterOut`.
+  // Se consulta aparte para poder avisar que desasignar cierra el estudio.
+  const assignedHolter = useHolter(
+    tab === 'dispositivo' ? (patient.data?.assignedDeviceId ?? undefined) : undefined,
+  )
   const device = usePatientDevice(
     tab === 'dispositivo' && patient.data?.assignedDeviceId ? id : undefined,
   )
@@ -299,7 +305,7 @@ export function PatientDetail() {
               <EmptyState
                 icon={FileSearch}
                 title="Sin estudios previos"
-                description="Cuando inicies un nuevo estudio aparecerá listado acá."
+                description="El estudio se crea solo cuando el Holter manda su primer lote de señal. Asignale un equipo al paciente para empezar."
               />
             </Card>
           ) : (
@@ -335,7 +341,11 @@ export function PatientDetail() {
             <div className="flex flex-col gap-3">
               <HolterHealthCard health={device.data} />
               <div className="flex justify-end">
-                <UnassignHolterDialog holterId={device.data.deviceId} serial={device.data.serial} />
+                <UnassignHolterDialog
+                  holterId={device.data.deviceId}
+                  serial={device.data.serial}
+                  hasActiveStudy={assignedHolter.data?.activeStudyId != null}
+                />
               </div>
             </div>
           ) : null}

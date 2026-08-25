@@ -20,6 +20,8 @@ import { useUnassignHolter } from '../hooks/useUnassignHolter'
 interface UnassignHolterDialogProps {
   holterId: string
   serial: string
+  /** Si el equipo está grabando, desasignarlo cierra ese estudio. Hay que decirlo. */
+  hasActiveStudy?: boolean
   /** Si se pasan `open`/`onOpenChange`, el diálogo se controla externamente y no renderiza su botón disparador. */
   open?: boolean
   onOpenChange?: (open: boolean) => void
@@ -28,6 +30,7 @@ interface UnassignHolterDialogProps {
 export function UnassignHolterDialog({
   holterId,
   serial,
+  hasActiveStudy = false,
   open,
   onOpenChange,
 }: UnassignHolterDialogProps) {
@@ -69,6 +72,14 @@ export function UnassignHolterDialog({
           <DialogDescription>
             ¿Querés desasignar el Holter <strong>{serial}</strong>? Volverá a estar disponible para
             otro paciente.
+            {hasActiveStudy && (
+              <>
+                {' '}
+                <strong>
+                  El estudio que está grabando se cierra como finalizado y no se puede reabrir.
+                </strong>
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

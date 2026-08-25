@@ -75,7 +75,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   const xs = useMemo(() => buildXAxis(signal), [signal])
 
   // Rango completo del estudio, en segundos.
-  const durationSec = signal.samples.length / signal.sampleRate
+  const durationSec = signal.durationMs / 1000
 
   // Crea la instancia uPlot al montar. En Strict Mode el efecto corre dos
   // veces en dev — el cleanup destruye la primera instancia correctamente.
@@ -326,7 +326,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
 function buildXAxis(signal: ECGSignal): Float64Array {
   const n = signal.samples.length
   const xs = new Float64Array(n)
-  const dt = 1 / signal.sampleRate
+  const dt = n > 0 ? signal.durationMs / 1000 / n : 0
   for (let i = 0; i < n; i++) xs[i] = i * dt
   return xs
 }

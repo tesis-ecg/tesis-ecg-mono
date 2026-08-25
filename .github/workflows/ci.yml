@@ -71,7 +71,10 @@ jobs:
       - run: uv run mypy app
       - run: uv run python -m app.scripts.export_openapi --check
       - run: uv run alembic upgrade head
-      - run: uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=50
+      - run: uv run pytest -m "not slow" --cov=app --cov-report=term-missing --cov-fail-under=65
+      # Los `slow` procesan un lote realista de 1 h (~6.480 tramas). Van
+      # aparte para no sumar minutos a cada push, pero igual corren en CI.
+      - run: uv run pytest -m slow
       - run: uvx bandit -q -r app
       - run: uv export --frozen --no-dev --no-hashes -o /tmp/runtime-requirements.txt
       - run: uvx pip-audit -r /tmp/runtime-requirements.txt
