@@ -27,11 +27,21 @@ from app.core.config import settings
 
 
 def _build_client(endpoint: str) -> Any:
+    # `addressing_style` explícito, nunca "auto": contra AWS real, "auto" arma el
+    # host global `<bucket>.s3.amazonaws.com`, que responde 307 hacia la región
+    # del bucket. Un cliente boto3 sigue ese redirect solo, pero una URL
+    # prefirmada no puede: SigV4 firma el header `Host`, así que el browser
+    # recibe un 307 sin headers CORS y, si lo siguiera, la firma ya no valida.
+    # Con MinIO hace falta "path": `<bucket>.minio` no resuelve por DNS.
+    addressing_style = "path" if endpoint else "virtual"
     client_kwargs: dict[str, object] = {
         "aws_access_key_id": settings.aws_access_key_id,
         "aws_secret_access_key": settings.aws_secret_access_key,
         "region_name": settings.aws_region,
-        "config": Config(signature_version="s3v4"),
+        "config": Config(
+            signature_version="s3v4",
+            s3={"addressing_style": addressing_style},
+        ),
     }
     if endpoint:
         client_kwargs["endpoint_url"] = endpoint
