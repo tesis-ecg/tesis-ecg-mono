@@ -58,6 +58,24 @@ def _email_conflict() -> HTTPException:
     )
 
 
+def _patient_account() -> HTTPException:
+    """`/users` administra al personal, no a los pacientes.
+
+    Una cuenta de paciente se crea junto con su ficha y se da de baja con ella
+    (`patients_service` cierra el acceso y bloquea Auth0 en el mismo acto).
+    Dejar que se la borre desde acá partiría ese ciclo en dos: quedaría un
+    paciente activo, con estudio en curso, sin poder entrar a la app y sin que
+    nadie se entere.
+    """
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "PATIENT_ACCOUNT",
+            "message": "Gestioná esta cuenta desde la ficha del paciente.",
+        },
+    )
+
+
 async def list_users(input_data: UserListInput, db: AsyncSession) -> list[UserAccountOut]:
     users = await repo.list_users(db)
     return [_user_account_out(user) for user in users]
@@ -151,6 +169,11 @@ async def update_user_email(input_data: UserUpdateEmailInput, db: AsyncSession) 
     user = await repo.get_user_by_id(db, input_data.user_id)
     if user is None:
         raise _not_found()
+    if user.role == UserRole.PACIENTE:
+        # El email del paciente vive en su ficha y se sincroniza desde ahí
+        # (`patients_service._sync_account_email`). Cambiarlo por este camino
+        # dejaría `patient.email` mostrando algo que ya no sirve para entrar.
+        raise _patient_account()
 
     email = str(input_data.data.email)
     if email == user.email:
@@ -209,6 +232,8 @@ async def delete_user(input_data: UserIdInput, db: AsyncSession) -> None:
     candidate = await repo.get_user_by_id(db, input_data.user_id)
     if candidate is None:
         raise _not_found()
+    if candidate.role == UserRole.PACIENTE:
+        raise _patient_account()
 
     if candidate.role == UserRole.ADMIN:
         active_admins = await repo.lock_active_admins(db)
@@ -261,6 +286,8 @@ async def send_password_reset(input_data: UserIdInput, db: AsyncSession) -> None
     user = await repo.get_user_by_id(db, input_data.user_id)
     if user is None:
         raise _not_found()
+    if user.role == UserRole.PACIENTE:
+        raise _patient_account()
 
     await trigger_password_reset(user.email)
     await auth_repo.log_audit_event(

@@ -10,11 +10,13 @@ from app.modules.devices.devices_schemas import HolterHealthOut
 from app.modules.patients import patients_service as service
 from app.modules.patients.patients_schemas import (
     PatientCreateInput,
+    PatientCreateOut,
     PatientCreateRequest,
     PatientIdInput,
     PatientListInput,
     PatientListResponse,
     PatientOut,
+    PatientPasswordOut,
     PatientSummaryInput,
     PatientSummaryOut,
     PatientUpdateInput,
@@ -106,12 +108,18 @@ async def get_patient_device(
     )
 
 
-@router.post("", response_model=PatientOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=PatientCreateOut, status_code=status.HTTP_201_CREATED)
 async def create_patient(
     data: PatientCreateRequest,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
-) -> PatientOut:
+) -> PatientCreateOut:
+    """Alta del paciente **y** de su cuenta en la app móvil.
+
+    La respuesta trae `generatedPassword` una sola vez: Auth0 guarda el hash y
+    no hay endpoint que la pueda volver a leer. El portal la muestra en un
+    diálogo con botón de copiar antes de que se pierda.
+    """
     return await service.create_patient(
         PatientCreateInput(doctor_id=scope.doctor_id, requesting_user=scope.user, data=data), db
     )
@@ -133,6 +141,56 @@ async def update_patient(
         ),
         db,
     )
+
+
+@router.post("/{patient_id}/app-account", response_model=PatientPasswordOut)
+async def create_patient_app_account(
+    patient_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> PatientPasswordOut:
+    """Crea el acceso a la app de un paciente que todavía no lo tiene.
+
+    Para las fichas cargadas antes de que la app existiera: la migración no les
+    creó cuenta retroactivamente porque muchas ni siquiera tienen email.
+    """
+    return await service.create_app_account(
+        PatientIdInput(doctor_id=scope.doctor_id, patient_id=patient_id, actor_id=scope.user.id),
+        db,
+    )
+
+
+@router.post("/{patient_id}/app-password", response_model=PatientPasswordOut)
+async def regenerate_patient_app_password(
+    patient_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> PatientPasswordOut:
+    """Genera una contraseña nueva y la devuelve en claro **una sola vez**.
+
+    Mismo criterio que `POST /devices/{id}/api-key`. No existe un endpoint para
+    "ver" la contraseña actual porque no existe la contraseña actual: Auth0
+    guarda el hash, y guardarla nosotros sería dejar credenciales de pacientes
+    recuperables desde la base.
+    """
+    return await service.regenerate_app_password(
+        PatientIdInput(doctor_id=scope.doctor_id, patient_id=patient_id, actor_id=scope.user.id),
+        db,
+    )
+
+
+@router.post("/{patient_id}/password-reset", status_code=status.HTTP_204_NO_CONTENT)
+async def send_patient_password_reset(
+    patient_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Manda el mail de recuperación de Auth0 al paciente."""
+    await service.send_app_password_reset(
+        PatientIdInput(doctor_id=scope.doctor_id, patient_id=patient_id, actor_id=scope.user.id),
+        db,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)

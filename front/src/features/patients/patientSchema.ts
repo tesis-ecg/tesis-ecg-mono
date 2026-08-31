@@ -3,9 +3,10 @@ import { z } from 'zod'
 /**
  * Schema compartido entre el alta y la edición de pacientes.
  *
- * Todos los campos son strings (lo que producen los inputs del form). Los
- * campos de contacto admiten vacío y se normalizan a `null` al construir el
- * payload (`CreatePatientInput`) en los diálogos.
+ * Todos los campos son strings (lo que producen los inputs del form). El
+ * teléfono admite vacío y se normaliza a `null` al construir el payload; el
+ * email no, porque es el usuario del paciente en la app móvil y el único canal
+ * por el que puede recuperar su contraseña.
  */
 export const patientFormSchema = z.object({
   fullName: z.string().trim().min(2, 'Ingresá el nombre completo (mín. 2 caracteres).'),
@@ -20,7 +21,7 @@ export const patientFormSchema = z.object({
     .refine((v) => new Date(v).getFullYear() > 1900, 'El año debe ser posterior a 1900.')
     .refine((v) => new Date(v) <= new Date(), 'La fecha de nacimiento no puede ser futura.'),
   sex: z.enum(['M', 'F', 'X'], 'Seleccioná un sexo.'),
-  contactEmail: z.email('Ingresá un email válido.').or(z.literal('')),
+  contactEmail: z.email('Ingresá un email válido.'),
   contactPhone: z.string().trim(),
   doctorId: z.string().uuid().optional(),
 })

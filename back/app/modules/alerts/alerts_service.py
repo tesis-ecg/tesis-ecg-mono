@@ -15,6 +15,7 @@ from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.audit_event import AuditEventType
 from app.db.models.ecg_event import ECGEventType
 from app.db.models.patient import Patient
+from app.modules._alert_kind import resolve_alert_kind
 from app.modules.alerts import alerts_repository as repo
 from app.modules.alerts.alerts_schemas import (
     AlertIdInput,
@@ -29,19 +30,11 @@ from app.modules.auth import auth_repository as auth_repo
 _SEVERITY_BY_NAME = {severity.value.lower(): severity for severity in AlertSeverity}
 
 
-def _alert_kind(event_type: ECGEventType, event_metadata: dict[str, object]) -> str:
-    if event_metadata.get("kind") == "symptom_marker":
-        return "symptom_marker"
-    if event_type == ECGEventType.OTHER:
-        return "other"
-    return event_type.value.lower()
-
-
 def _alert_out(
     alert: Alert,
     patient: Patient,
-    event_type: ECGEventType,
-    event_metadata: dict[str, object],
+    event_type: ECGEventType | None,
+    event_metadata: dict[str, object] | None,
     study_id: object,
     acknowledged_by_name: str | None,
 ) -> AlertOut:
@@ -49,7 +42,7 @@ def _alert_out(
         id=alert.id,
         patientId=patient.id,
         patientName=f"{patient.first_name} {patient.last_name}".strip(),
-        kind=_alert_kind(event_type, event_metadata),
+        kind=resolve_alert_kind(alert.kind, event_type, event_metadata),
         severity=alert.severity.value.lower(),
         message=alert.message,
         detectedAt=alert.created_at,

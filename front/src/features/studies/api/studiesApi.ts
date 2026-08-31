@@ -1,6 +1,11 @@
 import { api } from '@/lib/api'
 
-import type { Study, StudyListParams, StudyListResponse } from '../types'
+import type {
+  Study,
+  StudyListParams,
+  StudyListResponse,
+  StudyPatientReportsResponse,
+} from '../types'
 
 export async function getStudy(id: string): Promise<Study> {
   const { data } = await api.get<Study>(`/studies/${id}`)
@@ -28,5 +33,17 @@ export async function completeStudy(id: string): Promise<Study> {
 /** Descarta el estudio: colocación fallida, datos de banco, error de carga. */
 export async function cancelStudy(id: string): Promise<Study> {
   const { data } = await api.post<Study>(`/studies/${id}/cancel`)
+  return data
+}
+
+/**
+ * Bitácora del paciente para este estudio.
+ *
+ * Incluye los registros que todavía no se pueden pintar sobre el ECG: si el
+ * médico solo viera las bandas del gráfico, un síntoma marcado hace veinte
+ * minutos sería invisible hasta el próximo envío del chaleco.
+ */
+export async function getStudyPatientReports(id: string): Promise<StudyPatientReportsResponse> {
+  const { data } = await api.get<StudyPatientReportsResponse>(`/studies/${id}/patient-reports`)
   return data
 }

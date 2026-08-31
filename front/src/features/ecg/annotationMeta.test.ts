@@ -49,6 +49,15 @@ describe('annotationLabel', () => {
   it('usa una etiqueta legible para tipos futuros desconocidos', () => {
     expect(annotationLabel('ventricular_couplet')).toBe('Ventricular couplet')
   })
+
+  it('distingue lo que marcó el paciente desde la app de lo que marcó el chaleco', () => {
+    // Son dos cosas distintas: `symptom_marker` es el botón físico del equipo,
+    // `patient_report` es el formulario de la app. Si compartieran etiqueta, el
+    // médico no podría saber cuál de las dos tiene síntomas y actividad
+    // cargados detrás.
+    expect(annotationLabel('patient_report')).toBe('Registro del paciente')
+    expect(annotationLabel('symptom_marker')).toBe('Síntoma marcado por el paciente')
+  })
 })
 
 function annotation(overrides: Partial<ECGAnnotation>): ECGAnnotation {

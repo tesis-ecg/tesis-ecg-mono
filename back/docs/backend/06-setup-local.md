@@ -147,6 +147,26 @@ Los datos de demo se identifican por el prefijo `DEMO-` en `patient.medical_reco
 `HOLTER-DEMO-` en `device.serial_number`; `--reset` borra exactamente eso y nada más. La
 seed es idempotente: si ya hay datos de demo cargados, aborta y pide `--reset`.
 
+### Avisos pendientes para la app móvil
+
+`app/scripts/seed_patient_alerts.py` escribe cinco `alert` **sin responder** para un
+paciente, sin pasar por el procesamiento de ECG. Es lo que hace falta para mirar el badge
+del campanita, las cards de "avisos sin responder" de Inicio y la lista de Notificaciones
+de la app móvil.
+
+```bash
+# El paciente de prueba de la app (DNI 44554402)
+docker compose exec back python -m app.scripts.seed_patient_alerts
+
+# Otro paciente
+docker compose exec back python -m app.scripts.seed_patient_alerts --dni 30123456
+```
+
+Los avisos cuelgan de `alert.kind` y no de un `ecg_event`, así que tocar uno abre el
+formulario de la bitácora. El script se reconoce a sí mismo por los mensajes —que son
+fijos— y en cada corrida borra los suyos, junto con las bitácoras que los respondieron,
+antes de volver a escribirlos. Solo corre en development/test.
+
 > **Nota sobre el ECG en el navegador**: `GET /studies/{id}/ecg` devuelve una URL
 > prefirmada que descarga el navegador, no el backend. Por eso se firma contra
 > `S3_PUBLIC_ENDPOINT_URL` (`http://localhost:9000`, el puerto publicado de MinIO) y no

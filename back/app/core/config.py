@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = Field(default=60, ge=5, le=1440)
     jwt_issuer: str = "holter-api"
     jwt_audience: str = "holter-dashboard"
+    # Audience propia de la app móvil. Separarla es lo que impide que una cookie
+    # de sesión del portal sirva como Bearer en `/mobile` y viceversa: los dos
+    # tokens los firma el mismo secreto, y sin esto serían intercambiables.
+    jwt_mobile_audience: str = "holter-mobile"
+    mobile_access_expire_minutes: int = Field(default=60, ge=5, le=1440)
+    # 60 días: el paciente usa la app cada tantos días, no todos los días. Un
+    # refresh corto lo obligaría a re-loguearse justo cuando llega el aviso.
+    mobile_refresh_expire_days: int = Field(default=60, ge=1, le=365)
     auth_rate_limit_secret: str | None = Field(default=None, min_length=32)
     readiness_token: str | None = Field(default=None, min_length=32)
 
@@ -64,6 +72,18 @@ class Settings(BaseSettings):
     # pasaría sin chistar cuando el FE llama sin query params.
     dashboard_widget_limit: int = Field(default=6, ge=1, le=50)
     dashboard_alerts_limit: int = Field(default=10, ge=1, le=50)
+
+    # Push (Expo). Apagado por defecto: los tests y CI no salen a internet, y
+    # con esto en falso el sender es un noop que igual registra qué se habría
+    # mandado.
+    expo_push_enabled: bool = False
+    expo_push_url: str = "https://exp.host/--/api/v2/push/send"
+    #: Solo hace falta si el proyecto de Expo tiene push security habilitado.
+    expo_access_token: str | None = None
+    #: Ventana de silencio por equipo para el aviso de mala colocación. Sin
+    #: esto, un chaleco que rebota le manda quince notificaciones al paciente
+    #: mientras se lo acomoda.
+    vest_status_debounce_minutes: int = Field(default=30, ge=1, le=1440)
 
     @property
     def is_secure_environment(self) -> bool:

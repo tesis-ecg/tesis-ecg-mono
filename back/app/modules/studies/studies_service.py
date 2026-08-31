@@ -12,8 +12,11 @@ from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
+from app.db.models.patient_report import PatientReport
 from app.db.models.study import Study, StudyStatus
 from app.modules.auth import auth_repository as auth_repo
+from app.modules.patient_app import patient_app_repository as patient_app_repo
+from app.modules.patient_app.catalogs import activity_label, symptom_label
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.studies_schemas import (
     PatientStudiesInput,
@@ -29,6 +32,8 @@ from app.modules.studies.studies_schemas import (
     StudyIdInput,
     StudyListInput,
     StudyListResponse,
+    StudyPatientReportOut,
+    StudyPatientReportsResponse,
 )
 
 MAX_LEGACY_ECG_BYTES = 5 * 1024 * 1024
@@ -189,8 +194,63 @@ def _annotation_category(
     return "technical"
 
 
-def _study_annotations(study: Study, events: list[ECGEvent]) -> list[StudyEcgAnnotationOut]:
+def _recorded_ms(study: Study) -> float:
+    return study.samples_count * 1000 / study.sample_rate
+
+
+def _report_offset_ms(report: PatientReport, study: Study) -> int | None:
+    """Dónde cae el registro dentro de la señal, o `None` si todavía no hay.
+
+    **No se recorta contra el final de la grabación**, a diferencia de
+    `_event_offsets_ms`. Ese clipping es correcto para un evento derivado de un
+    lote ya decodificado: sus coordenadas vienen en muestras que existen. Acá
+    no: el paciente pudo marcar el síntoma a las 14:30 y el chaleco subir esa
+    hora recién a las 15:00. Recortarlo pegaría todos los registros recientes
+    contra el borde derecho de la traza — una marca en un lugar donde no pasó
+    nada, que es peor que no mostrar nada.
+
+    Devolver `None` hace que el registro espere. Cuando llegue el lote,
+    `samples_count` crece y la misma función lo empieza a ubicar sola: no hay
+    job ni backfill, es una función del estado actual.
+    """
+    offset_ms = (report.occurred_at - study.started_at).total_seconds() * 1000
+    if offset_ms < 0 or offset_ms > _recorded_ms(study):
+        return None
+    return round(offset_ms)
+
+
+def _report_severity(report: PatientReport) -> Literal["low", "medium", "high", "critical"]:
+    """ "No sentí nada" es contexto; un síntoma es un hallazgo."""
+    symptoms = [item for item in (report.symptoms or []) if item != "sin_sintomas"]
+    return "high" if symptoms else "low"
+
+
+def _report_annotations(study: Study, reports: list[PatientReport]) -> list[StudyEcgAnnotationOut]:
     annotations: list[StudyEcgAnnotationOut] = []
+    for report in reports:
+        offset_ms = _report_offset_ms(report, study)
+        if offset_ms is None:
+            continue
+        annotations.append(
+            StudyEcgAnnotationOut(
+                id=report.id,
+                kind="patient_report",
+                category="patient_marker",
+                severity=_report_severity(report),
+                # Puntual: el paciente marca un instante, no un intervalo. El
+                # visor lo pinta como línea vertical, no como banda.
+                startOffsetMs=offset_ms,
+                endOffsetMs=offset_ms,
+                confidenceScore=None,
+            )
+        )
+    return annotations
+
+
+def _study_annotations(
+    study: Study, events: list[ECGEvent], reports: list[PatientReport]
+) -> list[StudyEcgAnnotationOut]:
+    annotations: list[StudyEcgAnnotationOut] = list(_report_annotations(study, reports))
     for event in events:
         offsets = _event_offsets_ms(event, study)
         if offsets is None:
@@ -338,7 +398,11 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         if study.ecg_s3_key is not None
         else None
     )
-    annotations = _study_annotations(study, await repo.list_ecg_events(db, study.id))
+    annotations = _study_annotations(
+        study,
+        await repo.list_ecg_events(db, study.id),
+        await patient_app_repo.list_reports_for_study(db, study.id),
+    )
     if input_data.actor_id is not None:
         await auth_repo.log_audit_event(
             db,
@@ -504,3 +568,46 @@ async def close_open_studies_for_patient(
         )
     patient.study_status = PatientStudyStatus.NONE
     return len(studies)
+
+
+async def list_study_patient_reports(
+    input_data: StudyIdInput, db: AsyncSession
+) -> StudyPatientReportsResponse:
+    """Los registros del paciente de un estudio, para la solapa del portal.
+
+    Devuelve **todos**, incluidos los que todavía no se pueden pintar sobre el
+    ECG. Ese es el punto de la solapa: si el médico solo viera las bandas del
+    gráfico, un síntoma marcado hace veinte minutos sería invisible hasta el
+    próximo envío del chaleco, y en la práctica eso es perderlo.
+    """
+    result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
+    if result is None:
+        raise _not_found()
+    study, _, _, _ = result
+    reports = await patient_app_repo.list_reports_for_study(db, study.id)
+
+    items: list[StudyPatientReportOut] = []
+    pending = 0
+    for report in reports:
+        offset_ms = _report_offset_ms(report, study)
+        if offset_ms is None:
+            pending += 1
+        items.append(
+            StudyPatientReportOut(
+                id=report.id,
+                occurredAt=report.occurred_at,
+                source=report.source.value,
+                symptoms=list(report.symptoms or []),
+                symptomLabels=[symptom_label(item) for item in report.symptoms or []],
+                symptomsOther=report.symptoms_other,
+                activity=report.activity,
+                activityLabel=activity_label(report.activity),
+                activityOther=report.activity_other,
+                notes=report.notes,
+                alertId=report.alert_id,
+                createdAt=report.created_at,
+                offsetMs=offset_ms,
+                visibleInChart=offset_ms is not None,
+            )
+        )
+    return StudyPatientReportsResponse(items=items, total=len(items), pendingSignalTotal=pending)

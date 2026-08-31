@@ -42,3 +42,39 @@ export interface StudyListResponse {
   limit: number
   offset: number
 }
+
+export type PatientReportSource = 'push_response' | 'manual'
+
+/**
+ * Un registro de la bitácora del paciente, visto desde el portal.
+ *
+ * `visibleInChart` es el dato que evita un malentendido clínico: un registro
+ * puede existir mucho antes que la señal de ese instante, porque el chaleco
+ * sube tramas una vez por hora. Mientras sea `false` no hay banda en el ECG y
+ * eso no significa que se haya perdido.
+ */
+export interface StudyPatientReport {
+  id: string
+  occurredAt: string
+  source: PatientReportSource
+  symptoms: string[]
+  /** Etiquetas ya resueltas por el backend contra el catálogo. */
+  symptomLabels: string[]
+  symptomsOther: string | null
+  activity: string
+  activityLabel: string
+  activityOther: string | null
+  notes: string | null
+  alertId: string | null
+  createdAt: string
+  /** Offset dentro de la grabación; `null` mientras no haya señal debajo. */
+  offsetMs: number | null
+  visibleInChart: boolean
+}
+
+export interface StudyPatientReportsResponse {
+  items: StudyPatientReport[]
+  total: number
+  /** Cuántos todavía no tienen señal debajo. */
+  pendingSignalTotal: number
+}

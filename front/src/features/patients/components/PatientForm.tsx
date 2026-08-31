@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -168,10 +169,19 @@ export function PatientForm({
           name="contactEmail"
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Email de contacto (opcional)</FormLabel>
+              <FormLabel>Email</FormLabel>
               <FormControl>
-                <Input type="email" placeholder="paciente@example.com" {...field} />
+                <Input
+                  type="email"
+                  placeholder="paciente@example.com"
+                  autoComplete="off"
+                  {...field}
+                />
               </FormControl>
+              <FormDescription>
+                Es el usuario del paciente en la app y el único canal por el que puede recuperar su
+                contraseña.
+              </FormDescription>
               <FormMessage />
             </FormItem>
           )}

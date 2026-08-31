@@ -51,9 +51,9 @@ class ForgotPasswordInput:
 
 async def login(input_data: LoginInput, db: AsyncSession) -> tuple[str, LoginResponse]:
     email = input_data.email.strip().lower()
-    account_key = _rate_limit_key("login-account", f"{email}|{input_data.ip or 'unknown'}")
-    ip_key = _rate_limit_key("login-ip", input_data.ip or "unknown")
-    await _enforce_rate_limits(
+    account_key = rate_limit_key("login-account", f"{email}|{input_data.ip or 'unknown'}")
+    ip_key = rate_limit_key("login-ip", input_data.ip or "unknown")
+    await enforce_rate_limits(
         db,
         ((account_key, 5, 15 * 60), (ip_key, 20, 15 * 60)),
     )
@@ -64,7 +64,7 @@ async def login(input_data: LoginInput, db: AsyncSession) -> tuple[str, LoginRes
             db,
             AuditEventType.LOGIN_FAILED,
             ip_address=input_data.ip,
-            metadata={"identity_key": _rate_limit_key("audit-email", email), "error": exc.code},
+            metadata={"identity_key": rate_limit_key("audit-email", email), "error": exc.code},
         )
         await db.commit()
         raise HTTPException(
@@ -79,7 +79,7 @@ async def login(input_data: LoginInput, db: AsyncSession) -> tuple[str, LoginRes
             AuditEventType.LOGIN_FAILED,
             ip_address=input_data.ip,
             metadata={
-                "identity_key": _rate_limit_key("audit-sub", auth0_id),
+                "identity_key": rate_limit_key("audit-sub", auth0_id),
                 "error": "USER_NOT_PROVISIONED",
             },
         )
@@ -149,11 +149,11 @@ async def register(input_data: RegisterInput, db: AsyncSession) -> UserOut:
 
 async def forgot_password(input_data: ForgotPasswordInput, db: AsyncSession) -> None:
     email = input_data.email.strip().lower()
-    await _enforce_rate_limits(
+    await enforce_rate_limits(
         db,
         (
-            (_rate_limit_key("forgot-email", email), 3, 60 * 60),
-            (_rate_limit_key("forgot-ip", input_data.ip or "unknown"), 10, 60 * 60),
+            (rate_limit_key("forgot-email", email), 3, 60 * 60),
+            (rate_limit_key("forgot-ip", input_data.ip or "unknown"), 10, 60 * 60),
         ),
     )
     # Always log and trigger — never reveal whether the email exists
@@ -163,13 +163,13 @@ async def forgot_password(input_data: ForgotPasswordInput, db: AsyncSession) -> 
         AuditEventType.PASSWORD_RESET_REQUESTED,
         user_id=user.id if user else None,
         ip_address=input_data.ip,
-        metadata={"identity_key": _rate_limit_key("audit-email", email)},
+        metadata={"identity_key": rate_limit_key("audit-email", email)},
     )
     await db.commit()
     await trigger_password_reset(email)
 
 
-def _rate_limit_key(namespace: str, value: str) -> str:
+def rate_limit_key(namespace: str, value: str) -> str:
     return hmac.new(
         settings.rate_limit_secret.encode(),
         f"{namespace}:{value}".encode(),
@@ -182,7 +182,7 @@ def _bucket_start(now: datetime, window_seconds: int) -> datetime:
     return datetime.fromtimestamp(epoch - (epoch % window_seconds), tz=UTC)
 
 
-async def _enforce_rate_limits(
+async def enforce_rate_limits(
     db: AsyncSession,
     policies: tuple[tuple[str, int, int], ...],
 ) -> None:

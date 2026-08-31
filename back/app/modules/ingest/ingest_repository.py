@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.alert import Alert
 from app.db.models.device import Device
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.patient import Patient
@@ -119,3 +120,26 @@ async def list_batches_to_process(db: AsyncSession, study_id: uuid.UUID) -> list
         .execution_options(populate_existing=True)
     )
     return list(result.scalars().all())
+
+
+async def get_recent_alert(
+    db: AsyncSession, patient_id: uuid.UUID, kind: str, since: datetime
+) -> Alert | None:
+    """La última alerta de ese tipo dentro de la ventana. Es el debounce.
+
+    Sin esto, un chaleco que rebota mientras el paciente se lo acomoda le manda
+    una notificación por minuto — y el paciente termina silenciando la app justo
+    para lo que la instaló.
+    """
+    result = await db.execute(
+        select(Alert)
+        .where(
+            Alert.patient_id == patient_id,
+            Alert.kind == kind,
+            Alert.deleted_at.is_(None),
+            Alert.created_at >= since,
+        )
+        .order_by(Alert.created_at.desc())
+        .limit(1)
+    )
+    return result.scalars().first()

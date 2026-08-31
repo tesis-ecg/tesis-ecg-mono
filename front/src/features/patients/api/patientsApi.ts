@@ -3,8 +3,10 @@ import { api } from '@/lib/api'
 import type { HolterHealth } from '@/features/devices/types'
 
 import type {
+  CreatedPatient,
   CreatePatientInput,
   Patient,
+  PatientPassword,
   PatientListParams,
   PatientListResponse,
   PatientStudiesResponse,
@@ -38,9 +40,31 @@ export async function getPatientDevice(id: string): Promise<HolterHealth> {
   return data
 }
 
-export async function createPatient(input: CreatePatientInput): Promise<Patient> {
-  const { data } = await api.post<Patient>('/patients', input)
+export async function createPatient(input: CreatePatientInput): Promise<CreatedPatient> {
+  const { data } = await api.post<CreatedPatient>('/patients', input)
   return data
+}
+
+/** Crea el acceso a la app de un paciente cargado antes de que la app existiera. */
+export async function createPatientAppAccount(id: string): Promise<PatientPassword> {
+  const { data } = await api.post<PatientPassword>(`/patients/${id}/app-account`)
+  return data
+}
+
+/**
+ * Genera una contraseña nueva y la devuelve en claro una sola vez.
+ *
+ * No existe un endpoint para "ver" la actual porque no existe la actual: Auth0
+ * guarda solo el hash.
+ */
+export async function regeneratePatientAppPassword(id: string): Promise<PatientPassword> {
+  const { data } = await api.post<PatientPassword>(`/patients/${id}/app-password`)
+  return data
+}
+
+/** Dispara el mail de recuperación de Auth0 al paciente. */
+export async function sendPatientPasswordReset(id: string): Promise<void> {
+  await api.post(`/patients/${id}/password-reset`)
 }
 
 export async function updatePatient(id: string, input: UpdatePatientInput): Promise<Patient> {

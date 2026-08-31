@@ -14,6 +14,7 @@ from app.modules.studies.studies_schemas import (
     StudyIdInput,
     StudyListInput,
     StudyListResponse,
+    StudyPatientReportsResponse,
 )
 
 router = APIRouter()
@@ -117,4 +118,21 @@ async def get_study_ecg_manifest(
             actor_id=scope.user.id,
         ),
         db,
+    )
+
+
+@router.get("/{study_id}/patient-reports", response_model=StudyPatientReportsResponse)
+async def list_study_patient_reports(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyPatientReportsResponse:
+    """Bitácora del paciente para este estudio.
+
+    Incluye los registros que todavía no tienen señal debajo (`visibleInChart`
+    en `false`): el paciente puede marcar un síntoma una hora antes de que el
+    chaleco suba ese tramo, y hasta entonces no hay dónde pintarlo en el ECG.
+    """
+    return await service.list_study_patient_reports(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
     )

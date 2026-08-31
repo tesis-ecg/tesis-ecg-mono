@@ -7,10 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.user import IdentityStatus, User, UserRole
 
+#: Los pacientes quedan fuera de `/users`. Sus cuentas se crean, se regeneran y
+#: se dan de baja desde la ficha del paciente, junto con el resto de sus datos
+#: clínicos; mezclarlas acá llenaría la pantalla de administración con cientos
+#: de filas que no se gestionan desde ahí.
+STAFF_ROLES = (UserRole.MEDICO, UserRole.ADMIN)
+
 
 async def list_users(db: AsyncSession) -> list[User]:
     result = await db.execute(
-        select(User).where(User.deleted_at.is_(None)).order_by(User.full_name.asc())
+        select(User)
+        .where(User.deleted_at.is_(None), User.role.in_(STAFF_ROLES))
+        .order_by(User.full_name.asc())
     )
     return list(result.scalars().all())
 

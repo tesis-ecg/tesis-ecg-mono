@@ -26,6 +26,7 @@ import { AssignHolterDialog } from '@/features/devices/components/AssignHolterDi
 import { HolterHealthCard } from '@/features/devices/components/HolterHealthCard'
 import { UnassignHolterDialog } from '@/features/devices/components/UnassignHolterDialog'
 import { useHolter } from '@/features/devices/hooks/useHolter'
+import { PatientAppAccessCard } from '@/features/patients/components/PatientAppAccessCard'
 import { DeletePatientDialog } from '@/features/patients/components/DeletePatientDialog'
 import { EditPatientDialog } from '@/features/patients/components/EditPatientDialog'
 import { MetricCard } from '@/features/patients/components/MetricCard'
@@ -281,6 +282,8 @@ export function PatientDetail() {
               />
             </div>
           )}
+
+          {patient.data && <PatientAppAccessCard patient={patient.data} />}
         </TabsContent>
 
         <TabsContent value="estudios">

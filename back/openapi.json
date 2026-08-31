@@ -234,6 +234,24 @@
         "title": "AttentionPatientOut",
         "type": "object"
       },
+      "CatalogOptionOut": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "title": "CatalogOptionOut",
+        "type": "object"
+      },
       "DashboardAlertOut": {
         "properties": {
           "detectedAt": {
@@ -396,6 +414,84 @@
         ],
         "title": "DeviceStatus",
         "type": "string"
+      },
+      "DeviceStatusAckOut": {
+        "properties": {
+          "alertId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alertid"
+          },
+          "notified": {
+            "title": "Notified",
+            "type": "boolean"
+          },
+          "serverTime": {
+            "format": "date-time",
+            "title": "Servertime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "notified",
+          "alertId",
+          "serverTime"
+        ],
+        "title": "DeviceStatusAckOut",
+        "type": "object"
+      },
+      "DeviceStatusRequest": {
+        "description": "Aviso del chaleco **fuera de los baches de envío**.\n\nEl equipo sube tramas una vez por hora. Si esperara al lote para contar que\nla señal viene mal, el paciente se enteraría hasta 60 minutos tarde y ese\ntiempo de estudio ya está perdido. Este endpoint es el canal corto: un JSON\nde pocos bytes, con la misma autenticación por API key que la ingesta.\n\nEl co-procesador WiFi se enciende ~90 s por día para el envío; este aviso es\nun despertar extra y por eso el cuerpo es mínimo.",
+        "properties": {
+          "batteryPct": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batterypct"
+          },
+          "durationSeconds": {
+            "maximum": 86400.0,
+            "minimum": 0.0,
+            "title": "Durationseconds",
+            "type": "integer"
+          },
+          "event": {
+            "$ref": "#/components/schemas/VestStatusEvent"
+          },
+          "sqi": {
+            "anyOf": [
+              {
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sqi"
+          }
+        },
+        "required": [
+          "event",
+          "durationSeconds"
+        ],
+        "title": "DeviceStatusRequest",
+        "type": "object"
       },
       "DeviceWatchdogOut": {
         "properties": {
@@ -1205,8 +1301,715 @@
         "title": "LoginResponse",
         "type": "object"
       },
-      "PatientCreateRequest": {
+      "MobileAccessOut": {
         "properties": {
+          "accessToken": {
+            "title": "Accesstoken",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "title": "Expiresat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accessToken",
+          "expiresAt"
+        ],
+        "title": "MobileAccessOut",
+        "type": "object"
+      },
+      "MobileAlertListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MobileAlertOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "pendingTotal": {
+            "title": "Pendingtotal",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "pendingTotal",
+          "limit",
+          "offset"
+        ],
+        "title": "MobileAlertListResponse",
+        "type": "object"
+      },
+      "MobileAlertOut": {
+        "properties": {
+          "answeredAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answeredat"
+          },
+          "detectedAt": {
+            "format": "date-time",
+            "title": "Detectedat",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "needsReport": {
+            "title": "Needsreport",
+            "type": "boolean"
+          },
+          "reportId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reportid"
+          },
+          "requiresResponse": {
+            "title": "Requiresresponse",
+            "type": "boolean"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "severity",
+          "message",
+          "detectedAt",
+          "requiresResponse",
+          "needsReport",
+          "reportId",
+          "answeredAt"
+        ],
+        "title": "MobileAlertOut",
+        "type": "object"
+      },
+      "MobileAlertStatus": {
+        "description": "Qué avisos pide la app.\n\nSon tres y no un booleano porque el centro de avisos ofrece las tres vistas\ncomo filtro. `ANSWERED` no es \"todo lo que no está pendiente\": el aviso de\nchaleco mal colocado no pide respuesta, así que no cae en ninguno de los dos\nlados y solo aparece en `ALL`.",
+        "enum": [
+          "all",
+          "pending",
+          "answered"
+        ],
+        "title": "MobileAlertStatus",
+        "type": "string"
+      },
+      "MobileCatalogsOut": {
+        "properties": {
+          "activities": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogOptionOut"
+            },
+            "title": "Activities",
+            "type": "array"
+          },
+          "symptoms": {
+            "items": {
+              "$ref": "#/components/schemas/CatalogOptionOut"
+            },
+            "title": "Symptoms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "symptoms",
+          "activities"
+        ],
+        "title": "MobileCatalogsOut",
+        "type": "object"
+      },
+      "MobileDeviceOut": {
+        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `dashboard_stale_hours` que no manda nada",
+        "properties": {
+          "batteryPercent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batterypercent"
+          },
+          "deviceId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deviceid"
+          },
+          "firmwareVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Firmwareversion"
+          },
+          "hasDevice": {
+            "title": "Hasdevice",
+            "type": "boolean"
+          },
+          "lastDataReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastdatareceivedat"
+          },
+          "lastSeenAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastseenat"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "serial": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serial"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "studyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Studyid"
+          },
+          "studyStartedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Studystartedat"
+          }
+        },
+        "required": [
+          "hasDevice",
+          "state",
+          "deviceId",
+          "serial",
+          "model",
+          "firmwareVersion",
+          "batteryPercent",
+          "lastSeenAt",
+          "lastDataReceivedAt",
+          "studyId",
+          "studyStartedAt"
+        ],
+        "title": "MobileDeviceOut",
+        "type": "object"
+      },
+      "MobileDoctorOut": {
+        "properties": {
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "fullName": {
+            "title": "Fullname",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fullName",
+          "email"
+        ],
+        "title": "MobileDoctorOut",
+        "type": "object"
+      },
+      "MobileLoginRequest": {
+        "properties": {
+          "identifier": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "Identifier",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier",
+          "password"
+        ],
+        "title": "MobileLoginRequest",
+        "type": "object"
+      },
+      "MobilePatientOut": {
+        "properties": {
+          "birthDate": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Birthdate"
+          },
+          "dni": {
+            "title": "Dni",
+            "type": "string"
+          },
+          "doctor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MobileDoctorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "fullName": {
+            "title": "Fullname",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "sex": {
+            "$ref": "#/components/schemas/PatientSex"
+          },
+          "studyStatus": {
+            "$ref": "#/components/schemas/PatientStudyStatus"
+          }
+        },
+        "required": [
+          "id",
+          "fullName",
+          "dni",
+          "birthDate",
+          "sex",
+          "email",
+          "phone",
+          "studyStatus",
+          "doctor"
+        ],
+        "title": "MobilePatientOut",
+        "type": "object"
+      },
+      "MobileRefreshRequest": {
+        "properties": {
+          "refreshToken": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Refreshtoken",
+            "type": "string"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ],
+        "title": "MobileRefreshRequest",
+        "type": "object"
+      },
+      "MobileReportCreateRequest": {
+        "properties": {
+          "activity": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Activity",
+            "type": "string"
+          },
+          "activityOther": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activityother"
+          },
+          "alertId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alertid"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "occurredAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurredat"
+          },
+          "symptoms": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Symptoms",
+            "type": "array"
+          },
+          "symptomsOther": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symptomsother"
+          }
+        },
+        "required": [
+          "symptoms",
+          "activity"
+        ],
+        "title": "MobileReportCreateRequest",
+        "type": "object"
+      },
+      "MobileReportListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MobileReportOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "MobileReportListResponse",
+        "type": "object"
+      },
+      "MobileReportOut": {
+        "properties": {
+          "activity": {
+            "title": "Activity",
+            "type": "string"
+          },
+          "activityOther": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activityother"
+          },
+          "alertId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alertid"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PatientReportSource"
+          },
+          "studyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Studyid"
+          },
+          "symptoms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Symptoms",
+            "type": "array"
+          },
+          "symptomsOther": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symptomsother"
+          }
+        },
+        "required": [
+          "id",
+          "occurredAt",
+          "source",
+          "symptoms",
+          "symptomsOther",
+          "activity",
+          "activityOther",
+          "notes",
+          "alertId",
+          "studyId",
+          "createdAt"
+        ],
+        "title": "MobileReportOut",
+        "type": "object"
+      },
+      "MobileSessionOut": {
+        "properties": {
+          "accessToken": {
+            "title": "Accesstoken",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "title": "Expiresat",
+            "type": "string"
+          },
+          "patient": {
+            "$ref": "#/components/schemas/MobilePatientOut"
+          },
+          "refreshToken": {
+            "title": "Refreshtoken",
+            "type": "string"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken",
+          "expiresAt",
+          "patient"
+        ],
+        "title": "MobileSessionOut",
+        "type": "object"
+      },
+      "PatientCreateOut": {
+        "description": "El paciente recién creado + su contraseña inicial.\n\n`generatedPassword` viaja **una sola vez**, en el 201. Auth0 guarda solo el\nhash: no hay ningún endpoint que la pueda volver a leer, y el portal la\nmuestra en un diálogo con botón de copiar antes de perderla para siempre.",
+        "properties": {
+          "assignedDeviceId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigneddeviceid"
+          },
+          "assignedDeviceSerial": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigneddeviceserial"
+          },
           "birthDate": {
             "format": "date",
             "title": "Birthdate",
@@ -1215,7 +2018,6 @@
           "contactEmail": {
             "anyOf": [
               {
-                "maxLength": 320,
                 "type": "string"
               },
               {
@@ -1223,6 +2025,113 @@
               }
             ],
             "title": "Contactemail"
+          },
+          "contactPhone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contactphone"
+          },
+          "dni": {
+            "title": "Dni",
+            "type": "string"
+          },
+          "doctorId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doctorid"
+          },
+          "doctorName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Doctorname"
+          },
+          "fullName": {
+            "title": "Fullname",
+            "type": "string"
+          },
+          "generatedPassword": {
+            "title": "Generatedpassword",
+            "type": "string"
+          },
+          "hasAppAccount": {
+            "title": "Hasappaccount",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "lastDataReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastdatareceivedat"
+          },
+          "sex": {
+            "$ref": "#/components/schemas/PatientSex"
+          },
+          "studyStatus": {
+            "$ref": "#/components/schemas/PatientStudyStatus"
+          }
+        },
+        "required": [
+          "id",
+          "fullName",
+          "dni",
+          "birthDate",
+          "sex",
+          "assignedDeviceId",
+          "assignedDeviceSerial",
+          "studyStatus",
+          "lastDataReceivedAt",
+          "contactEmail",
+          "contactPhone",
+          "doctorId",
+          "doctorName",
+          "hasAppAccount",
+          "generatedPassword"
+        ],
+        "title": "PatientCreateOut",
+        "type": "object"
+      },
+      "PatientCreateRequest": {
+        "properties": {
+          "birthDate": {
+            "format": "date",
+            "title": "Birthdate",
+            "type": "string"
+          },
+          "contactEmail": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Contactemail",
+            "type": "string"
           },
           "contactPhone": {
             "anyOf": [
@@ -1268,7 +2177,8 @@
           "fullName",
           "dni",
           "birthDate",
-          "sex"
+          "sex",
+          "contactEmail"
         ],
         "title": "PatientCreateRequest",
         "type": "object"
@@ -1387,6 +2297,10 @@
             "title": "Fullname",
             "type": "string"
           },
+          "hasAppAccount": {
+            "title": "Hasappaccount",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -1424,10 +2338,33 @@
           "contactEmail",
           "contactPhone",
           "doctorId",
-          "doctorName"
+          "doctorName",
+          "hasAppAccount"
         ],
         "title": "PatientOut",
         "type": "object"
+      },
+      "PatientPasswordOut": {
+        "description": "Contraseña nueva, también entregada una sola vez.",
+        "properties": {
+          "password": {
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "PatientPasswordOut",
+        "type": "object"
+      },
+      "PatientReportSource": {
+        "enum": [
+          "push_response",
+          "manual"
+        ],
+        "title": "PatientReportSource",
+        "type": "string"
       },
       "PatientSex": {
         "enum": [
@@ -1662,6 +2599,33 @@
           }
         },
         "title": "PatientUpdateRequest",
+        "type": "object"
+      },
+      "PushPlatform": {
+        "enum": [
+          "ios",
+          "android"
+        ],
+        "title": "PushPlatform",
+        "type": "string"
+      },
+      "PushTokenRequest": {
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/PushPlatform"
+          },
+          "token": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "platform"
+        ],
+        "title": "PushTokenRequest",
         "type": "object"
       },
       "ReassignHolterRequest": {
@@ -2183,6 +3147,160 @@
         "title": "StudyListResponse",
         "type": "object"
       },
+      "StudyPatientReportOut": {
+        "description": "Un registro de la bitácora del paciente, visto por el médico.\n\n`offsetMs` es dónde cae dentro de la grabación y `visibleInChart` dice si\nya hay señal ahí. Los dos pueden ser \"todavía no\": el paciente marca un\nsíntoma en el momento y el chaleco sube esa hora hasta 60 minutos después.\nEl registro existe desde el primer segundo; la banda sobre el ECG aparece\ncuando llega el lote.",
+        "properties": {
+          "activity": {
+            "title": "Activity",
+            "type": "string"
+          },
+          "activityLabel": {
+            "title": "Activitylabel",
+            "type": "string"
+          },
+          "activityOther": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activityother"
+          },
+          "alertId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alertid"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "title": "Createdat",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "offsetMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offsetms"
+          },
+          "source": {
+            "enum": [
+              "push_response",
+              "manual"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "symptomLabels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Symptomlabels",
+            "type": "array"
+          },
+          "symptoms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Symptoms",
+            "type": "array"
+          },
+          "symptomsOther": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symptomsother"
+          },
+          "visibleInChart": {
+            "title": "Visibleinchart",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "occurredAt",
+          "source",
+          "symptoms",
+          "symptomLabels",
+          "symptomsOther",
+          "activity",
+          "activityLabel",
+          "activityOther",
+          "notes",
+          "alertId",
+          "createdAt",
+          "offsetMs",
+          "visibleInChart"
+        ],
+        "title": "StudyPatientReportOut",
+        "type": "object"
+      },
+      "StudyPatientReportsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudyPatientReportOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "pendingSignalTotal": {
+            "title": "Pendingsignaltotal",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "pendingSignalTotal"
+        ],
+        "title": "StudyPatientReportsResponse",
+        "type": "object"
+      },
       "StudyStatus": {
         "enum": [
           "in_progress",
@@ -2299,7 +3417,8 @@
       "UserRole": {
         "enum": [
           "medico",
-          "admin"
+          "admin",
+          "paciente"
         ],
         "title": "UserRole",
         "type": "string"
@@ -2358,6 +3477,16 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "VestStatusEvent": {
+        "description": "Lo que el chaleco puede reportar fuera del ciclo de envío.",
+        "enum": [
+          "signal_quality_bad",
+          "lead_off",
+          "signal_recovered"
+        ],
+        "title": "VestStatusEvent",
+        "type": "string"
       }
     }
   },
@@ -4452,6 +5581,131 @@
         "summary": "Health Ready"
       }
     },
+    "/ingest/device-status": {
+      "post": {
+        "description": "Canal corto para lo que no puede esperar al próximo lote.\n\nEl equipo sube tramas una vez por hora. Si el aviso de \"mala calidad de\nseñal durante dT\" viajara con el lote, el paciente se enteraría hasta 60\nminutos después y esa hora de estudio ya está perdida.\n\nMisma autenticación que `/ecg-frames` (`X-Device-Serial` + API key) y mismo\nmotivo para estar exento del chequeo de Origin: no hay cookie de por medio.",
+        "operationId": "report_device_status_ingest_device_status_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-serial",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Serial"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-uptime-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Uptime-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-firmware-version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 120,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Firmware-Version"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-battery-pct",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Battery-Pct"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStatusAckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Aviso del chaleco fuera del ciclo de envío",
+        "tags": [
+          "ingest"
+        ]
+      }
+    },
     "/ingest/ecg-frames": {
       "post": {
         "description": "Cuerpo binario crudo: N × 256 B, sin JSON, sin multipart, sin base64.\n\nEs lo que un ESP32-C3 puede transmitir con overhead cero. Los metadatos por\ntrama (`seq`, `t0Ms`, `bootId`, CRC) ya viajan dentro de cada trama; en los\nheaders va solo la identidad del equipo.\n\nResponde 202 y no 200: los bytes quedaron guardados de forma durable, pero\ntodavía no procesados.",
@@ -4576,6 +5830,654 @@
         "summary": "Recibe un lote de tramas ECG comprimidas del chaleco",
         "tags": [
           "ingest"
+        ]
+      }
+    },
+    "/mobile/alerts": {
+      "get": {
+        "operationId": "list_alerts_mobile_alerts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/MobileAlertStatus",
+              "default": "all"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileAlertListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Alerts",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/auth/login": {
+      "post": {
+        "description": "Login del paciente por email **o** DNI.\n\nLa app no le pregunta al paciente cuál está escribiendo: si el texto no\ntiene `@`, el backend lo resuelve como DNI y traduce a email antes de\nhablar con Auth0, que es lo único que Auth0 entiende.",
+        "operationId": "login_mobile_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileSessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/auth/logout": {
+      "post": {
+        "operationId": "logout_mobile_auth_logout_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/auth/refresh": {
+      "post": {
+        "operationId": "refresh_mobile_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileAccessOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/catalogs": {
+      "get": {
+        "description": "Síntomas y actividades. Vienen del backend para que agregar una opción no\ndependa de que el paciente actualice la app desde la store.",
+        "operationId": "get_catalogs_mobile_catalogs_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileCatalogsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Catalogs",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/device": {
+      "get": {
+        "operationId": "get_device_mobile_device_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileDeviceOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Device",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/me": {
+      "get": {
+        "operationId": "get_me_mobile_me_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobilePatientOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Me",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/push-tokens": {
+      "post": {
+        "operationId": "register_push_token_mobile_push_tokens_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Push Token",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/push-tokens/remove": {
+      "post": {
+        "description": "POST y no DELETE: el token va en el body y no en la URL.\n\nUn `ExponentPushToken[...]` en el path o el query string termina en los\naccess logs de Vercel y en cualquier proxy del medio.",
+        "operationId": "unregister_push_token_mobile_push_tokens_remove_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unregister Push Token",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/reports": {
+      "get": {
+        "operationId": "list_reports_mobile_reports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileReportListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reports",
+        "tags": [
+          "mobile"
+        ]
+      },
+      "post": {
+        "description": "Bitácora: qué sintió y qué estaba haciendo.\n\nCon `alertId` es la respuesta a un push y la fila es idempotente por alerta;\nsin él, es un registro manual. En los dos casos se guarda hora de pared: el\npaciente puede marcarlo antes de que el chaleco suba la señal de ese rato.",
+        "operationId": "create_report_mobile_reports_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileReportCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Report",
+        "tags": [
+          "mobile"
+        ]
+      }
+    },
+    "/mobile/reports/{report_id}": {
+      "get": {
+        "operationId": "get_report_mobile_reports__report_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Report",
+        "tags": [
+          "mobile"
         ]
       }
     },
@@ -4760,6 +6662,7 @@
         ]
       },
       "post": {
+        "description": "Alta del paciente **y** de su cuenta en la app móvil.\n\nLa respuesta trae `generatedPassword` una sola vez: Auth0 guarda el hash y\nno hay endpoint que la pueda volver a leer. El portal la muestra en un\ndiálogo con botón de copiar antes de que se pierda.",
         "operationId": "create_patient_patients_post",
         "parameters": [
           {
@@ -4810,7 +6713,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PatientOut"
+                  "$ref": "#/components/schemas/PatientCreateOut"
                 }
               }
             },
@@ -5057,6 +6960,158 @@
         ]
       }
     },
+    "/patients/{patient_id}/app-account": {
+      "post": {
+        "description": "Crea el acceso a la app de un paciente que todavía no lo tiene.\n\nPara las fichas cargadas antes de que la app existiera: la migración no les\ncreó cuenta retroactivamente porque muchas ni siquiera tienen email.",
+        "operationId": "create_patient_app_account_patients__patient_id__app_account_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientPasswordOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Patient App Account",
+        "tags": [
+          "patients"
+        ]
+      }
+    },
+    "/patients/{patient_id}/app-password": {
+      "post": {
+        "description": "Genera una contraseña nueva y la devuelve en claro **una sola vez**.\n\nMismo criterio que `POST /devices/{id}/api-key`. No existe un endpoint para\n\"ver\" la contraseña actual porque no existe la contraseña actual: Auth0\nguarda el hash, y guardarla nosotros sería dejar credenciales de pacientes\nrecuperables desde la base.",
+        "operationId": "regenerate_patient_app_password_patients__patient_id__app_password_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientPasswordOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Patient App Password",
+        "tags": [
+          "patients"
+        ]
+      }
+    },
     "/patients/{patient_id}/device": {
       "get": {
         "operationId": "get_patient_device_patients__patient_id__device_get",
@@ -5127,6 +7182,75 @@
           }
         },
         "summary": "Get Patient Device",
+        "tags": [
+          "patients"
+        ]
+      }
+    },
+    "/patients/{patient_id}/password-reset": {
+      "post": {
+        "description": "Manda el mail de recuperación de Auth0 al paciente.",
+        "operationId": "send_patient_password_reset_patients__patient_id__password_reset_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "patient_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Patient Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Patient Password Reset",
         "tags": [
           "patients"
         ]
@@ -5809,6 +7933,82 @@
           }
         },
         "summary": "Get Study Ecg Manifest",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/patient-reports": {
+      "get": {
+        "description": "Bitácora del paciente para este estudio.\n\nIncluye los registros que todavía no tienen señal debajo (`visibleInChart`\nen `false`): el paciente puede marcar un síntoma una hora antes de que el\nchaleco suba ese tramo, y hasta entonces no hay dónde pintarlo en el ECG.",
+        "operationId": "list_study_patient_reports_studies__study_id__patient_reports_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyPatientReportsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Study Patient Reports",
         "tags": [
           "studies"
         ]
