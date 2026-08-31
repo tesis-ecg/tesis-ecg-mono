@@ -1,0 +1,133 @@
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/preflight.css' layer(base);
+@import 'tailwindcss/utilities.css';
+
+/*
+ * Tokens de la app del paciente.
+ *
+ * Son los mismos que los del portal médico (`front/src/styles/tokens.css`): el
+ * navy del brand, la escala de grises y los semánticos de estado. Se copian y
+ * no se importan porque los dos proyectos tienen bundlers distintos, pero los
+ * valores tienen que moverse juntos — si cambia el primary del portal, cambia
+ * acá.
+ *
+ * La app es **light-only** a propósito. El requisito es que iOS y Android se
+ * vean lo más parecido posible, y un solo esquema de color elimina de entrada
+ * las diferencias de cómo cada plataforma resuelve el modo oscuro. El usuario
+ * objetivo son personas de 40 a 70 años: contraste alto y predecible.
+ */
+
+@layer theme {
+  @theme {
+    /* ---------- Primary (navy, brand) ---------- */
+    --color-primary-50: #e5e7fe;
+    --color-primary-100: #cbcefd;
+    --color-primary-200: #979efa;
+    --color-primary-300: #5e6df7;
+    --color-primary-400: #1a3edf;
+    --color-primary-500: #0b2185;
+    --color-primary-600: #081b73;
+    --color-primary-700: #05155f;
+    --color-primary-800: #030f4c;
+    --color-primary-900: #020836;
+
+    /* ---------- Gray ---------- */
+    --color-gray-50: #f6f6f6;
+    --color-gray-100: #e0e1e3;
+    --color-gray-200: #cbcfd3;
+    --color-gray-300: #b7bcc2;
+    --color-gray-400: #a0a8ae;
+    --color-gray-500: #89939b;
+    --color-gray-600: #727f87;
+    --color-gray-700: #5c6b74;
+    --color-gray-800: #455660;
+    --color-gray-900: #172d39;
+
+    /* ---------- Estado ---------- */
+    --color-error-50: #fff7f6;
+    --color-error-100: #fae0de;
+    --color-error-300: #f7ccc8;
+    --color-error-400: #ec7f74;
+    /*
+     * El 500 no está en la grilla del portal: lo pide el contador de avisos
+     * pendientes de Inicio, que es un círculo rojo pleno con texto blanco
+     * encima. El 400 es un salmón —blanco sobre él no llega a 3:1— y el 700 se
+     * lee marrón a 18 pt de diámetro.
+     */
+    --color-error-500: #c93b2b;
+    --color-error-700: #88271d;
+
+    --color-success-100: #d7f4e1;
+    --color-success-200: #bdebcd;
+    --color-success-500: #51c075;
+    --color-success-700: #0f411f;
+
+    --color-warning-100: #fff3d6;
+    --color-warning-300: #f7dcac;
+    --color-warning-400: #f3d097;
+    --color-warning-500: #efc482;
+    --color-warning-700: #4a2b14;
+
+    --color-info-100: #f1f6ff;
+    --color-info-300: #bacbf9;
+    --color-info-400: #9cb0f7;
+    --color-info-500: #294dec;
+    --color-info-700: #0d279b;
+
+    /* ---------- Semánticos ---------- */
+    --color-bg: var(--color-gray-50);
+    --color-surface: #ffffff;
+    /*
+     * El velo detrás de una hoja inferior.
+     *
+     * El alfa va escrito en el token y no como `bg-black/40` en el componente
+     * porque esa clase no pinta nada: el modificador de opacidad de Tailwind v4
+     * compila a `color-mix(in oklab, ... , transparent)` y con el negro el
+     * resultado sale transparente. Con `bg-white/20` sí funciona, así que no es
+     * que `color-mix` no exista — es peor: falla sólo para un color, sin error
+     * ni en el type-check ni en la consola. Ver AGENTS.md.
+     */
+    --color-scrim: rgba(0, 0, 0, 0.4);
+    --color-fg: var(--color-gray-900);
+    --color-fg-muted: var(--color-gray-600);
+    --color-border: var(--color-gray-100);
+
+    /*
+     * Radios generosos, referencia iOS 26: las superficies flotan sobre el
+     * fondo en vez de dividirlo con líneas.
+     */
+    --radius-lg: 14px;
+    --radius-xl: 20px;
+    --radius-2xl: 28px;
+
+    /*
+     * Tipografía. El piso es 17 pt y no 14: el usuario objetivo tiene entre 40
+     * y 70 años y muchos leen sin anteojos de cerca.
+     */
+    --text-display: 34px;
+    --text-title: 28px;
+    --text-heading: 22px;
+    --text-body: 17px;
+    --text-callout: 15px;
+    --text-caption: 13px;
+  }
+}
+
+@media android {
+  :root {
+    --font-mono: monospace;
+    --font-rounded: normal;
+    --font-serif: serif;
+    --font-sans: normal;
+  }
+}
+
+@media ios {
+  :root {
+    --font-mono: ui-monospace;
+    --font-serif: ui-serif;
+    --font-sans: system-ui;
+    --font-rounded: ui-rounded;
+  }
+}
+
