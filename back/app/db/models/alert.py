@@ -30,9 +30,15 @@ class Alert(TimestampMixin, Base):
     patient_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("patient.id"), nullable=False
     )
-    event_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("ecg_event.id"), nullable=False
+    #: Nullable: una alerta de "chaleco mal colocado" la reporta el equipo por
+    #: `POST /ingest/device-status`, fuera del ciclo de envío, y no tiene ningún
+    #: `ecg_event` detrás — la señal de ese momento todavía no llegó.
+    event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ecg_event.id"), nullable=True
     )
+    #: Tipo de alerta cuando no se puede derivar del evento. Con `event_id`
+    #: presente manda el evento; acá viven las que no cuelgan de uno.
+    kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     severity: Mapped[AlertSeverity] = mapped_column(Enum(AlertSeverity, name="alert_severity"))
     message: Mapped[str] = mapped_column(String(1024))
     seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -42,5 +48,5 @@ class Alert(TimestampMixin, Base):
     )
 
     patient: Mapped[Patient] = relationship(back_populates="alerts")
-    event: Mapped[ECGEvent] = relationship(back_populates="alerts")
+    event: Mapped[ECGEvent | None] = relationship(back_populates="alerts")
     acknowledged_by_doctor: Mapped[Doctor | None] = relationship()

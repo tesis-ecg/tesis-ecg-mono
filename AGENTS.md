@@ -83,7 +83,8 @@ Carpeta compartida del proyecto: https://drive.google.com/drive/folders/1E9GPMXy
 Este repo está organizado como monorepo. El repo git vive en la raíz (`tesis/`).
 
 - `front/` — Dashboard médico web (Vite + React + TypeScript + Tailwind)
-- `back/` — Backend FastAPI (a crear más adelante)
+- `back/` — Backend FastAPI (sirve al dashboard **y** a la app móvil)
+- `mobile/` — App del paciente (Expo + React Native + NativeWind). Ver `mobile/AGENTS.md`
 - `info del proyecto/` — Documentación técnica del sistema
 - `Entregables/` — Documentación formal de la tesis
 

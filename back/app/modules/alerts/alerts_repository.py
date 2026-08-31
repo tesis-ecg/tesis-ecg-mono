@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.expression import ScalarSelect
 
@@ -43,7 +43,7 @@ def _scoped[S: Select[Any]](statement: S, doctor_id: uuid.UUID | None) -> S:
     statement = statement.where(
         Alert.deleted_at.is_(None),
         Patient.deleted_at.is_(None),
-        ECGEvent.deleted_at.is_(None),
+        or_(ECGEvent.id.is_(None), ECGEvent.deleted_at.is_(None)),
     )
     if doctor_id is not None:
         statement = statement.where(Patient.doctor_id == doctor_id)
@@ -74,7 +74,11 @@ async def list_alerts(
     limit: int,
     offset: int,
 ) -> tuple[
-    list[tuple[Alert, Patient, ECGEventType, dict[str, Any], uuid.UUID | None, str | None]],
+    list[
+        tuple[
+            Alert, Patient, ECGEventType | None, dict[str, Any] | None, uuid.UUID | None, str | None
+        ]
+    ],
     int,
     int,
 ]:
@@ -94,13 +98,13 @@ async def list_alerts(
             _acknowledged_by_subquery().label("acknowledged_by_name"),
         )
         .join(Patient, Alert.patient_id == Patient.id)
-        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
     )
     counted = (
         select(func.count())
         .select_from(Alert)
         .join(Patient, Alert.patient_id == Patient.id)
-        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
     )
 
     # `Alert.id` desempata: sin orden total, dos alertas del mismo instante y
@@ -130,7 +134,10 @@ async def list_alerts(
 
 async def get_detail(
     db: AsyncSession, alert_id: uuid.UUID, doctor_id: uuid.UUID | None
-) -> tuple[Alert, Patient, ECGEventType, dict[str, Any], uuid.UUID | None, str | None] | None:
+) -> (
+    tuple[Alert, Patient, ECGEventType | None, dict[str, Any] | None, uuid.UUID | None, str | None]
+    | None
+):
     """La misma fila enriquecida que devuelve el listado, para una sola alerta."""
     statement = (
         select(
@@ -142,12 +149,12 @@ async def get_detail(
             _acknowledged_by_subquery().label("acknowledged_by_name"),
         )
         .join(Patient, Alert.patient_id == Patient.id)
-        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
         .where(
             Alert.id == alert_id,
             Alert.deleted_at.is_(None),
             Patient.deleted_at.is_(None),
-            ECGEvent.deleted_at.is_(None),
+            or_(ECGEvent.id.is_(None), ECGEvent.deleted_at.is_(None)),
         )
     )
     if doctor_id is not None:

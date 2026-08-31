@@ -18,6 +18,7 @@ bucket=16 — no hay que volver a decodificar nada para rehacerlos.
 import hashlib
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import numpy as np
 import structlog
@@ -42,6 +43,10 @@ from app.ml.decompression import (
     iter_frames,
 )
 from app.modules.ingest import ingest_repository as repo
+from app.modules.patient_app.notifications_service import (
+    anomaly_message,
+    notify_patient_task,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -306,6 +311,12 @@ def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
     return events
 
 
+#: Severidades que despiertan al paciente. Una `LOW` (medio segundo de un
+#: electrodo que rebotó) no justifica una notificación, y la app la muestra
+#: igual en Inicio cuando el paciente la abre.
+_PUSHABLE = {ECGEventSeverity.HIGH: 1, ECGEventSeverity.CRITICAL: 2}
+
+
 async def _persist_events(
     db: AsyncSession,
     batch: ECGBatch,
@@ -313,7 +324,14 @@ async def _persist_events(
     events: list[DerivedEvent],
     start_sample_index: int,
     sample_rate: int,
-) -> int:
+) -> tuple[int, tuple[int, uuid.UUID] | None]:
+    """Persiste los eventos y devuelve `(cuántos, la alerta más severa a notificar)`.
+
+    La alerta viaja hacia arriba en vez de notificarse acá porque todavía no se
+    commiteó: mandarle al paciente un push con un `alertId` que después la
+    transacción descarta lo dejaría tocando una notificación rota.
+    """
+    pushable: tuple[int, uuid.UUID] | None = None
     for derived in events:
         absolute = start_sample_index + derived.start_sample
         event = ECGEvent(
@@ -334,15 +352,22 @@ async def _persist_events(
         await db.flush()
 
         if derived.alert_message is not None:
-            db.add(
-                Alert(
-                    patient_id=study.patient_id,
-                    event_id=event.id,
-                    severity=AlertSeverity[derived.severity.name],
-                    message=derived.alert_message,
-                )
+            alert = Alert(
+                patient_id=study.patient_id,
+                event_id=event.id,
+                kind=derived.kind,
+                severity=AlertSeverity[derived.severity.name],
+                message=derived.alert_message,
             )
-    return len(events)
+            db.add(alert)
+            await db.flush()
+            rank = _PUSHABLE.get(derived.severity)
+            # Un lote de 1 h puede traer varias anomalías. Se notifica una sola
+            # —la más severa— para no vaciar la batería del celular ni saturar
+            # al paciente con avisos que va a terminar silenciando.
+            if rank is not None and (pushable is None or rank > pushable[0]):
+                pushable = (rank, alert.id)
+    return len(events), pushable
 
 
 # --------------------------------------------------------------------------- #
@@ -350,7 +375,9 @@ async def _persist_events(
 # --------------------------------------------------------------------------- #
 
 
-async def _process_one_batch(db: AsyncSession, study: Study, batch: ECGBatch) -> tuple[int, int]:
+async def _process_one_batch(
+    db: AsyncSession, study: Study, batch: ECGBatch
+) -> tuple[int, int, tuple[int, uuid.UUID] | None]:
     """Procesa un lote con el estudio ya bloqueado; no maneja la transacción."""
     if batch.frames_s3_key is None:
         raise RuntimeError("El lote no tiene tramas archivadas.")
@@ -407,7 +434,7 @@ async def _process_one_batch(db: AsyncSession, study: Study, batch: ECGBatch) ->
     if any(frame.info.simulated for frame in decoded.frames):
         study.is_simulated = True
 
-    created = await _persist_events(
+    created, pushable = await _persist_events(
         db,
         batch,
         study,
@@ -419,7 +446,7 @@ async def _process_one_batch(db: AsyncSession, study: Study, batch: ECGBatch) ->
     batch.num_samples = decoded.n_samples
     batch.processing_status = ProcessingStatus.DONE
     batch.processing_error = None
-    return decoded.n_samples, created
+    return decoded.n_samples, created, pushable
 
 
 async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
@@ -447,11 +474,15 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
             raise RuntimeError("el estudio del lote no existe")
 
         processed: list[tuple[ECGBatch, int, int]] = []
+        pushable: tuple[int, uuid.UUID] | None = None
         for pending in await repo.list_batches_to_process(db, study.id):
             failed_batch_id = pending.id
-            samples, events = await _process_one_batch(db, study, pending)
+            samples, events, batch_pushable = await _process_one_batch(db, study, pending)
             processed.append((pending, samples, events))
+            if batch_pushable is not None and (pushable is None or batch_pushable[0] > pushable[0]):
+                pushable = batch_pushable
 
+        patient_id = study.patient_id
         await db.commit()
         for done, samples, events in processed:
             await logger.ainfo(
@@ -460,6 +491,12 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
                 study_id=str(study.id),
                 samples=samples,
                 events=events,
+            )
+        # Recién acá, con la transacción cerrada: el `alertId` del push tiene
+        # que existir cuando el paciente toque la notificación.
+        if pushable is not None:
+            await notify_patient_task(
+                patient_id, anomaly_message(pushable[1], datetime.now(UTC).isoformat())
             )
     except Exception as error:  # noqa: BLE001 — el estado del lote tiene que reflejarlo
         await db.rollback()

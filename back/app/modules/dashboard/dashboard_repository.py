@@ -70,12 +70,12 @@ async def count_pending_alerts(db: AsyncSession, doctor_id: uuid.UUID | None) ->
         select(func.count())
         .select_from(Alert)
         .join(Patient, Alert.patient_id == Patient.id)
-        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
         .where(
             Alert.deleted_at.is_(None),
             Alert.acknowledged_at.is_(None),
             Patient.deleted_at.is_(None),
-            ECGEvent.deleted_at.is_(None),
+            or_(ECGEvent.id.is_(None), ECGEvent.deleted_at.is_(None)),
         )
     )
     if doctor_id is not None:
@@ -135,12 +135,12 @@ async def get_kpi_counts(
         select(func.count())
         .select_from(Alert)
         .join(Patient, Alert.patient_id == Patient.id)
-        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
         .where(
             Alert.deleted_at.is_(None),
             Alert.acknowledged_at.is_(None),
             Patient.deleted_at.is_(None),
-            ECGEvent.deleted_at.is_(None),
+            or_(ECGEvent.id.is_(None), ECGEvent.deleted_at.is_(None)),
             *patient_scope,
         )
         .scalar_subquery()
@@ -166,7 +166,7 @@ async def get_kpi_counts(
 
 async def list_pending_alerts(
     db: AsyncSession, doctor_id: uuid.UUID | None, limit: int
-) -> list[tuple[Alert, Patient, ECGEventType, dict[str, Any], uuid.UUID | None]]:
+) -> list[tuple[Alert, Patient, ECGEventType | None, dict[str, Any] | None, uuid.UUID | None]]:
     statement = (
         select(
             Alert,
@@ -176,12 +176,12 @@ async def list_pending_alerts(
             alert_study_id().label("study_id"),
         )
         .join(Patient, Alert.patient_id == Patient.id)
-        .join(ECGEvent, Alert.event_id == ECGEvent.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
         .where(
             Alert.deleted_at.is_(None),
             Alert.acknowledged_at.is_(None),
             Patient.deleted_at.is_(None),
-            ECGEvent.deleted_at.is_(None),
+            or_(ECGEvent.id.is_(None), ECGEvent.deleted_at.is_(None)),
         )
         .order_by(_SEVERITY_RANK.asc(), Alert.created_at.desc())
     )

@@ -5,19 +5,20 @@ Agent-facing navigation map for the Holter Wearable ECG monorepo (Universidad Au
 ## How To Use This Index
 
 - This is a **navigation map**, not source of truth — read the cited files before editing or claiming behavior.
-- Backend lives in `back/` (FastAPI + SQLAlchemy 2.0 async + PostgreSQL + S3). Frontend lives in `front/` (Vite + React 19 + TS).
+- Backend lives in `back/` (FastAPI + SQLAlchemy 2.0 async + PostgreSQL + S3). The doctor portal lives in `front/` (Vite + React 19 + TS); the patient app lives in `mobile/` (Expo + React Native) and has its own `mobile/AGENTS.md`.
 - For backend conventions (router → service → repository layering, DTO usage), the `backend-skill` skill is authoritative; `back/docs/backend/` has prose docs (some stale — see Unknowns).
 - For frontend conventions (shadcn/ui flow, tokens, feature-folder layout), see root `CLAUDE.md`.
 - Edges marked **(inferred)** were not fully confirmed in code.
 
 ## Repository Overview
 
-Monorepo, git root at repository top. Two product surfaces plus project documentation.
+Monorepo, git root at repository top. Three product surfaces plus project documentation.
 
 | Path | What it is | Stack |
 |---|---|---|
-| `back/` | Cloud API for the Holter device + medical dashboard | FastAPI, SQLAlchemy 2.0 (async), Alembic, PostgreSQL, S3/MinIO, Auth0 |
+| `back/` | Cloud API for the Holter device, the medical dashboard **and the patient app** | FastAPI, SQLAlchemy 2.0 (async), Alembic, PostgreSQL, S3/MinIO, Auth0, Expo Push |
 | `front/` | Medical dashboard (web) | Vite, React 19, TypeScript, Tailwind v4, React Router v7, TanStack Query, Axios, shadcn/ui |
+| `mobile/` | Patient companion app (iOS + Android) | Expo SDK 57, expo-router, NativeWind v5 + Tailwind v4, TanStack Query, Axios, expo-notifications |
 | `info del proyecto/` | System/communication architecture docs (Spanish) | Markdown |
 | `Entregables/` | Formal thesis deliverables | PDF/Markdown |
 | `back/docs/backend/` | Backend prose docs (partly stale) | Markdown |
@@ -26,7 +27,7 @@ Key root files: `CLAUDE.md` / `AGENTS.md` (agent instructions), `Requerimientos.
 
 ## Backend Graph
 
-Entrypoint: `back/app/main.py` — creates `FastAPI(title="Holter ECG API")`, configures transitional CORS, Origin validation, stable error envelopes, request IDs/structured timing logs, registers 7 implemented routers, and exposes liveness/readiness. API docs are disabled in production; startup does not block on the database.
+Entrypoint: `back/app/main.py` — creates `FastAPI(title="Holter ECG API")`, configures transitional CORS, Origin validation, stable error envelopes, request IDs/structured timing logs, registers 10 implemented routers, and exposes liveness/readiness. API docs are disabled in production; startup does not block on the database.
 
 **Layering per module** (`back/app/modules/<name>/`): `*_routes.py` (HTTP) → `*_service.py` (business logic) → `*_repository.py` (DB queries); `*_schemas.py` holds Pydantic DTOs. `_base_schema.py` is the shared base (camelCase aliasing).
 
@@ -40,15 +41,16 @@ Entrypoint: `back/app/main.py` — creates `FastAPI(title="Holter ECG API")`, co
 | `/doctors` | `modules/doctors` | **Implemented** | admin-only `GET ""` for active doctor options |
 | `/users` | `modules/users` | **Implemented** | admin-only list/create/email/reset/delete |
 | `/dashboard` | `modules/dashboard` | **Implemented** | consolidated `GET /overview`; compatibility widget endpoints remain |
-| `/ingest` | `modules/ingest` | **Implemented** | `POST /ecg-frames` — device-authenticated binary ingestion of Holter frames |
+| `/ingest` | `modules/ingest` | **Implemented** | `POST /ecg-frames` — device-authenticated binary ingestion of Holter frames; `POST /device-status` — out-of-band vest alert (bad signal sustained for dT), debounced per patient |
+| `/mobile` | `modules/patient_app` | **Implemented** | Patient app surface: `POST /auth/login` (email **or** DNI), `/auth/refresh`, `/auth/logout`, `GET /me`, `/device`, `/alerts` (paginado + `status=all\|pending\|answered`), `/catalogs`, `GET|POST /reports`, `GET /reports/{report_id}`, `POST /push-tokens[/remove]` |
 
 **Core infra** (`back/app/core/`): `config.py` (typed environment/config validation), `security.py` + `jwt_codec.py` (stdlib HS256 and cryptography-backed RS256, fixed algorithms, iss/aud/jti/sessionVersion), `auth0_client.py` (ROPG, Management API, JWKS cache), `request_context.py` (validated Vercel client IP), `logging.py`.
 
-**Dependencies** (`back/app/dependencies/`): `common_dependencies.py` yields an async session without implicit commit. `device_dependencies.py` authenticates the Holter itself (`X-Device-Serial` + bearer compared against `device.api_key_hash` with `hmac.compare_digest`); it shares nothing with the user auth path — the device has no session and no cookie. `auth_dependencies.py` accepts migration cookies (`holter_session_v2` then legacy `session`), validates sessionVersion and active identity, and returns an explicit `RoleScope`: `ADMIN_GLOBAL` or `DOCTOR` with mandatory doctor ID.
+**Dependencies** (`back/app/dependencies/`): `common_dependencies.py` yields an async session without implicit commit. `device_dependencies.py` authenticates the Holter itself (`X-Device-Serial` + bearer compared against `device.api_key_hash` with `hmac.compare_digest`); it shares nothing with the user auth path — the device has no session and no cookie. `auth_dependencies.py` accepts migration cookies (`holter_session_v2` then legacy `session`), validates sessionVersion and active identity, and returns an explicit `RoleScope`: `ADMIN_GLOBAL` or `DOCTOR` with mandatory doctor ID — it **rejects the `paciente` role**, which is what keeps the mobile account out of the portal. `patient_dependencies.py` is the mobile counterpart: `Authorization: Bearer` only (never a cookie), with its own JWT audience (`jwt_mobile_audience`) so a portal token cannot be replayed on `/mobile` or vice versa.
 
 **ML** (`back/app/ml/`): `decompression.py` is **implemented** — the Rice frame decoder, a verbatim port of the firmware's normative decoder (`../Holter-ECG-System/tools/holter_frame_decoder.py`). `pipeline.py`, `rpeak_detection.py`, `arrhythmia.py`, `hrv.py` remain docstring-only stubs.
 
-**Migrations** (`back/alembic/versions/`): `4940f777d181_initial_schema.py` → `27e0b772f1dd_device_doctor_id.py` → `8c1f2a7d9b30_security_and_integrity.py` → `a1b70fd51903_ecg_ingest_pipeline.py` (ingest columns on `study`/`ecg_batch`, `DEVICE_API_KEY_ROTATED` audit type) → `b2c3d4e5f6a7_study_lifecycle_and_alerts.py` (`STUDY_COMPLETED`, `STUDY_CANCELLED`, `ALERT_ACKNOWLEDGED` audit types; no table changes). The last migration has preflight aborts for legacy roles, case-colliding emails and inconsistent assignments, then adds identity/session state, rate limits, ECG metadata, indexes and integrity constraints.
+**Migrations** (`back/alembic/versions/`): `4940f777d181_initial_schema.py` → `27e0b772f1dd_device_doctor_id.py` → `8c1f2a7d9b30_security_and_integrity.py` → `a1b70fd51903_ecg_ingest_pipeline.py` (ingest columns on `study`/`ecg_batch`, `DEVICE_API_KEY_ROTATED` audit type) → `b2c3d4e5f6a7_study_lifecycle_and_alerts.py` (`STUDY_COMPLETED`, `STUDY_CANCELLED`, `ALERT_ACKNOWLEDGED` audit types; no table changes) → `c3d4e5f6a7b8_patient_app.py` (restores the `paciente` value in `user_role`, adds `patient_report` and `push_token`, makes `alert.event_id` nullable and adds `alert.kind`). The last migration has preflight aborts for legacy roles, case-colliding emails and inconsistent assignments, then adds identity/session state, rate limits, ECG metadata, indexes and integrity constraints.
 
 ## Frontend Graph
 
@@ -75,7 +77,7 @@ Entrypoint: `front/src/main.tsx` → `App.tsx` (routes). Feature-folder architec
 - `features/auth` — memory-only `AuthProvider.tsx` + `AuthContext.ts`, `api.ts`. The HttpOnly cookie and `/auth/me` are the only source of truth; logout/401 cancels and clears TanStack Query without recursive server logout.
 - `features/patients` — full CRUD + summary/studies/device hooks (`usePatients`, `usePatient`, `usePatientSummary`, `usePatientStudies`, `usePatientDevice`, create/update/delete).
 - `features/devices` — Holter ABM + assign/unassign/reassign + health (`useHolters`, `useHolter`, `useHolterHealth`, `useAssignHolter`, etc.).
-- `features/studies` — study metadata **and lifecycle**: `useStudy`, `useStudies`, `useCompleteStudy`, `useCancelStudy`, `StudyHeader` (carries the finish/cancel actions), `CloseStudyDialog`, `StudyBreadcrumb`.
+- `features/studies` — study metadata, **lifecycle** and the patient log tab (`PatientReportsTable.tsx`, `useStudyPatientReports`): `useStudy`, `useStudies`, `useCompleteStudy`, `useCancelStudy`, `StudyHeader` (carries the finish/cancel actions), `CloseStudyDialog`, `StudyBreadcrumb`.
 - `features/alerts` — clinical alert inbox: `useAlerts`, `usePendingAlertCount` (feeds the sidebar badge), `useAcknowledgeAlert`, `AlertSeverityBadge`, `labels.ts`.
 - `features/ecg` — high-fidelity ECG viewer: `ECGViewer.tsx` (uPlot signal + severity-colored event bands), `ECGMinimap.tsx` (overview + accessible event markers), `ECGFindingsPanel.tsx`, fullscreen/zoom controls, and `useEcgSignal.ts` (polls every 60 s while the study is `in_progress`). Annotation labels, severity rules and viewport navigation live in `annotationMeta.ts`; canvas painting lives in `annotationPlugin.ts`.
 - `features/vest-simulator` — Holter simulator: `codec/` (TypeScript port of the firmware's Rice encoder + a decoder used only by round-trip tests), `codec/batchBuilder.ts` (signal → frames → injected anomalies), `workers/vestWorker.ts` (one worker per vest), `hooks/useVestFleet.ts` (N concurrent vests), `storage.ts` (fleet persisted to `localStorage` under `holter:vest-fleet`), `components/`. **The plaintext device API key is returned only once by `POST /devices/{id}/api-key`**, so rotation applies to the vest immediately (outside the dialog's draft) and the fleet is persisted — otherwise a cancel or a reload left the vest holding a dead key and every ingest answered 401.
@@ -95,6 +97,12 @@ Entrypoint: `front/src/main.tsx` → `App.tsx` (routes). Feature-folder architec
 **ECG viewing**: StudyDetail prefers `GET /studies/{id}/ecg/manifest` (versioned little-endian raw metadata + SHA-256 + presigned raw/min-max levels, 10-minute expiry, plus normalized `annotations`). `studies_repository.list_ecg_events` associates modern events through `ecg_batch.study_id` and falls back to legacy `metadata.studyId`; the service clips sample/time coordinates to the recording and exposes lower-case kind/category/severity. The client selects a pyramid level capped at 20,000 points, validates size/checksum, overlays annotations in uPlot/minimap, and drives the findings panel from the same payload. A 404 falls back to deprecated `/ecg` with no annotations. S3 downloads remain direct and private/presigned.
 
 **ECG ingestion (device → study)**: the vest POSTs `N × 256 B` Rice-compressed frames as `application/octet-stream` to `/ingest/ecg-frames`. The service validates each frame (magic → version → CRC-32), resolves `serial → device.patient_id → open in-progress study` (creating one if needed, and never joining a study that already holds a legacy `ecg_s3_key` blob), archives the accepted contiguous run to S3 and answers `202` with a go-back-N ACK delta. A `BackgroundTasks` job then decodes to float32 mV, writes one segment plus one bucket-16 envelope per batch, rebuilds the coarse pyramid levels from the envelopes, and derives `ecg_event`/`alert` rows. `/ingest` is exempt from the Origin check — it carries no cookie, so it has no CSRF surface, and the ESP32 co-processor sends no `Origin` header.
+
+**Patient app session**: the app never uses a cookie. `POST /mobile/auth/login` takes an **email or a DNI** (a DNI is translated to the account's email before the Auth0 ROPG call, so the endpoint cannot be used to enumerate patients), and returns an access token (60 min) plus a refresh token (60 days) in the response body. Both carry `session_version`, so logout invalidates the pair with no refresh-token table. `/mobile` is exempt from the Origin check for the same reason `/ingest` is: no cookie, no CSRF surface.
+
+**Patient log entry → ECG annotation** *(the subtle one)*: the vest uploads roughly hourly, so a patient can record a symptom long before the signal for that instant exists. `patient_report` therefore stores **wall-clock `occurred_at`**, and `studies_service._report_offset_ms` converts it at read time: `offset > samples_count/sample_rate` means the report is **omitted** from the manifest — deliberately not clipped like `_event_offsets_ms` does, because clipping would pin every recent report to the right edge of the trace. It migrates into a band on its own once the covering batch lands. `GET /studies/{id}/patient-reports` returns all of them with `visibleInChart`, which is what the portal tab shows.
+
+**Push**: `core/push.py` exposes a `PushSender` protocol with `ExpoPushSender` (Expo Push Service) and `NoopPushSender` (used whenever `expo_push_enabled` is false — tests and CI never reach the network). Two triggers, both dispatched through `BackgroundTasks`: `POST /ingest/device-status` (vest reports sustained bad signal, debounced per patient by `vest_status_debounce_minutes`) and `ingest/processing._persist_events` (one push per processed batch, for the most severe HIGH/CRITICAL alert). Tokens that Expo answers `DeviceNotRegistered` are soft-deleted in the same call. En mobile, `NotificationsBridge` espera la restauración de sesión, lleva anomalías al modal de reporte, mala colocación a Dispositivo y payloads incompletos al centro `/notifications`; recibir un push en foreground invalida la caché de avisos.
 
 **Holter assignment**: `front` devices/patient UI → `POST /devices/{id}/assign|unassign|reassign` → `devices_service` maintains the bidirectional invariant `device.patient_id ↔ patient.assigned device`.
 
@@ -116,12 +124,14 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 | `auth_rate_limit` | `auth_rate_limit.py` | HMAC `key`, fixed `bucket_start`, attempts | — |
 | `ecg_batch` | `ecg_batch.py` | `device_id`, nullable legacy-compatible `study_id`, timing/sample metadata, processing state, raw/frame S3 keys and ingest sequence fields | `device`, optional `study`, `events` |
 | `ecg_event` | `ecg_event.py` | `batch_id`, `event_type`, `severity`, `timestamp_in_recording`, `duration_seconds`, `confidence_score`, `event_metadata` (JSONB) | `batch`, `alerts` |
-| `alert` | `alert.py` | `patient_id`, `event_id`, `severity`, `message`, `seen_at`, `acknowledged_at`, `acknowledged_by` (FK→doctor, nullable) | `patient`, `event`, `acknowledged_by_doctor` |
+| `alert` | `alert.py` | `patient_id`, **nullable** `event_id`, `kind` (used when there is no ECG event), `severity`, `message`, `seen_at`, `acknowledged_at`, `acknowledged_by` (FK→doctor, nullable) | `patient`, optional `event`, `acknowledged_by_doctor` |
+| `patient_report` | `patient_report.py` | `patient_id`, nullable `study_id`/`alert_id`, **`occurred_at` (wall clock)**, `source` (push_response/manual), `symptoms` (JSONB), `activity`, free-text fields; partial unique index on `alert_id` | `patient`, `study`, `alert` |
+| `push_token` | `push_token.py` | `user_id`, `token` (partial unique while live), `platform`, `last_used_at` | `user` |
 | `audit_event` | `audit_event.py` | `user_id`, `event_type`, `ip_address`, `event_metadata` (JSONB) | — |
 
-**Enums**: `UserRole` (medico/admin only) · `IdentityStatus` (pending/active/error) · `DeviceStatus` (available/assigned/maintenance/retired) · `PatientSex` (M/F/X) · `PatientStudyStatus` (active/completed/paused/none) · `StudyStatus` (in_progress/completed/cancelled/scheduled).
+**Enums**: `UserRole` (medico/admin/**paciente**) · `IdentityStatus` (pending/active/error) · `DeviceStatus` (available/assigned/maintenance/retired) · `PatientSex` (M/F/X) · `PatientStudyStatus` (active/completed/paused/none) · `StudyStatus` (in_progress/completed/cancelled/scheduled).
 
-> Single autogenerated migration reflects the final schema. `doctor` is a lean profile table linked 1:1 to `user` via `user_id`. A `doctor` row is always created alongside the `user` row for any `medico` account.
+> `doctor` is a lean profile table linked 1:1 to `user` via `user_id`. A `doctor` row is always created alongside the `user` row for any `medico` account. Since the patient app exists, `patient.user_id` is **populated on every new patient**: `patients_service.create_patient` provisions an Auth0 account with role `paciente` in the same request. Patients created before that stay at `user_id = NULL` until an admin uses `POST /patients/{id}/app-account`.
 
 ## External Integrations Graph
 
@@ -129,6 +139,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 - **PostgreSQL** — primary DB. Async engine in `back/app/db/session.py` uses timeouts and `NullPool` in preview/production. Local via root docker-compose (`postgres:16.10-alpine`).
 - **S3 / MinIO** — ECG binary blob storage (pre-signed URLs). Client built in `studies_service._get_s3_client()` (boto3, s3v4). Local via docker-compose (`minio/minio`). Config: `s3_*`/`aws_*` settings.
 - **Local ECG annotation showcase** — `python -m app.scripts.seed_ecg_showcase` creates/replaces only `SHOWCASE-ECG-ALERTS` and `showcases/ecg-alerts/` in development/test. It writes one deterministic 10-minute study, raw + pyramid objects, and six quality/clinical/patient events across all severities; default owner is `dev@tesis.com`, which must be an active doctor.
+- **Local patient-app alert seed** — `python -m app.scripts.seed_patient_alerts [--dni 44554402]` writes five unanswered `alert` rows (no `ecg_event` behind them) for one patient in development/test, so the mobile app's bell badge, Home pending cards and Notifications list can be reviewed without processing a study. Idempotent: it recognises its own rows by their fixed messages and drops them — plus any `patient_report` answering them — before rewriting.
 - **The Holter device (firmware)** — producer of `ecg_batch` rows + S3 objects through `POST /ingest/ecg-frames`, authenticated with `device.api_key_hash`. The frame format is normative and lives in the sibling repo `../Holter-ECG-System` (`INTEGRACION.md` §3-4). Admins mint credentials with `POST /devices/{id}/api-key`.
 
 ## Important Docs
@@ -147,6 +158,8 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 - **Auth changes**: `back/app/modules/auth/` + `core/auth0_client.py` + `core/security.py` + `dependencies/auth_dependencies.py`; FE `front/src/features/auth/` + `lib/api.ts`.
 - **Data model / migration**: `back/app/db/models/` → add Alembic migration in `back/alembic/versions/`.
 - **New frontend feature**: mirror an existing folder under `front/src/features/` (e.g. `patients`); follow shadcn flow in `CLAUDE.md`.
+- **Work on the patient app**: read `mobile/AGENTS.md` first (it is authoritative for the app's conventions), then `mobile/src/app/` for the routes and `mobile/src/features/patient/` for the API surface. The mobile DTOs are a hand-written mirror of `back/app/modules/patient_app/patient_app_schemas.py` — they are **not** generated.
+- **Anything about patient accounts**: `patients_service.create_patient` / `_provision_app_account` / `regenerate_app_password` → `core/passwords.py` → `core/auth0_client.py`. There is no way to read a patient's current password; that is the design, not a gap.
 
 ## Unknowns / Inferred Edges
 
@@ -154,6 +167,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 - `modules/admin` and `modules/ecg_batches` are still source placeholders, intentionally not registered publicly — ingestion lives in `modules/ingest`, because the contract is "receive frames", not "CRUD batches". `modules/alerts` **is now implemented and registered**.
 - `PatientStudyStatus.PAUSED` has no writer anywhere: nothing in the domain pauses a study. It is kept in the enum for existing rows but removed from the patients filter UI.
 - `app/ml/*` are confirmed docstring-only placeholders — no analysis pipeline runs yet.
-- `patient.user_id` is nullable — planted for future patient mobile app. All current patients have `user_id = NULL`.
+- `patient.user_id` is no longer just planted: every patient created since the mobile app exists gets an Auth0 account with role `paciente` linked through it. It stays nullable for the patients loaded before that.
+- `app/ml/*` being stubs is why the "anomaly detected" push currently fires off the rule-based events of `ingest/processing.derive_events` (in practice, the vest's physical symptom button). The dispatch path is generic — any HIGH/CRITICAL `alert` created while processing a batch triggers it — so a real ML pipeline plugs in without touching the notification code.
 - `patient.study_status` / `patient.last_data_received_at` are a **maintained cache**, not derived state: `ingest_service.ingest_frames` writes them on every accepted batch, and `studies_service` rewrites them on every close. The dashboard counts patients off these columns, so any new path that opens or closes a study must keep them in sync.
 - `patient.assigned device` field referenced in the Holter assignment flow is maintained via service-layer logic, not a DB-level column — the actual FK is `device.patient_id` **(inferred naming inconsistency, verify in patients_service.py before editing)**.

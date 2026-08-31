@@ -13,7 +13,7 @@ bytes" de "los procesé" es exactamente eso.
 
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import BackgroundTasks, HTTPException, status
@@ -21,13 +21,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.s3 import put_object
+from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
 from app.dependencies.device_dependencies import INGESTABLE_STATUSES, DeviceContext
 from app.ml.decompression import SAMPLE_RATE_HZ, FrameError, FrameInfo, iter_frames, read_header
 from app.modules.ingest import ingest_repository as repo
-from app.modules.ingest.ingest_schemas import IngestAckOut, IngestFramesInput
+from app.modules.ingest.ingest_schemas import (
+    DeviceStatusAckOut,
+    DeviceStatusInput,
+    IngestAckOut,
+    IngestFramesInput,
+    VestStatusEvent,
+)
+from app.modules.patient_app.notifications_service import notify_patient_task, vest_message
 
 logger = structlog.get_logger(__name__)
 
@@ -358,3 +366,99 @@ async def _store_batch(
     study.last_ingested_seq = last_info.seq
     study.last_boot_id = boot_id
     return batch.id
+
+
+# --------------------------------------------------------------------------- #
+# Estado del equipo fuera del ciclo de envío
+# --------------------------------------------------------------------------- #
+
+#: Tipo de alerta que produce este canal. No cuelga de ningún `ecg_event`: la
+#: señal de ese momento todavía está en la flash del chaleco.
+VEST_ALERT_KIND = "vest_misplaced"
+
+_VEST_MESSAGES = {
+    VestStatusEvent.SIGNAL_QUALITY_BAD: (
+        "El chaleco viene registrando con mala calidad de señal desde hace {minutes} min."
+    ),
+    VestStatusEvent.LEAD_OFF: (
+        "El chaleco perdió contacto con la piel hace {minutes} min. Puede estar mal colocado."
+    ),
+}
+
+
+def _vest_message(event: VestStatusEvent, duration_seconds: int) -> str:
+    minutes = max(1, round(duration_seconds / 60))
+    return _VEST_MESSAGES[event].format(minutes=minutes)
+
+
+async def report_device_status(
+    ctx: DeviceContext,
+    input_data: DeviceStatusInput,
+    db: AsyncSession,
+    background: BackgroundTasks,
+) -> DeviceStatusAckOut:
+    """Registra el aviso del chaleco y despierta al paciente si hace falta.
+
+    Tres decisiones que valen la pena:
+
+    - La alerta se crea con `event_id = NULL`. El chaleco está contando algo que
+      pasa **ahora**, y la señal correspondiente recién va a existir en el
+      próximo envío. Forzar un `ecg_event` sería inventar coordenadas.
+    - Hay debounce por paciente: dentro de la ventana no se crea una alerta
+      nueva ni se notifica. Un equipo que rebota mientras alguien se lo acomoda
+      no puede vaciarle la batería al celular.
+    - El push va en background. La respuesta al equipo no puede depender de que
+      `exp.host` conteste, porque el chaleco tiene la radio prendida esperándola.
+    """
+    device = ctx.device
+    now = input_data.received_at
+    device.last_seen_at = now
+    if input_data.data.batteryPct is not None:
+        device.last_battery_pct = input_data.data.batteryPct
+    elif ctx.battery_pct is not None:
+        device.last_battery_pct = ctx.battery_pct
+    if ctx.firmware_version:
+        device.firmware_version = ctx.firmware_version
+
+    event = input_data.data.event
+    # `signal_recovered` cierra el episodio: se guarda la telemetría y nada más.
+    # Avisarle al paciente que "ya está bien" cuando probablemente ni vio el
+    # aviso anterior es ruido.
+    if event is VestStatusEvent.SIGNAL_RECOVERED or device.patient_id is None:
+        await db.commit()
+        return DeviceStatusAckOut(notified=False, alertId=None, serverTime=now)
+
+    window_start = now - timedelta(minutes=settings.vest_status_debounce_minutes)
+    recent = await repo.get_recent_alert(db, device.patient_id, VEST_ALERT_KIND, window_start)
+    if recent is not None:
+        await db.commit()
+        await logger.ainfo(
+            "vest_status_debounced",
+            device_id=str(device.id),
+            vest_event=event.value,
+            alert_id=str(recent.id),
+        )
+        return DeviceStatusAckOut(notified=False, alertId=recent.id, serverTime=now)
+
+    alert = Alert(
+        patient_id=device.patient_id,
+        event_id=None,
+        kind=VEST_ALERT_KIND,
+        severity=AlertSeverity.HIGH,
+        message=_vest_message(event, input_data.data.durationSeconds),
+    )
+    db.add(alert)
+    await db.flush()
+    alert_id = alert.id
+    patient_id = device.patient_id
+    await db.commit()
+
+    background.add_task(notify_patient_task, patient_id, vest_message(alert_id, now.isoformat()))
+    await logger.ainfo(
+        "vest_status_alert",
+        device_id=str(device.id),
+        vest_event=event.value,
+        duration_seconds=input_data.data.durationSeconds,
+        alert_id=str(alert_id),
+    )
+    return DeviceStatusAckOut(notified=True, alertId=alert_id, serverTime=now)

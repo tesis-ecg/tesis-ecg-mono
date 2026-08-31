@@ -44,6 +44,11 @@ export interface AttentionPatientOut {
   "deviceSerial": string | null
 }
 
+export interface CatalogOptionOut {
+  "value": string
+  "label": string
+}
+
 export interface DashboardAlertOut {
   "id": string
   "patientId": string
@@ -72,6 +77,19 @@ export interface DashboardOverviewOut {
 }
 
 export type DeviceStatus = "available" | "assigned" | "maintenance" | "retired"
+
+export interface DeviceStatusAckOut {
+  "notified": boolean
+  "alertId": string | null
+  "serverTime": string
+}
+
+export interface DeviceStatusRequest {
+  "event": VestStatusEvent
+  "durationSeconds": number
+  "sqi"?: number | null
+  "batteryPct"?: number | null
+}
 
 export interface DeviceWatchdogOut {
   "deviceId": string
@@ -209,12 +227,140 @@ export interface LoginResponse {
   "expiresAt": string
 }
 
+export interface MobileAccessOut {
+  "accessToken": string
+  "expiresAt": string
+}
+
+export interface MobileAlertListResponse {
+  "items": Array<MobileAlertOut>
+  "total": number
+  "pendingTotal": number
+  "limit": number
+  "offset": number
+}
+
+export interface MobileAlertOut {
+  "id": string
+  "kind": string
+  "severity": string
+  "message": string
+  "detectedAt": string
+  "requiresResponse": boolean
+  "needsReport": boolean
+  "reportId": string | null
+  "answeredAt": string | null
+}
+
+export type MobileAlertStatus = "all" | "pending" | "answered"
+
+export interface MobileCatalogsOut {
+  "symptoms": Array<CatalogOptionOut>
+  "activities": Array<CatalogOptionOut>
+}
+
+export interface MobileDeviceOut {
+  "hasDevice": boolean
+  "state": string
+  "deviceId": string | null
+  "serial": string | null
+  "model": string | null
+  "firmwareVersion": string | null
+  "batteryPercent": number | null
+  "lastSeenAt": string | null
+  "lastDataReceivedAt": string | null
+  "studyId": string | null
+  "studyStartedAt": string | null
+}
+
+export interface MobileDoctorOut {
+  "fullName": string
+  "email": string | null
+}
+
+export interface MobileLoginRequest {
+  "identifier": string
+  "password": string
+}
+
+export interface MobilePatientOut {
+  "id": string
+  "fullName": string
+  "dni": string
+  "birthDate": string | null
+  "sex": PatientSex
+  "email": string | null
+  "phone": string | null
+  "studyStatus": PatientStudyStatus
+  "doctor": MobileDoctorOut | null
+}
+
+export interface MobileRefreshRequest {
+  "refreshToken": string
+}
+
+export interface MobileReportCreateRequest {
+  "occurredAt"?: string | null
+  "alertId"?: string | null
+  "symptoms": Array<string>
+  "symptomsOther"?: string | null
+  "activity": string
+  "activityOther"?: string | null
+  "notes"?: string | null
+}
+
+export interface MobileReportListResponse {
+  "items": Array<MobileReportOut>
+  "total": number
+  "limit": number
+  "offset": number
+}
+
+export interface MobileReportOut {
+  "id": string
+  "occurredAt": string
+  "source": PatientReportSource
+  "symptoms": Array<string>
+  "symptomsOther": string | null
+  "activity": string
+  "activityOther": string | null
+  "notes": string | null
+  "alertId": string | null
+  "studyId": string | null
+  "createdAt": string
+}
+
+export interface MobileSessionOut {
+  "accessToken": string
+  "refreshToken": string
+  "expiresAt": string
+  "patient": MobilePatientOut
+}
+
+export interface PatientCreateOut {
+  "id": string
+  "fullName": string
+  "dni": string
+  "birthDate": string
+  "sex": PatientSex
+  "assignedDeviceId": string | null
+  "assignedDeviceSerial": string | null
+  "studyStatus": PatientStudyStatus
+  "lastDataReceivedAt": string | null
+  "contactEmail": string | null
+  "contactPhone": string | null
+  "doctorId": string | null
+  "doctorName": string | null
+  "hasAppAccount": boolean
+  "generatedPassword": string
+}
+
 export interface PatientCreateRequest {
   "fullName": string
   "dni": string
   "birthDate": string
   "sex": PatientSex
-  "contactEmail"?: string | null
+  "contactEmail": string
   "contactPhone"?: string | null
   "doctorId"?: string | null
 }
@@ -240,7 +386,14 @@ export interface PatientOut {
   "contactPhone": string | null
   "doctorId": string | null
   "doctorName": string | null
+  "hasAppAccount": boolean
 }
+
+export interface PatientPasswordOut {
+  "password": string
+}
+
+export type PatientReportSource = "push_response" | "manual"
 
 export type PatientSex = "M" | "F" | "X"
 
@@ -277,6 +430,13 @@ export interface PatientUpdateRequest {
   "sex"?: PatientSex | null
   "contactEmail"?: string | null
   "contactPhone"?: string | null
+}
+
+export type PushPlatform = "ios" | "android"
+
+export interface PushTokenRequest {
+  "token": string
+  "platform": PushPlatform
 }
 
 export interface ReassignHolterRequest {
@@ -379,6 +539,29 @@ export interface StudyListResponse {
   "offset": number
 }
 
+export interface StudyPatientReportOut {
+  "id": string
+  "occurredAt": string
+  "source": "push_response" | "manual"
+  "symptoms": Array<string>
+  "symptomLabels": Array<string>
+  "symptomsOther": string | null
+  "activity": string
+  "activityLabel": string
+  "activityOther": string | null
+  "notes": string | null
+  "alertId": string | null
+  "createdAt": string
+  "offsetMs": number | null
+  "visibleInChart": boolean
+}
+
+export interface StudyPatientReportsResponse {
+  "items": Array<StudyPatientReportOut>
+  "total": number
+  "pendingSignalTotal": number
+}
+
 export type StudyStatus = "in_progress" | "completed" | "cancelled" | "scheduled"
 
 export interface UserAccountOut {
@@ -405,7 +588,7 @@ export interface UserOut {
   "role": UserRole
 }
 
-export type UserRole = "medico" | "admin"
+export type UserRole = "medico" | "admin" | "paciente"
 
 export interface UserUpdateEmailRequest {
   "email": string
@@ -418,3 +601,5 @@ export interface ValidationError {
   "input"?: unknown
   "ctx"?: Record<string, unknown>
 }
+
+export type VestStatusEvent = "signal_quality_bad" | "lead_off" | "signal_recovered"

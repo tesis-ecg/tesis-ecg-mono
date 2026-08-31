@@ -228,6 +228,30 @@ async def update_auth0_user_email(auth0_id: str, email: str) -> None:
     raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to update user email."), 502)
 
 
+async def update_auth0_user_password(auth0_id: str, password: str) -> None:
+    """Management API: fija una contraseña nueva.
+
+    Es lo que hace "Regenerar contraseña" en la ficha del paciente. Auth0 solo
+    guarda el hash, así que la única forma de devolverle el acceso a alguien que
+    la perdió es reemplazarla — no se puede leer la anterior.
+    """
+    token = await _get_mgmt_token()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            _mgmt_user_url(auth0_id),
+            headers={"Authorization": f"Bearer {token}"},
+            json={"password": password, "connection": settings.auth0_connection},
+            timeout=15,
+        )
+
+    if resp.status_code == 200:
+        return
+
+    body = _json_body(resp)
+    raise Auth0Error("AUTH0_ERROR", body.get("message", "Failed to update password."), 502)
+
+
 async def block_auth0_user(auth0_id: str) -> None:
     """Management API: block user (baja lógica)."""
     token = await _get_mgmt_token()

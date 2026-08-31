@@ -24,6 +24,7 @@ from app.modules.dashboard import router as dashboard_router
 from app.modules.devices import router as devices_router
 from app.modules.doctors import router as doctors_router
 from app.modules.ingest import router as ingest_router
+from app.modules.patient_app import router as patient_app_router
 from app.modules.patients import router as patients_router
 from app.modules.studies import router as studies_router
 from app.modules.users import router as users_router
@@ -77,7 +78,12 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Y hace falta: el co-procesador WiFi del chaleco es un cliente HTTP, no un
 # navegador, así que no manda header `Origin`. Sin esta excepción, en preview y
 # producción todo lote del equipo real se rechazaría con ORIGIN_FORBIDDEN.
-_ORIGIN_EXEMPT_PREFIXES = ("/ingest/",)
+# `/mobile` entra por lo mismo: la app usa `Authorization: Bearer` y no toca
+# ninguna cookie, así que no hay nada que un sitio hostil pueda hacer que el
+# celular adjunte solo. Y tampoco manda `Origin` — React Native no es un
+# navegador —, así que sin la excepción todo POST del paciente daría 403 en
+# preview y producción.
+_ORIGIN_EXEMPT_PREFIXES = ("/ingest/", "/mobile/")
 
 
 def _is_origin_exempt(path: str) -> bool:
@@ -201,6 +207,7 @@ app.include_router(users_router, prefix="/users", tags=["users"])
 app.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
 app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
 app.include_router(ingest_router, prefix="/ingest", tags=["ingest"])
+app.include_router(patient_app_router, prefix="/mobile", tags=["mobile"])
 
 
 @app.get("/health")

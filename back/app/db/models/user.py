@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 class UserRole(enum.StrEnum):
     MEDICO = "medico"
     ADMIN = "admin"
+    #: Cuenta de la app móvil. No tiene acceso al portal: `get_role_scope`
+    #: rechaza todo rol que no sea médico o admin.
+    PACIENTE = "paciente"
 
 
 class IdentityStatus(enum.StrEnum):

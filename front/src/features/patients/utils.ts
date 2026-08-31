@@ -3,17 +3,18 @@ import type { CreatePatientInput, Patient } from './types'
 
 /**
  * Convierte los valores del form (todos strings) al payload de API,
- * normalizando los campos de contacto vacíos a `null`.
+ * normalizando el teléfono vacío a `null`. El email no se normaliza: es
+ * obligatorio porque es la cuenta del paciente en la app.
  */
 export function patientFormToInput(values: PatientFormValues): CreatePatientInput {
-  const email = values.contactEmail.trim()
+  const email = values.contactEmail.trim().toLowerCase()
   const phone = values.contactPhone.trim()
   return {
     fullName: values.fullName.trim(),
     dni: values.dni.trim(),
     birthDate: values.birthDate,
     sex: values.sex,
-    contactEmail: email === '' ? null : email,
+    contactEmail: email,
     contactPhone: phone === '' ? null : phone,
     ...(values.doctorId ? { doctorId: values.doctorId } : {}),
   }

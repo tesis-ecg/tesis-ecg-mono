@@ -26,6 +26,9 @@ class PatientOut(CamelModel):
     contactPhone: str | None
     doctorId: uuid.UUID | None
     doctorName: str | None
+    #: Si tiene cuenta en la app móvil. Es lo que decide si la ficha ofrece
+    #: "Regenerar contraseña" o "Crear acceso".
+    hasAppAccount: bool
 
 
 class PatientListResponse(CamelModel):
@@ -66,7 +69,9 @@ class PatientCreateRequest(CamelModel):
     dni: str = Field(min_length=1, max_length=50)
     birthDate: date
     sex: PatientSex
-    contactEmail: str | None = Field(default=None, max_length=320)
+    #: Obligatorio desde que todo paciente tiene cuenta en la app: es su usuario
+    #: en Auth0 y el único canal por el que puede recuperar la contraseña solo.
+    contactEmail: str = Field(min_length=3, max_length=320)
     contactPhone: str | None = Field(default=None, max_length=50)
     doctorId: uuid.UUID | None = None
 
@@ -79,8 +84,11 @@ class PatientCreateRequest(CamelModel):
 
     @field_validator("contactEmail")
     @classmethod
-    def validate_email(cls, value: str | None) -> str | None:
-        return _normalize_optional_email(value)
+    def validate_email(cls, value: str) -> str:
+        normalized = _normalize_optional_email(value)
+        if normalized is None:  # pragma: no cover - `min_length` ya lo impide
+            raise ValueError("Email requerido")
+        return normalized
 
 
 class PatientUpdateRequest(CamelModel):
@@ -116,6 +124,8 @@ def _normalize_optional_email(value: str | None) -> str | None:
 @dataclass(frozen=True)
 class PatientRow:
     id: uuid.UUID
+    #: Cuenta de la app móvil, si la tiene.
+    user_id: uuid.UUID | None
     first_name: str
     last_name: str
     date_of_birth: date | None
@@ -141,6 +151,23 @@ class PatientListInput:
     sort: str
     order: str
     has_device: bool | None
+
+
+class PatientCreateOut(PatientOut):
+    """El paciente recién creado + su contraseña inicial.
+
+    `generatedPassword` viaja **una sola vez**, en el 201. Auth0 guarda solo el
+    hash: no hay ningún endpoint que la pueda volver a leer, y el portal la
+    muestra en un diálogo con botón de copiar antes de perderla para siempre.
+    """
+
+    generatedPassword: str
+
+
+class PatientPasswordOut(CamelModel):
+    """Contraseña nueva, también entregada una sola vez."""
+
+    password: str
 
 
 @dataclass(frozen=True)

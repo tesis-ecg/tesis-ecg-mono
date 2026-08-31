@@ -17,11 +17,16 @@ import { useDoctors } from '@/features/devices/hooks/useDoctors'
 
 import { useCreatePatient } from '../hooks/useCreatePatient'
 import type { PatientFormValues } from '../patientSchema'
+import type { CreatedPatient } from '../types'
 import { patientFormToInput } from '../utils'
+import { PatientCredentialsDialog } from './PatientCredentialsDialog'
 import { PatientForm } from './PatientForm'
 
 export function NewPatientDialog() {
   const [open, setOpen] = useState(false)
+  // La contraseña vive acá y no en el diálogo del form: al cerrarse el form se
+  // desmonta, y con él se iría el único momento en que la contraseña existe.
+  const [created, setCreated] = useState<CreatedPatient | null>(null)
   const createPatient = useCreatePatient()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
@@ -36,6 +41,7 @@ export function NewPatientDialog() {
       onSuccess: (patient) => {
         toast.success(`Paciente ${patient.fullName} creado.`)
         setOpen(false)
+        setCreated(patient)
       },
       onError: (error) => {
         toast.error(unwrapError(error))
@@ -44,28 +50,41 @@ export function NewPatientDialog() {
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="mr-1 size-4" aria-hidden />
-          Nuevo paciente
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Nuevo paciente</DialogTitle>
-          <DialogDescription>
-            Completá los datos del paciente. Podés asignar un dispositivo más tarde desde su perfil.
-          </DialogDescription>
-        </DialogHeader>
-        <PatientForm
-          onSubmit={handleSubmit}
-          isSubmitting={createPatient.isPending}
-          submitLabel="Crear paciente"
-          requireDoctor={isAdmin}
-          doctorOptions={doctors.data ?? []}
+    <>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Button>
+            <Plus className="mr-1 size-4" aria-hidden />
+            Nuevo paciente
+          </Button>
+        </DialogTrigger>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nuevo paciente</DialogTitle>
+            <DialogDescription>
+              Completá los datos del paciente. Se le va a crear el acceso a la app con el email que
+              cargues. Podés asignarle un dispositivo más tarde desde su perfil.
+            </DialogDescription>
+          </DialogHeader>
+          <PatientForm
+            onSubmit={handleSubmit}
+            isSubmitting={createPatient.isPending}
+            submitLabel="Crear paciente"
+            requireDoctor={isAdmin}
+            doctorOptions={doctors.data ?? []}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {created && (
+        <PatientCredentialsDialog
+          open
+          onOpenChange={(next) => !next && setCreated(null)}
+          patientName={created.fullName}
+          email={created.contactEmail ?? ''}
+          password={created.generatedPassword}
         />
-      </DialogContent>
-    </Dialog>
+      )}
+    </>
   )
 }

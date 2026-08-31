@@ -1,4 +1,4 @@
-import { ArrowLeft, FileSearch } from 'lucide-react'
+import { ArrowLeft, FileSearch, NotebookPen } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -7,6 +7,7 @@ import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
 import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
@@ -15,9 +16,12 @@ import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
+import { PatientReportsTable } from '@/features/studies/components/PatientReportsTable'
 import { StudyBreadcrumb } from '@/features/studies/components/StudyBreadcrumb'
 import { StudyHeader } from '@/features/studies/components/StudyHeader'
 import { useStudy } from '@/features/studies/hooks/useStudy'
+import { useStudyPatientReports } from '@/features/studies/hooks/useStudyPatientReports'
+import type { StudyPatientReport } from '@/features/studies/types'
 import { isApiError, unwrapError } from '@/lib/api'
 
 export function StudyDetail() {
@@ -35,10 +39,13 @@ export function StudyDetail() {
   const isInProgress = studyQ.data?.status === 'in_progress'
   const ecgQ = useEcgSignal(studyHasSignal ? id : undefined, isInProgress)
 
+  const reportsQ = useStudyPatientReports(id, isInProgress)
+
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+  const [tab, setTab] = useState<'senal' | 'registros'>('senal')
 
   // 404 → estado dedicado.
   if (studyQ.isError && isApiError(studyQ.error) && studyQ.error.code === 'NOT_FOUND') {
@@ -126,6 +133,19 @@ export function StudyDetail() {
     focusViewerOnAnnotation(viewerRef.current, annotation)
     setSelectedAnnotationId(annotation.id)
   }
+  /**
+   * El registro y su banda comparten el id, así que alcanza con volver a la
+   * solapa de la señal y buscar la anotación correspondiente. Si todavía no
+   * está (el lote llegó entre un fetch y el otro), la fila no ofrece el botón.
+   */
+  const handleLocateReport = (report: StudyPatientReport) => {
+    const annotation = ecgQ.data?.annotations.find((item) => item.id === report.id)
+    if (!annotation) return
+    setTab('senal')
+    setSelectedAnnotationId(annotation.id)
+    // El viewer de la solapa recién se monta en el próximo frame.
+    window.requestAnimationFrame(() => focusViewerOnAnnotation(viewerRef.current, annotation))
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -136,90 +156,139 @@ export function StudyDetail() {
       />
       <StudyHeader study={study} />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
-        <Card className="flex flex-col gap-3 p-4 lg:col-span-3">
-          {!studyHasSignal ? (
-            <EmptyState
-              icon={FileSearch}
-              title={study.status === 'scheduled' ? 'Estudio todavía no iniciado' : 'Sin señal ECG'}
-              description={
-                study.status === 'scheduled'
-                  ? 'La señal estará disponible cuando comience el estudio y el Holter envíe sus primeras muestras.'
-                  : 'Este estudio no contiene muestras de ECG para visualizar.'
-              }
-            />
-          ) : ecgQ.isLoading && isInProgress ? (
-            <div className="flex h-[480px] items-center justify-center">
-              <Spinner label="Esperando el primer lote del Holter…" />
-            </div>
-          ) : ecgQ.isLoading ? (
-            <div className="flex h-[480px] items-center justify-center">
-              <Spinner label="Cargando señal ECG…" />
-            </div>
-          ) : ecgQ.isError ? (
-            <EmptyState
-              title="No pudimos cargar la señal ECG"
-              description={unwrapError(ecgQ.error)}
-              action={
-                <Button variant="outline" onClick={() => void ecgQ.refetch()}>
-                  Reintentar
-                </Button>
-              }
-            />
-          ) : ecgQ.data ? (
-            <>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-h6 text-gray-900">Señal ECG</h2>
-                  {isInProgress && (
-                    <span className="flex items-center gap-1.5 rounded-full bg-primary-50 px-2 py-0.5 text-body3 text-primary-500">
-                      <span className="size-1.5 animate-pulse rounded-full bg-primary-500" />
-                      Recibiendo datos
-                      {ecgQ.isFetching && ' · actualizando'}
-                    </span>
-                  )}
-                </div>
-                <ECGZoomControls
-                  onZoomIn={handleZoomIn}
-                  onZoomOut={handleZoomOut}
-                  onFullscreen={handleFullscreen}
-                />
-              </div>
-              <ECGMinimap
-                signal={ecgQ.data}
-                viewport={viewport}
-                onViewportChange={handleMinimapChange}
-                selectedAnnotationId={selectedAnnotationId}
-                onAnnotationSelect={handleAnnotationSelect}
-              />
-              <ECGViewer
-                ref={viewerRef}
-                signal={ecgQ.data}
-                height={400}
-                onViewportChange={setViewport}
-                selectedAnnotationId={selectedAnnotationId}
-                onAnnotationSelect={handleAnnotationSelect}
-              />
-              <p className="text-body3 mt-10 text-gray-500">
-                Zoom:{' '}
-                <kbd className="rounded border border-border bg-muted px-1">Ctrl/⌘ + scroll</kbd> ·
-                Pan: drag o flechas izq/der con focus en el gráfico
-              </p>
-            </>
-          ) : null}
-        </Card>
+      <Tabs value={tab} onValueChange={(next) => setTab(next as typeof tab)}>
+        <TabsList>
+          <TabsTrigger value="senal">Señal ECG</TabsTrigger>
+          <TabsTrigger value="registros">
+            <NotebookPen className="mr-1.5 size-4" aria-hidden />
+            Registros del paciente
+            {reportsQ.data && reportsQ.data.total > 0 && (
+              <span className="ml-1.5 rounded-full bg-primary-50 px-1.5 text-body3 text-primary-500">
+                {reportsQ.data.total}
+              </span>
+            )}
+          </TabsTrigger>
+        </TabsList>
 
-        <aside className="lg:col-span-1">
-          <Card className="h-full p-4">
-            <ECGFindingsPanel
-              annotations={ecgQ.data?.annotations ?? []}
-              recordingStartMs={ecgQ.data?.startTimestamp ?? 0}
-              selectedAnnotationId={selectedAnnotationId}
-              onAnnotationSelect={handleAnnotationSelect}
-            />
+        {/* `forceMount`: sin esto Radix desmonta el contenido inactivo y el
+            viewer de uPlot perdería el zoom, el viewport y su canvas cada vez
+            que el médico pasa por la solapa de registros — y "Ver en el ECG"
+            tendría que esperar a que se vuelva a montar para poder saltar. */}
+        <TabsContent value="senal" forceMount className="data-[state=inactive]:hidden">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-4">
+            <Card className="flex flex-col gap-3 p-4 lg:col-span-3">
+              {!studyHasSignal ? (
+                <EmptyState
+                  icon={FileSearch}
+                  title={
+                    study.status === 'scheduled' ? 'Estudio todavía no iniciado' : 'Sin señal ECG'
+                  }
+                  description={
+                    study.status === 'scheduled'
+                      ? 'La señal estará disponible cuando comience el estudio y el Holter envíe sus primeras muestras.'
+                      : 'Este estudio no contiene muestras de ECG para visualizar.'
+                  }
+                />
+              ) : ecgQ.isLoading && isInProgress ? (
+                <div className="flex h-[480px] items-center justify-center">
+                  <Spinner label="Esperando el primer lote del Holter…" />
+                </div>
+              ) : ecgQ.isLoading ? (
+                <div className="flex h-[480px] items-center justify-center">
+                  <Spinner label="Cargando señal ECG…" />
+                </div>
+              ) : ecgQ.isError ? (
+                <EmptyState
+                  title="No pudimos cargar la señal ECG"
+                  description={unwrapError(ecgQ.error)}
+                  action={
+                    <Button variant="outline" onClick={() => void ecgQ.refetch()}>
+                      Reintentar
+                    </Button>
+                  }
+                />
+              ) : ecgQ.data ? (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-h6 text-gray-900">Señal ECG</h2>
+                      {isInProgress && (
+                        <span className="flex items-center gap-1.5 rounded-full bg-primary-50 px-2 py-0.5 text-body3 text-primary-500">
+                          <span className="size-1.5 animate-pulse rounded-full bg-primary-500" />
+                          Recibiendo datos
+                          {ecgQ.isFetching && ' · actualizando'}
+                        </span>
+                      )}
+                    </div>
+                    <ECGZoomControls
+                      onZoomIn={handleZoomIn}
+                      onZoomOut={handleZoomOut}
+                      onFullscreen={handleFullscreen}
+                    />
+                  </div>
+                  <ECGMinimap
+                    signal={ecgQ.data}
+                    viewport={viewport}
+                    onViewportChange={handleMinimapChange}
+                    selectedAnnotationId={selectedAnnotationId}
+                    onAnnotationSelect={handleAnnotationSelect}
+                  />
+                  <ECGViewer
+                    ref={viewerRef}
+                    signal={ecgQ.data}
+                    height={400}
+                    onViewportChange={setViewport}
+                    selectedAnnotationId={selectedAnnotationId}
+                    onAnnotationSelect={handleAnnotationSelect}
+                  />
+                  <p className="text-body3 mt-10 text-gray-500">
+                    Zoom:{' '}
+                    <kbd className="rounded border border-border bg-muted px-1">
+                      Ctrl/⌘ + scroll
+                    </kbd>{' '}
+                    · Pan: drag o flechas izq/der con focus en el gráfico
+                  </p>
+                </>
+              ) : null}
+            </Card>
+
+            <aside className="lg:col-span-1">
+              <Card className="h-full p-4">
+                <ECGFindingsPanel
+                  annotations={ecgQ.data?.annotations ?? []}
+                  recordingStartMs={ecgQ.data?.startTimestamp ?? 0}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onAnnotationSelect={handleAnnotationSelect}
+                />
+              </Card>
+            </aside>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="registros">
+          <Card className="p-6">
+            {reportsQ.isLoading ? (
+              <Spinner label="Cargando registros…" />
+            ) : reportsQ.isError ? (
+              <EmptyState
+                title="No pudimos cargar los registros"
+                description={unwrapError(reportsQ.error)}
+                action={
+                  <Button variant="outline" onClick={() => void reportsQ.refetch()}>
+                    Reintentar
+                  </Button>
+                }
+              />
+            ) : (
+              <PatientReportsTable
+                reports={reportsQ.data?.items ?? []}
+                pendingSignalTotal={reportsQ.data?.pendingSignalTotal ?? 0}
+                onLocate={handleLocateReport}
+              />
+            )}
           </Card>
-        </aside>
-      </div>
+        </TabsContent>
+      </Tabs>
 
       {ecgQ.data && (
         <ECGFullscreenDialog

@@ -21,6 +21,8 @@ export interface Patient {
    */
   doctorId?: string | null
   doctorName?: string | null
+  /** Si tiene cuenta en la app móvil. Decide qué acciones ofrece su ficha. */
+  hasAppAccount: boolean
 }
 
 /**
@@ -32,9 +34,23 @@ export interface CreatePatientInput {
   dni: string
   birthDate: string
   sex: PatientSex
-  contactEmail: string | null
+  /** Obligatorio: es el usuario del paciente en la app móvil. */
+  contactEmail: string
   contactPhone: string | null
   doctorId?: string
+}
+
+/**
+ * Respuesta del alta. `generatedPassword` viaja **una sola vez**: Auth0 guarda
+ * el hash y no hay endpoint que la pueda volver a leer, así que el diálogo la
+ * muestra con botón de copiar antes de que se pierda.
+ */
+export interface CreatedPatient extends Patient {
+  generatedPassword: string
+}
+
+export interface PatientPassword {
+  password: string
 }
 
 export type UpdatePatientInput = Partial<CreatePatientInput>

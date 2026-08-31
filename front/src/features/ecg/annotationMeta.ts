@@ -43,6 +43,7 @@ const KIND_LABEL: Record<string, string> = {
   adc_saturated: 'Saturación del ADC',
   internal_gap: 'Hueco de datos',
   symptom_marker: 'Síntoma marcado por el paciente',
+  patient_report: 'Registro del paciente',
   other: 'Hallazgo',
 }
 

@@ -43,6 +43,7 @@ import secrets
 import uuid
 from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -246,8 +247,32 @@ def scheduled_batches(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
 
 
 @pytest.fixture
+def sent_pushes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[uuid.UUID, Any]]:
+    """Intercepta las notificaciones al paciente, por el mismo motivo que los batches.
+
+    `notify_patient_task` abre su propia sesión contra el engine global: no
+    vería los push tokens que el test escribió en su transacción sin commitear,
+    así que el envío real sería siempre un no-op silencioso. Interceptándola se
+    puede afirmar *qué* se habría mandado, que es lo que importa.
+    """
+    sent: list[tuple[uuid.UUID, Any]] = []
+
+    async def _spy(patient_id: uuid.UUID, message: Any) -> None:
+        sent.append((patient_id, message))
+
+    for module in (
+        "app.modules.ingest.ingest_service",
+        "app.modules.ingest.processing",
+    ):
+        monkeypatch.setattr(f"{module}.notify_patient_task", _spy)
+    return sent
+
+
+@pytest.fixture
 async def client(
-    db: AsyncSession, scheduled_batches: list[uuid.UUID]
+    db: AsyncSession,
+    scheduled_batches: list[uuid.UUID],
+    sent_pushes: list[tuple[uuid.UUID, Any]],
 ) -> AsyncGenerator[AsyncClient, None]:
     """Cliente HTTP que comparte la sesión (y la transacción) del test.
 
@@ -409,3 +434,51 @@ def make_study(db: AsyncSession) -> Callable[..., object]:
         return study
 
     return _make
+
+
+# --------------------------------------------------------------------------- #
+# App móvil del paciente
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def make_patient_account(db: AsyncSession) -> Callable[..., object]:
+    """Le da a un paciente su cuenta de la app, como haría el alta del portal."""
+
+    async def _make(patient: Patient, **kwargs: object) -> User:
+        suffix = uuid.uuid4().hex[:12]
+        user = User(
+            auth0_id=kwargs.pop("auth0_id", f"auth0|{suffix}"),
+            email=kwargs.pop("email", f"paciente-{suffix}@example.test"),
+            full_name=f"{patient.first_name} {patient.last_name}".strip(),
+            role=UserRole.PACIENTE,
+            is_active=kwargs.pop("is_active", True),
+            identity_status=kwargs.pop("identity_status", IdentityStatus.ACTIVE),
+            session_version=1,
+            **kwargs,
+        )
+        db.add(user)
+        await db.flush()
+        patient.user_id = user.id
+        patient.email = user.email
+        await db.flush()
+        return user
+
+    return _make
+
+
+@pytest.fixture
+def mobile_headers() -> Callable[[User], dict[str, str]]:
+    """Bearer real, firmado como en producción.
+
+    A diferencia de `as_user`, que sobreescribe la dependencia, acá se ejercita
+    la cadena entera: firma, audience móvil, `session_version` y rol. Es lo que
+    se está construyendo, así que saltearlo no probaría nada.
+    """
+    from app.core.security import create_mobile_tokens
+
+    def _headers(user: User) -> dict[str, str]:
+        access, _, _ = create_mobile_tokens(user)
+        return {"Authorization": f"Bearer {access}"}
+
+    return _headers

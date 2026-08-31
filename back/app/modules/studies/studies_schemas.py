@@ -87,6 +87,43 @@ class StudyEcgAnnotationOut(CamelModel):
     confidenceScore: float | None
 
 
+class StudyPatientReportOut(CamelModel):
+    """Un registro de la bitácora del paciente, visto por el médico.
+
+    `offsetMs` es dónde cae dentro de la grabación y `visibleInChart` dice si
+    ya hay señal ahí. Los dos pueden ser "todavía no": el paciente marca un
+    síntoma en el momento y el chaleco sube esa hora hasta 60 minutos después.
+    El registro existe desde el primer segundo; la banda sobre el ECG aparece
+    cuando llega el lote.
+    """
+
+    id: uuid.UUID
+    occurredAt: datetime
+    source: Literal["push_response", "manual"]
+    symptoms: list[str]
+    #: Etiquetas ya resueltas contra el catálogo. Viajan desde el backend para
+    #: que el portal no tenga que mantener una copia del catálogo que se
+    #: desincronice cada vez que se agrega un síntoma.
+    symptomLabels: list[str]
+    symptomsOther: str | None
+    activity: str
+    activityLabel: str
+    activityOther: str | None
+    notes: str | None
+    alertId: uuid.UUID | None
+    createdAt: datetime
+    offsetMs: int | None
+    visibleInChart: bool
+
+
+class StudyPatientReportsResponse(CamelModel):
+    items: list[StudyPatientReportOut]
+    total: int
+    #: Cuántos todavía no tienen señal debajo. Es lo que el portal muestra
+    #: agrupado aparte para que el médico no crea que se perdieron.
+    pendingSignalTotal: int
+
+
 class StudyEcgManifestOut(CamelModel):
     """Manifest v2.
 

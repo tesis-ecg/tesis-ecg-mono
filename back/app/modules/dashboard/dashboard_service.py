@@ -11,6 +11,7 @@ from app.db.models.device import Device
 from app.db.models.ecg_event import ECGEventType
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
+from app.modules._alert_kind import resolve_alert_kind
 from app.modules.dashboard import dashboard_repository as repo
 from app.modules.dashboard.dashboard_schemas import (
     AttentionPatientOut,
@@ -54,26 +55,18 @@ def _duration_ms(study: Study) -> int:
     return 0
 
 
-def _alert_kind(event_type: ECGEventType, event_metadata: dict[str, object]) -> str:
-    if event_metadata.get("kind") == "symptom_marker":
-        return "symptom_marker"
-    if event_type == ECGEventType.OTHER:
-        return "other"
-    return event_type.value.lower()
-
-
 def _alert_out(
     alert: Alert,
     patient: Patient,
-    event_type: ECGEventType,
-    event_metadata: dict[str, object],
+    event_type: ECGEventType | None,
+    event_metadata: dict[str, object] | None,
     study_id: uuid.UUID | None,
 ) -> DashboardAlertOut:
     return DashboardAlertOut(
         id=str(alert.id),
         patientId=patient.id,
         patientName=_patient_name(patient),
-        kind=_alert_kind(event_type, event_metadata),
+        kind=resolve_alert_kind(alert.kind, event_type, event_metadata),
         severity=alert.severity.value.lower(),
         detectedAt=alert.created_at,
         studyId=study_id,
