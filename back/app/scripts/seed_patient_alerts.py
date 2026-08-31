@@ -162,7 +162,8 @@ async def seed_alerts(db: AsyncSession, dni: str) -> tuple[Patient, int]:
         # El único que puede no pedir respuesta es el del chaleco: cualquier
         # otro que no la pida no aparecería como pendiente, y el sentido de esta
         # seed es justamente ver los cinco sin responder.
-        assert requires_patient_response(spec.kind) or spec.kind == VEST_MISPLACED_KIND, spec.kind
+        if not requires_patient_response(spec.kind) and spec.kind != VEST_MISPLACED_KIND:
+            raise ValueError(f"El aviso de ejemplo {spec.kind!r} no pide respuesta del paciente.")
         detected_at = now - timedelta(minutes=spec.minutes_ago)
         db.add(
             Alert(
