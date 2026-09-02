@@ -1,6 +1,11 @@
 import uPlotRuntime from 'uplot'
 import type uPlot from 'uplot'
 
+import {
+  EMPTY_ANNOTATION_LINKS,
+  isAnnotationHighlighted,
+  type ECGAnnotationLinks,
+} from './annotationMeta'
 import type { ECGAnnotation, ECGAnnotationSeverity } from './types'
 
 export type ECGAnnotationColors = Record<ECGAnnotationSeverity, { stroke: string; fill: string }>
@@ -11,6 +16,7 @@ export function drawAnnotationBands(
   recordingStartMs: number,
   colors: ECGAnnotationColors,
   selectedAnnotationId: string | null,
+  links: ECGAnnotationLinks = EMPTY_ANNOTATION_LINKS,
 ) {
   if (annotations.length === 0) return
   const { ctx, bbox } = u
@@ -32,7 +38,9 @@ export function drawAnnotationBands(
     const xStart = u.valToPos(startSec, 'x', true)
     const xEnd = u.valToPos(Math.max(endSec, startSec), 'x', true)
     const color = colors[annotation.severity]
-    const isSelected = annotation.id === selectedAnnotationId
+    // Resaltado y no "seleccionado": tocar una respuesta también destaca el
+    // hallazgo que contesta, que es lo que hace visible la pertenencia.
+    const isSelected = isAnnotationHighlighted(annotation, selectedAnnotationId, links)
 
     // Un instante, no un intervalo: los registros que carga el paciente desde
     // la app marcan un momento puntual. Como banda serían 2 px de relleno casi

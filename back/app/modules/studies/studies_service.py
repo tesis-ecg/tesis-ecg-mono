@@ -1,27 +1,34 @@
 import math
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
-from fastapi import HTTPException
+import structlog
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.s3 import build_presigned_url as _build_presigned_ecg_url
+from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.patient_report import PatientReport
 from app.db.models.study import Study, StudyStatus
+from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.patient_app import patient_app_repository as patient_app_repo
+from app.modules.patient_app import patient_app_service
 from app.modules.patient_app.catalogs import activity_label, symptom_label
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.studies_schemas import (
     PatientStudiesInput,
     PatientStudiesResponse,
     PatientStudyOut,
+    SimulateAnomalyInput,
+    SimulateAnomalyOut,
+    SimulatedAnomalyType,
     StudyDetailOut,
     StudyEcgAnnotationOut,
     StudyEcgLevelOut,
@@ -35,6 +42,8 @@ from app.modules.studies.studies_schemas import (
     StudyPatientReportOut,
     StudyPatientReportsResponse,
 )
+
+logger = structlog.get_logger(__name__)
 
 MAX_LEGACY_ECG_BYTES = 5 * 1024 * 1024
 
@@ -198,6 +207,15 @@ def _recorded_ms(study: Study) -> float:
     return study.samples_count * 1000 / study.sample_rate
 
 
+class _ReportPlacement(NamedTuple):
+    """Coordenada del registro sobre la traza y el hallazgo del que cuelga."""
+
+    #: `None` mientras no haya señal debajo: el registro existe pero no se pinta.
+    offset_ms: int | None
+    #: El `ecg_event` que este registro responde, si quedó dibujado.
+    linked_event_id: uuid.UUID | None
+
+
 def _report_offset_ms(report: PatientReport, study: Study) -> int | None:
     """Dónde cae el registro dentro de la señal, o `None` si todavía no hay.
 
@@ -225,11 +243,84 @@ def _report_severity(report: PatientReport) -> Literal["low", "medium", "high", 
     return "high" if symptoms else "low"
 
 
-def _report_annotations(study: Study, reports: list[PatientReport]) -> list[StudyEcgAnnotationOut]:
+def _report_symptoms_text(report: PatientReport) -> str | None:
+    """Los síntomas del registro en una línea, ya traducidos del catálogo."""
+    labels = [symptom_label(item) for item in report.symptoms or []]
+    if report.symptoms_other:
+        labels.append(report.symptoms_other)
+    return " · ".join(labels) or None
+
+
+def _report_alert_kind(report: PatientReport) -> str | None:
+    """Qué hallazgo disparó el aviso que el registro contesta.
+
+    Se resuelve con el mismo helper que la bandeja y el dashboard para que un
+    mismo aviso no se llame distinto en cada pantalla.
+    """
+    alert = report.alert
+    if alert is None:
+        return None
+    event = alert.event
+    return resolve_alert_kind(
+        alert.kind,
+        event.event_type if event is not None else None,
+        event.event_metadata if event is not None else None,
+    )
+
+
+def _answered_event_id(report: PatientReport) -> uuid.UUID | None:
+    """El `ecg_event` que originó el aviso que este registro contesta."""
+    alert = report.alert
+    if alert is None:
+        return None
+    return alert.event_id
+
+
+def _report_placements(
+    study: Study,
+    reports: list[PatientReport],
+    event_offsets: dict[uuid.UUID, tuple[int, int]],
+) -> dict[uuid.UUID, _ReportPlacement]:
+    """Dónde va cada registro sobre la traza, y de qué hallazgo cuelga.
+
+    Un registro espontáneo se ubica por su hora de pared (`_report_offset_ms`).
+    Uno que **responde un aviso** se ancla en el medio de la banda del hallazgo
+    que contesta, y no en su propia hora:
+
+    - Es lo que el médico necesita ver. Suelta en la traza, una respuesta es
+      una marca más entre las 24 h del estudio y no hay forma de saber a qué
+      aviso pertenece; sobre la banda, la pertenencia se lee sola.
+    - Es lo que hace que exista. El paciente contesta cuando ve la
+      notificación, que puede ser media hora después del hallazgo — y esa media
+      hora todavía no está grabada, así que por hora de pared el registro
+      quedaría "sin señal" y no se pintaría nunca.
+
+    La hora real del registro no se pierde: sigue viajando en `occurredAt` y es
+    lo que muestra la solapa de registros.
+
+    `event_offsets` son los hallazgos que **sí** quedaron dibujados. El vínculo
+    se resuelve contra ese diccionario y no contra `alert.event_id` a secas:
+    anclar contra un hallazgo que el visor no recibió dejaría la respuesta
+    colgada de nada.
+    """
+    placements: dict[uuid.UUID, _ReportPlacement] = {}
+    for report in reports:
+        event_id = _answered_event_id(report)
+        offsets = event_offsets.get(event_id) if event_id is not None else None
+        if offsets is not None and event_id is not None:
+            placements[report.id] = _ReportPlacement((offsets[0] + offsets[1]) // 2, event_id)
+        else:
+            placements[report.id] = _ReportPlacement(_report_offset_ms(report, study), None)
+    return placements
+
+
+def _report_annotations(
+    reports: list[PatientReport], placements: dict[uuid.UUID, _ReportPlacement]
+) -> list[StudyEcgAnnotationOut]:
     annotations: list[StudyEcgAnnotationOut] = []
     for report in reports:
-        offset_ms = _report_offset_ms(report, study)
-        if offset_ms is None:
+        placement = placements[report.id]
+        if placement.offset_ms is None:
             continue
         annotations.append(
             StudyEcgAnnotationOut(
@@ -239,23 +330,28 @@ def _report_annotations(study: Study, reports: list[PatientReport]) -> list[Stud
                 severity=_report_severity(report),
                 # Puntual: el paciente marca un instante, no un intervalo. El
                 # visor lo pinta como línea vertical, no como banda.
-                startOffsetMs=offset_ms,
-                endOffsetMs=offset_ms,
+                startOffsetMs=placement.offset_ms,
+                endOffsetMs=placement.offset_ms,
                 confidenceScore=None,
+                linkedAnnotationId=placement.linked_event_id,
+                description=_report_symptoms_text(report),
             )
         )
     return annotations
 
 
-def _study_annotations(
-    study: Study, events: list[ECGEvent], reports: list[PatientReport]
-) -> list[StudyEcgAnnotationOut]:
-    annotations: list[StudyEcgAnnotationOut] = list(_report_annotations(study, reports))
+def _event_annotations(
+    study: Study, events: list[ECGEvent]
+) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, tuple[int, int]]]:
+    """Los hallazgos dibujables, con sus offsets indexados por id de evento."""
+    annotations: list[StudyEcgAnnotationOut] = []
+    offsets_by_event: dict[uuid.UUID, tuple[int, int]] = {}
     for event in events:
         offsets = _event_offsets_ms(event, study)
         if offsets is None:
             continue
         kind = _annotation_kind(event)
+        offsets_by_event[event.id] = offsets
         annotations.append(
             StudyEcgAnnotationOut(
                 id=event.id,
@@ -267,6 +363,18 @@ def _study_annotations(
                 confidenceScore=event.confidence_score,
             )
         )
+    return annotations, offsets_by_event
+
+
+def _study_annotations(
+    study: Study, events: list[ECGEvent], reports: list[PatientReport]
+) -> list[StudyEcgAnnotationOut]:
+    # Los hallazgos primero: los registros necesitan saber cuáles llegaron a la
+    # señal para poder anclarse en el que contestaron.
+    annotations, event_offsets = _event_annotations(study, events)
+    annotations.extend(
+        _report_annotations(reports, _report_placements(study, reports, event_offsets))
+    )
     annotations.sort(key=lambda item: (item.startOffsetMs, item.endOffsetMs, str(item.id)))
     return annotations
 
@@ -501,6 +609,143 @@ async def cancel_study(input_data: StudyIdInput, db: AsyncSession) -> StudyDetai
     return await _transition(input_data, db, StudyStatus.CANCELLED)
 
 
+#: Cómo se llama cada hallazgo simulado en la alerta que ve el médico y el
+#: paciente. El texto es el mismo que produciría el pipeline cuando exista.
+_SIMULATED_MESSAGES = {
+    SimulatedAnomalyType.TACHYCARDIA: "Se detectó un episodio de taquicardia.",
+    SimulatedAnomalyType.BRADYCARDIA: "Se detectó un episodio de bradicardia.",
+    SimulatedAnomalyType.AFIB: "Se detectó un ritmo compatible con fibrilación auricular.",
+    SimulatedAnomalyType.PVC: "Se detectaron latidos ventriculares prematuros.",
+    SimulatedAnomalyType.PAUSE: "Se detectó una pausa en el ritmo.",
+}
+
+
+def _simulation_forbidden() -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail={
+            "code": "SIMULATION_DISABLED",
+            "message": "Las anomalías simuladas solo existen en desarrollo.",
+        },
+    )
+
+
+def _no_signal() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "STUDY_HAS_NO_SIGNAL",
+            "message": (
+                "El estudio todavía no tiene señal ingerida. "
+                "Enviá al menos un lote con el simulador de chalecos y volvé a intentar."
+            ),
+        },
+    )
+
+
+async def simulate_anomaly(
+    input_data: SimulateAnomalyInput, db: AsyncSession, background: BackgroundTasks
+) -> SimulateAnomalyOut:
+    """Fabrica un hallazgo clínico sobre señal ya ingerida y avisa al paciente.
+
+    Existe porque `app/ml/*` todavía son stubs: sin esto, la única alerta `HIGH`
+    que el sistema sabe producir es la del botón de síntoma del chaleco, y no
+    hay forma de ejercitar el aviso de "detectamos algo" ni la bitácora que lo
+    responde. Cuando el pipeline exista, este endpoint deja de hacer falta y el
+    camino de notificación no cambia: el push se dispara por la alerta, no por
+    quién la creó.
+
+    El hallazgo se ancla **hacia atrás desde el final de lo grabado** y no en el
+    instante del pedido. Es lo que distingue esto de crear una alerta suelta:
+    con el `occurredAt` dentro de la grabación, la respuesta del paciente cae
+    dentro de la traza (`_report_offset_ms` la ubica en vez de omitirla) y el
+    médico la ve como marca sobre el ECG, que es el flujo real que se quiere
+    probar.
+
+    Bloqueado fuera de desarrollo: escribe hallazgos clínicos falsos en la
+    historia de un paciente, y en un entorno real eso es exactamente lo que no
+    puede pasar.
+    """
+    if settings.is_secure_environment:
+        raise _simulation_forbidden()
+
+    result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
+    if result is None:
+        raise _not_found()
+    study, patient, _, _ = result
+
+    batch = await repo.get_latest_batch(db, study.id)
+    # `ecg_event.batch_id` es NOT NULL: un hallazgo sin lote detrás no se puede
+    # escribir, y sin muestras no habría dónde anclarlo aunque se pudiera.
+    if batch is None or study.samples_count <= 0:
+        raise _no_signal()
+
+    data = input_data.data
+    sample_rate = study.sample_rate or 500
+    start_sample = max(0, study.samples_count - round(data.secondsBeforeEnd * sample_rate))
+    length_samples = max(
+        1, min(round(data.durationSeconds * sample_rate), study.samples_count - start_sample)
+    )
+    severity = ECGEventSeverity[data.severity.upper()]
+    kind = data.eventType.value
+
+    event = ECGEvent(
+        batch_id=batch.id,
+        event_type=ECGEventType[kind.upper()],
+        severity=severity,
+        timestamp_in_recording=start_sample / sample_rate,
+        duration_seconds=length_samples / sample_rate,
+        # Las mismas claves que escribe `ingest/processing._persist_events`: son
+        # las que `_event_offsets_ms` sabe leer para pintar la banda.
+        event_metadata={
+            "kind": kind,
+            "studyId": str(study.id),
+            "startSampleIndex": start_sample,
+            "sampleCount": length_samples,
+            "simulated": True,
+        },
+    )
+    db.add(event)
+    await db.flush()
+
+    alert = Alert(
+        patient_id=patient.id,
+        event_id=event.id,
+        # Sin `kind`: lo deriva `resolve_alert_kind` del tipo de evento, que es
+        # el mismo camino que recorre una alerta del pipeline real.
+        kind=None,
+        severity=AlertSeverity[data.severity.upper()],
+        message=(data.message or "").strip() or _SIMULATED_MESSAGES[data.eventType],
+    )
+    db.add(alert)
+    await db.flush()
+
+    alert_id = alert.id
+    event_id = event.id
+    occurred_at = study.started_at + timedelta(seconds=start_sample / sample_rate)
+    await db.commit()
+
+    # Después del commit, como en la ingesta: un push con un `alertId` que la
+    # transacción termina descartando deja al paciente tocando una notificación
+    # que abre un formulario roto.
+    patient_app_service.schedule_alert_push(background, patient.id, alert_id, occurred_at)
+    await logger.ainfo(
+        "anomaly_simulated",
+        study_id=str(study.id),
+        alert_id=str(alert_id),
+        kind=kind,
+        severity=data.severity,
+        start_sample=start_sample,
+        actor_id=str(input_data.actor_id) if input_data.actor_id else None,
+    )
+    return SimulateAnomalyOut(
+        alertId=alert_id,
+        eventId=event_id,
+        occurredAt=occurred_at,
+        offsetMs=round(start_sample * 1000 / sample_rate),
+    )
+
+
 async def close_open_studies_for_device(
     db: AsyncSession, device: Device, actor_id: uuid.UUID | None, reason: str
 ) -> int:
@@ -585,11 +830,16 @@ async def list_study_patient_reports(
         raise _not_found()
     study, _, _, _ = result
     reports = await patient_app_repo.list_reports_for_study(db, study.id)
+    # Los mismos offsets que el manifest: si la solapa dijera "visible" y el
+    # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún
+    # lado. La ubicación de un registro se decide en un solo lugar.
+    _, event_offsets = _event_annotations(study, await repo.list_ecg_events(db, study.id))
+    placements = _report_placements(study, reports, event_offsets)
 
     items: list[StudyPatientReportOut] = []
     pending = 0
     for report in reports:
-        offset_ms = _report_offset_ms(report, study)
+        offset_ms = placements[report.id].offset_ms
         if offset_ms is None:
             pending += 1
         items.append(
@@ -605,6 +855,7 @@ async def list_study_patient_reports(
                 activityOther=report.activity_other,
                 notes=report.notes,
                 alertId=report.alert_id,
+                alertKind=_report_alert_kind(report),
                 createdAt=report.created_at,
                 offsetMs=offset_ms,
                 visibleInChart=offset_ms is not None,

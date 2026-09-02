@@ -12,6 +12,15 @@ export interface ECGAnnotation {
   /** Timestamp UNIX absoluto del final (igual a startMs para eventos puntuales). */
   endMs: number
   confidenceScore: number | null
+  /**
+   * Para la respuesta del paciente a un aviso: el id del hallazgo que contesta.
+   * El backend ancla la marca dentro de esa banda, así que las dos se leen como
+   * una sola cosa; este campo es lo que además permite etiquetarla ("Respuesta:
+   * Taquicardia") y resaltar las dos juntas al seleccionar cualquiera.
+   */
+  linkedAnnotationId: string | null
+  /** Texto corto del aviso — hoy, los síntomas que informó el paciente. */
+  description: string | null
 }
 
 /**

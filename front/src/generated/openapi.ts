@@ -262,6 +262,8 @@ export interface MobileCatalogsOut {
 export interface MobileDeviceOut {
   "hasDevice": boolean
   "state": string
+  "vestPlacement": string
+  "vestPlacementAt": string | null
   "deviceId": string | null
   "serial": string | null
   "model": string | null
@@ -458,6 +460,23 @@ export interface RunningStudyOut {
   "deviceSerial": string
 }
 
+export interface SimulateAnomalyOut {
+  "alertId": string
+  "eventId": string
+  "occurredAt": string
+  "offsetMs": number
+}
+
+export interface SimulateAnomalyRequest {
+  "eventType"?: SimulatedAnomalyType
+  "severity"?: "high" | "critical"
+  "durationSeconds"?: number
+  "secondsBeforeEnd"?: number
+  "message"?: string | null
+}
+
+export type SimulatedAnomalyType = "tachycardia" | "bradycardia" | "afib" | "pvc" | "pause"
+
 export interface StudyDetailOut {
   "id": string
   "patientId": string
@@ -479,6 +498,8 @@ export interface StudyEcgAnnotationOut {
   "startOffsetMs": number
   "endOffsetMs": number
   "confidenceScore": number | null
+  "linkedAnnotationId"?: string | null
+  "description"?: string | null
 }
 
 export interface StudyEcgLevelOut {
@@ -551,6 +572,7 @@ export interface StudyPatientReportOut {
   "activityOther": string | null
   "notes": string | null
   "alertId": string | null
+  "alertKind": string | null
   "createdAt": string
   "offsetMs": number | null
   "visibleInChart": boolean

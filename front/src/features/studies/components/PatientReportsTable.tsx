@@ -11,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { ALERT_KIND_LABEL } from '@/features/alerts/labels'
 import { formatDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
@@ -42,6 +43,13 @@ function symptomsText(report: StudyPatientReport): string {
 
 function activityText(report: StudyPatientReport): string {
   return report.activityOther || report.activityLabel || '—'
+}
+
+/** El hallazgo que el registro responde, con su nombre clínico. */
+function alertKindText(report: StudyPatientReport): string | null {
+  if (report.source !== 'push_response') return null
+  if (!report.alertKind) return null
+  return ALERT_KIND_LABEL[report.alertKind] ?? 'Hallazgo'
 }
 
 export function PatientReportsTable({
@@ -86,54 +94,65 @@ export function PatientReportsTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {reports.map((report) => (
-              <TableRow key={report.id} className={cn(!report.visibleInChart && 'bg-gray-50')}>
-                <TableCell className="whitespace-nowrap">
-                  <div className="flex flex-col">
-                    <span className="font-medium text-gray-900">
-                      {formatDateTime(report.occurredAt)}
-                    </span>
-                    {report.offsetMs !== null && (
-                      <span className="text-helper font-mono text-gray-500">
-                        {formatOffset(report.offsetMs)} del estudio
+            {reports.map((report) => {
+              const alertKind = alertKindText(report)
+              return (
+                <TableRow key={report.id} className={cn(!report.visibleInChart && 'bg-gray-50')}>
+                  <TableCell className="whitespace-nowrap">
+                    <div className="flex flex-col">
+                      <span className="font-medium text-gray-900">
+                        {formatDateTime(report.occurredAt)}
+                      </span>
+                      {report.offsetMs !== null && (
+                        <span className="text-helper font-mono text-gray-500">
+                          {formatOffset(report.offsetMs)} del estudio
+                        </span>
+                      )}
+                      {/* La respuesta a un aviso se marca sobre la banda del
+                        hallazgo, no en la hora en que el paciente contestó:
+                        decirlo evita que los dos tiempos parezcan un error. */}
+                      {alertKind !== null && (
+                        <span className="text-helper text-gray-500">marcado sobre el hallazgo</span>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-64">{symptomsText(report)}</TableCell>
+                  <TableCell className="hidden md:table-cell">{activityText(report)}</TableCell>
+                  <TableCell className="hidden max-w-72 lg:table-cell">
+                    <span className="text-gray-600">{report.notes ?? '—'}</span>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={report.source === 'push_response' ? 'info' : 'neutral'}>
+                      {report.source === 'push_response' ? (
+                        <>
+                          <Bell className="size-3" aria-hidden />
+                          {/* Con el hallazgo adentro: "Por aviso" a secas no
+                            decía a qué aviso estaba contestando el paciente. */}
+                          {alertKind ? `Aviso · ${alertKind}` : 'Por aviso'}
+                        </>
+                      ) : (
+                        <>
+                          <MessageSquareText className="size-3" aria-hidden />
+                          Espontáneo
+                        </>
+                      )}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {report.visibleInChart ? (
+                      <Button variant="ghost" size="sm" onClick={() => onLocate(report)}>
+                        Ver en el ECG
+                      </Button>
+                    ) : (
+                      <span className="text-helper flex items-center gap-1 text-gray-500">
+                        <Clock className="size-3.5" aria-hidden />
+                        Aún sin señal
                       </span>
                     )}
-                  </div>
-                </TableCell>
-                <TableCell className="max-w-64">{symptomsText(report)}</TableCell>
-                <TableCell className="hidden md:table-cell">{activityText(report)}</TableCell>
-                <TableCell className="hidden max-w-72 lg:table-cell">
-                  <span className="text-gray-600">{report.notes ?? '—'}</span>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={report.source === 'push_response' ? 'info' : 'neutral'}>
-                    {report.source === 'push_response' ? (
-                      <>
-                        <Bell className="size-3" aria-hidden />
-                        Por aviso
-                      </>
-                    ) : (
-                      <>
-                        <MessageSquareText className="size-3" aria-hidden />
-                        Espontáneo
-                      </>
-                    )}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  {report.visibleInChart ? (
-                    <Button variant="ghost" size="sm" onClick={() => onLocate(report)}>
-                      Ver en el ECG
-                    </Button>
-                  ) : (
-                    <span className="text-helper flex items-center gap-1 text-gray-500">
-                      <Clock className="size-3.5" aria-hidden />
-                      Aún sin señal
-                    </span>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                </TableRow>
+              )
+            })}
           </TableBody>
         </Table>
       </div>

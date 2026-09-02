@@ -8,10 +8,11 @@
     "scheme": "holter",
     "userInterfaceStyle": "light",
     "ios": {
-      "bundleIdentifier": "ar.edu.austral.holter.paciente",
+      "bundleIdentifier": "com.holter.ecg",
       "supportsTablet": false
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#0b2185",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +20,7 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "ar.edu.austral.holter.paciente"
+      "package": "com.holter.ecg"
     },
     "web": {
       "output": "static",
@@ -43,11 +44,19 @@
           "color": "#0b2185",
           "defaultChannel": "alerts"
         }
-      ]
+      ],
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "72c67bbc-26ee-4175-82e3-3bc11be1bb11"
+      }
+    },
+    "owner": "tserra"
   }
 }

@@ -1,4 +1,4 @@
-import { ArrowLeft, FileSearch, NotebookPen } from 'lucide-react'
+import { Activity, ArrowLeft, FileSearch, NotebookPen } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -158,12 +158,15 @@ export function StudyDetail() {
 
       <Tabs value={tab} onValueChange={(next) => setTab(next as typeof tab)}>
         <TabsList>
-          <TabsTrigger value="senal">Señal ECG</TabsTrigger>
+          <TabsTrigger value="senal">
+            <Activity className="size-4" aria-hidden />
+            Señal ECG
+          </TabsTrigger>
           <TabsTrigger value="registros">
-            <NotebookPen className="mr-1.5 size-4" aria-hidden />
+            <NotebookPen className="size-4" aria-hidden />
             Registros del paciente
             {reportsQ.data && reportsQ.data.total > 0 && (
-              <span className="ml-1.5 rounded-full bg-primary-50 px-1.5 text-body3 text-primary-500">
+              <span className="text-body3 rounded-full bg-primary-50 px-1.5 text-primary-500">
                 {reportsQ.data.total}
               </span>
             )}

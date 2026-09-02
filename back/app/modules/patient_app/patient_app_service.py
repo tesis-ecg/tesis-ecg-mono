@@ -240,6 +240,18 @@ async def get_me(patient: Patient, db: AsyncSession) -> MobilePatientOut:
 # --------------------------------------------------------------------------- #
 
 
+def _vest_placement(device: Device) -> str:
+    """Lo último que el equipo reportó por `POST /ingest/device-status`.
+
+    `None` es ``unknown`` y no ``ok``: un chaleco recién entregado no reportó
+    nada todavía, y decirle al paciente que está bien puesto sin haberlo medido
+    es exactamente el error que este aviso existe para evitar.
+    """
+    if device.placement_ok is None:
+        return "unknown"
+    return "ok" if device.placement_ok else "bad"
+
+
 def _device_state(patient: Patient, device: Device, study: Study | None) -> str:
     if device.last_seen_at is None:
         return "never_connected"
@@ -264,6 +276,8 @@ async def get_device(patient: Patient, db: AsyncSession) -> MobileDeviceOut:
         return MobileDeviceOut(
             hasDevice=False,
             state="none",
+            vestPlacement="unknown",
+            vestPlacementAt=None,
             deviceId=None,
             serial=None,
             model=None,
@@ -278,6 +292,8 @@ async def get_device(patient: Patient, db: AsyncSession) -> MobileDeviceOut:
     return MobileDeviceOut(
         hasDevice=True,
         state=_device_state(patient, device, study),
+        vestPlacement=_vest_placement(device),
+        vestPlacementAt=device.placement_reported_at,
         deviceId=device.id,
         serial=device.serial_number,
         model=device.model,
@@ -497,9 +513,19 @@ async def unregister_push_token(input_data: PushTokenInput, db: AsyncSession) ->
 
 
 def schedule_alert_push(
-    background_tasks: BackgroundTasks, patient_id: uuid.UUID, alert_id: uuid.UUID
+    background_tasks: BackgroundTasks,
+    patient_id: uuid.UUID,
+    alert_id: uuid.UUID,
+    occurred_at: datetime | None = None,
 ) -> None:
-    """Helper para los llamadores que ya tienen un `BackgroundTasks` a mano."""
+    """Helper para los llamadores que ya tienen un `BackgroundTasks` a mano.
+
+    `occurred_at` es el instante del hallazgo, no el del envío. Viaja en el
+    `data` del push y de ahí sale el `occurredAt` con el que la app abre el
+    formulario: si dijera "ahora" para un hallazgo de hace veinte minutos, el
+    registro del paciente quedaría anclado en el lugar equivocado de la traza.
+    Sin dato, "ahora" es la mejor aproximación disponible.
+    """
     from app.modules.patient_app.notifications_service import (
         anomaly_message,
         notify_patient_task,
@@ -508,5 +534,5 @@ def schedule_alert_push(
     background_tasks.add_task(
         notify_patient_task,
         patient_id,
-        anomaly_message(alert_id, datetime.now(UTC).isoformat()),
+        anomaly_message(alert_id, (occurred_at or datetime.now(UTC)).isoformat()),
     )

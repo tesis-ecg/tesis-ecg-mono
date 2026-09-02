@@ -50,10 +50,20 @@ export function NotificationsBridge() {
     void registerForPushNotifications()
   }, [patient])
 
+  /**
+   * Un push que llega con la app abierta tiene que actualizar lo que se está
+   * mirando, no solo dibujar el banner.
+   *
+   * Las dos queries y no solo la de avisos: el aviso de chaleco mal colocado
+   * lleva a *Dispositivo*, y el estado de la colocación vive en la query del
+   * dispositivo. Invalidando solo `alerts`, la pantalla a la que el propio
+   * aviso manda al paciente seguía dibujando el estado cacheado.
+   */
   useEffect(() => {
     if (!patient) return
     const subscription = Notifications.addNotificationReceivedListener(() => {
       void queryClient.invalidateQueries({ queryKey: patientKeys.alerts })
+      void queryClient.invalidateQueries({ queryKey: patientKeys.device })
     })
     return () => subscription.remove()
   }, [patient, queryClient])
@@ -70,6 +80,10 @@ export function NotificationsBridge() {
     }
     const data = lastResponse.notification.request.content.data as NotificationData
     const route = routeForNotification(data)
+    // Un aviso tocado desde el fondo no pasa por el listener de recepción, así
+    // que la pantalla a la que lleva se dibujaría con lo que haya en caché.
+    void queryClient.invalidateQueries({ queryKey: patientKeys.alerts })
+    void queryClient.invalidateQueries({ queryKey: patientKeys.device })
 
     if (route.pathname === '/(tabs)/device') {
       router.navigate(route.pathname)
@@ -79,7 +93,7 @@ export function NotificationsBridge() {
       router.push({ pathname: route.pathname, params: route.params })
     }
     Notifications.clearLastNotificationResponse()
-  }, [lastResponse, patient, router])
+  }, [lastResponse, patient, router, queryClient])
 
   return null
 }

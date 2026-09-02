@@ -35,6 +35,7 @@ export function makeVestConfig(overrides: Partial<VestConfig> = {}): VestConfig 
       simulated: true,
       shuffle: false,
     },
+    placementOk: true,
     network: {
       truncateBodyPct: 0,
       invalidApiKey: false,

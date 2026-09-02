@@ -171,6 +171,23 @@ async def list_ecg_events(db: AsyncSession, study_id: uuid.UUID) -> list[ECGEven
     return list(result.all())
 
 
+async def get_latest_batch(db: AsyncSession, study_id: uuid.UUID) -> ECGBatch | None:
+    """El último lote ingerido del estudio.
+
+    Lo necesita el disparador de anomalías simuladas: `ecg_event.batch_id` es
+    NOT NULL, así que un hallazgo no puede existir sin señal ingerida detrás.
+    Se ordena por `first_seq` y no por `created_at` porque el orden que importa
+    es el de la grabación, y un reintento puede archivar un lote viejo tarde.
+    """
+    result = await db.scalars(
+        select(ECGBatch)
+        .where(ECGBatch.study_id == study_id, ECGBatch.deleted_at.is_(None))
+        .order_by(ECGBatch.first_seq.desc().nullslast(), ECGBatch.created_at.desc())
+        .limit(1)
+    )
+    return result.first()
+
+
 #: Estados desde los que un estudio todavía puede cerrarse. El resto
 #: (`COMPLETED`, `CANCELLED`) son terminales.
 OPEN_STATUSES = (StudyStatus.IN_PROGRESS, StudyStatus.SCHEDULED)

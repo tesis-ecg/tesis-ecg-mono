@@ -9,6 +9,8 @@ import {
   type LucideIcon,
 } from 'lucide-react-native'
 
+import type { VestAuraTone } from '@/lib/gradients'
+
 import type { DeviceState } from './types'
 
 /** Los tonos semánticos compartidos con `Badge`. */
@@ -54,6 +56,31 @@ export const DEVICE_STATE: Record<DeviceState, DeviceStateMeta> = {
     tone: 'danger',
     icon: CloudOff,
   },
+}
+
+/**
+ * El color del halo que se apoya detrás de la foto del chaleco.
+ *
+ * No reusa el `tone` de arriba y no es un descuido. La pastilla tiene que
+ * distinguir los cinco estados, porque cada uno se explica distinto; el aura
+ * contesta una sola pregunta —¿el estudio está corriendo?— y con cinco colores
+ * dejaría de contestarla. De ahí las dos diferencias con la pastilla:
+ *
+ * - `never_connected` es `warning` arriba y azul acá: el chaleco todavía no
+ *   arrancó, igual que en `idle`, y el matiz de por qué lo dice el texto.
+ * - `stale` es `danger` arriba y ámbar acá, para que el rojo del aura quede
+ *   reservado al chaleco mal colocado. Es lo único de la app que pide una
+ *   acción física en el momento; si el rojo del fondo también apareciera
+ *   cuando el WiFi se cortó, dejaría de significar "andá y acomodátelo".
+ */
+export const DEVICE_AURA: Record<DeviceState, VestAuraTone> = {
+  // Sin chaleco la pantalla muestra el estado vacío y no la foto, así que este
+  // valor no llega a dibujarse nunca. Está para que el mapa siga siendo total.
+  none: 'waiting',
+  never_connected: 'waiting',
+  idle: 'waiting',
+  recording: 'live',
+  stale: 'attention',
 }
 
 /** Los tipos de aviso que puede recibir el paciente, en su idioma. */

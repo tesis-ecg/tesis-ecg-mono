@@ -6,8 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
+import type { SimulateAnomalyBody } from '../api/simulatorApi'
 import { estimateBatch, formatBytes } from '../defaults'
 import { compressionRatio, type VestPhase, type VestState } from '../types'
+import { VestTestPanel } from './VestTestPanel'
 
 const PHASE_LABEL: Record<VestPhase, string> = {
   idle: 'Detenido',
@@ -34,6 +36,8 @@ interface VestCardProps {
   onRemove: () => void
   onEdit: () => void
   onReboot: () => void
+  onSetPlacement: (ok: boolean) => void
+  onSimulateAnomaly: (body: SimulateAnomalyBody) => void
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -45,7 +49,16 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function VestCard({ vest, onRun, onStop, onRemove, onEdit, onReboot }: VestCardProps) {
+export function VestCard({
+  vest,
+  onRun,
+  onStop,
+  onRemove,
+  onEdit,
+  onReboot,
+  onSetPlacement,
+  onSimulateAnomaly,
+}: VestCardProps) {
   const [showLog, setShowLog] = useState(false)
   const { config, stats, phase } = vest
   const estimate = estimateBatch(config)
@@ -193,6 +206,12 @@ export function VestCard({ vest, onRun, onStop, onRemove, onEdit, onReboot }: Ve
           )}
         </div>
       )}
+
+      <VestTestPanel
+        vest={vest}
+        onSetPlacement={onSetPlacement}
+        onSimulateAnomaly={onSimulateAnomaly}
+      />
 
       {showLog && (
         <ul className="max-h-56 overflow-y-auto rounded-md bg-gray-50 p-3 text-body3">

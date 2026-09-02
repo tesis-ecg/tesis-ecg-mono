@@ -144,6 +144,10 @@ async def test_a_legacy_seeded_study_still_returns_raw(
         "startOffsetMs": 1250,
         "endOffsetMs": 1750,
         "confidenceScore": None,
+        # Solo los registros del paciente llenan estos dos: un hallazgo no
+        # responde a nada ni trae texto propio.
+        "linkedAnnotationId": None,
+        "description": None,
     }
 
 

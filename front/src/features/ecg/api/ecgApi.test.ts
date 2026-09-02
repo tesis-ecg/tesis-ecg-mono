@@ -106,6 +106,19 @@ describe('getStudyEcg', () => {
             endOffsetMs: 1500,
             confidenceScore: null,
           },
+          // La respuesta del paciente al aviso de ese hallazgo: el vínculo es
+          // lo que después deja etiquetarla y resaltarlas juntas.
+          {
+            id: 'report-1',
+            kind: 'patient_report',
+            category: 'patient_marker',
+            severity: 'high',
+            startOffsetMs: 1250,
+            endOffsetMs: 1250,
+            confidenceScore: null,
+            linkedAnnotationId: 'event-1',
+            description: 'Palpitaciones',
+          },
         ],
       }),
     })
@@ -122,6 +135,21 @@ describe('getStudyEcg', () => {
         startMs: 1_700_000_001_000,
         endMs: 1_700_000_001_500,
         confidenceScore: null,
+        // Un manifest sin los campos nuevos (backend viejo) no puede dejar
+        // `undefined` sueltos: el visor los lee siempre.
+        linkedAnnotationId: null,
+        description: null,
+      },
+      {
+        id: 'report-1',
+        kind: 'patient_report',
+        category: 'patient_marker',
+        severity: 'high',
+        startMs: 1_700_000_001_250,
+        endMs: 1_700_000_001_250,
+        confidenceScore: null,
+        linkedAnnotationId: 'event-1',
+        description: 'Palpitaciones',
       },
     ])
   })

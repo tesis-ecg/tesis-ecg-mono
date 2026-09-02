@@ -1,53 +1,49 @@
 import { describe, expect, it } from 'vitest'
 
-import { isVestMisplaced, VEST_ALERT_WINDOW_MS, VEST_MISPLACED_KIND } from './vestStatus'
-import type { PatientAlert } from './types'
+import { isVestMisplaced } from './vestStatus'
+import type { DeviceStatus, VestPlacement } from './types'
 
-const NOW = new Date('2026-08-31T12:00:00Z').getTime()
-
-function alert(kind: string, minutesAgo: number): PatientAlert {
+function device(overrides: Partial<DeviceStatus> = {}): DeviceStatus {
   return {
-    id: `${kind}-${minutesAgo}`,
-    kind,
-    severity: 'high',
-    message: '',
-    detectedAt: new Date(NOW - minutesAgo * 60_000).toISOString(),
-    requiresResponse: false,
-    needsReport: false,
-    reportId: null,
-    answeredAt: null,
+    hasDevice: true,
+    state: 'recording',
+    vestPlacement: 'ok',
+    vestPlacementAt: '2026-08-31T12:00:00Z',
+    deviceId: 'dev-1',
+    serial: 'HOL-1',
+    model: 'Holter ECG',
+    firmwareVersion: '1.4.2',
+    batteryPercent: 80,
+    lastSeenAt: '2026-08-31T12:00:00Z',
+    lastDataReceivedAt: '2026-08-31T12:00:00Z',
+    studyId: 'study-1',
+    studyStartedAt: '2026-08-31T10:00:00Z',
+    ...overrides,
   }
 }
 
 describe('isVestMisplaced', () => {
-  it('marca el chaleco mal colocado cuando el aviso es reciente', () => {
-    expect(isVestMisplaced([alert(VEST_MISPLACED_KIND, 40)], NOW)).toBe(true)
+  it('marca el chaleco mal colocado cuando el equipo lo reportó así', () => {
+    expect(isVestMisplaced(device({ vestPlacement: 'bad' }))).toBe(true)
   })
 
-  it('lo deja de marcar pasada la ventana', () => {
-    // El backend no avisa que el episodio se cerró: lo único que dice que el
-    // chaleco se acomodó es que dejaron de llegar avisos.
-    const minutes = VEST_ALERT_WINDOW_MS / 60_000 + 1
-    expect(isVestMisplaced([alert(VEST_MISPLACED_KIND, minutes)], NOW)).toBe(false)
+  it('lo deja de marcar apenas el equipo reporta que se acomodó', () => {
+    // Este es el caso que la heurística vieja no podía cubrir: el paciente se
+    // acomoda el chaleco y el cartel tenía que seguir puesto hasta que venciera
+    // una ventana de una hora.
+    expect(isVestMisplaced(device({ vestPlacement: 'ok' }))).toBe(false)
   })
 
-  it('no lo marca con avisos de otro tipo, por recientes que sean', () => {
-    expect(isVestMisplaced([alert('afib', 1), alert('tachycardia', 2)], NOW)).toBe(false)
+  it('no afirma nada con un equipo que todavía no reportó', () => {
+    expect(isVestMisplaced(device({ vestPlacement: 'unknown' }))).toBe(false)
   })
 
-  it('encuentra el aviso aunque no sea el primero de la lista', () => {
-    // La lista viene ordenada por `created_at` y acá se mira `detectedAt`: en
-    // los avisos cargados de golpe los dos órdenes no coinciden.
-    const alerts = [alert('afib', 5), alert('pause', 10), alert(VEST_MISPLACED_KIND, 20)]
-    expect(isVestMisplaced(alerts, NOW)).toBe(true)
+  it('no marca nada sin chaleco asignado, aunque venga un estado viejo', () => {
+    const placement: VestPlacement = 'bad'
+    expect(isVestMisplaced(device({ hasDevice: false, vestPlacement: placement }))).toBe(false)
   })
 
-  it('ignora una fecha que no se puede leer en vez de romper la pantalla', () => {
-    const broken = { ...alert(VEST_MISPLACED_KIND, 1), detectedAt: 'no-es-una-fecha' }
-    expect(isVestMisplaced([broken], NOW)).toBe(false)
-  })
-
-  it('sin avisos no hay nada que marcar', () => {
-    expect(isVestMisplaced([], NOW)).toBe(false)
+  it('sin dato cargado todavía no pinta el cartel', () => {
+    expect(isVestMisplaced(undefined)).toBe(false)
   })
 })

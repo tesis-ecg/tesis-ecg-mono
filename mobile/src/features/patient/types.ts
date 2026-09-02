@@ -49,9 +49,20 @@ export interface Session {
  */
 export type DeviceState = 'none' | 'never_connected' | 'recording' | 'idle' | 'stale'
 
+/**
+ * Cómo tiene puesto el chaleco el paciente, según el último reporte del equipo.
+ *
+ * `unknown` no es `ok`: un chaleco recién entregado todavía no reportó nada, y
+ * decirle al paciente que lo tiene bien puesto sin haberlo medido es
+ * exactamente el error que este aviso existe para evitar.
+ */
+export type VestPlacement = 'ok' | 'bad' | 'unknown'
+
 export interface DeviceStatus {
   hasDevice: boolean
   state: DeviceState
+  vestPlacement: VestPlacement
+  vestPlacementAt: string | null
   deviceId: string | null
   serial: string | null
   model: string | null
