@@ -41,11 +41,17 @@ componentes, salvo donde una API nativa exige un color literal (los `color` de
 `Ionicons`, el `lightColor` del canal de Android) y los gradientes, que van
 todos en `src/lib/gradients.ts` — ver la trampa de abajo.
 
-**Los gradientes son tres y se usan en cuatro lugares.** El velo de la foto del
-login, la card de aviso pendiente de Inicio, el botón primario y los círculos de
-marca. El azul marca lo que hay que mirar; si estuviera en todas las
+**Los gradientes de marca son tres y se usan en cuatro lugares.** El velo de la
+foto del login, la card de aviso pendiente de Inicio, el botón primario y los
+círculos de marca. El azul marca lo que hay que mirar; si estuviera en todas las
 superficies no marcaría nada. Antes de sumar un gradiente nuevo, pensá si lo que
 querés destacar compite con el CTA de esa pantalla.
+
+La excepción es el **aura del chaleco** (`vestAura`, cuatro tonos): no es azul de
+marca sino el color del estado, va detrás de la foto de Dispositivo y esa
+pantalla no tiene CTA primario, así que no compite con nada. Es el único
+`radial-gradient` de la app —React Native 0.86 lo parsea igual que el lineal— y
+la única superficie donde el color dice algo en vez de jerarquizar.
 
 **La app es light-only.** Está decidido: un solo esquema de color elimina las
 diferencias entre cómo resuelve el modo oscuro cada plataforma. No agregues
@@ -74,6 +80,34 @@ existe, pero resuelve es-AR a 12 h: las fechas van con `hour12: false`.
 primero en silencio — así se perdió el margen lateral de todas las pantallas.
 Si una prop necesita valores dinámicos (los insets del safe area), va por
 `style` y el resto se resuelve en una `View` interna. Ver `ui/Screen.tsx`.
+
+**Un wrapper del `RefreshControl` tiene que reenviar `children` y `style`.**
+En iOS el control es un hijo más del `ScrollView` y alcanza con devolver un
+`RefreshControl`. En Android no: `ScrollView` envuelve al scroll entero en un
+`SwipeRefreshLayout`, y para armarlo **clona el elemento** pasándole el scroll
+por `children` y los estilos de layout por `style`. `ui/Refresh.tsx` recibía
+props sueltas y no reenviaba ninguna de las dos, así que en Android se comía el
+scroll completo: después de iniciar sesión quedaban el header fijo y la tab bar
+—los dos viven fuera del scroll— y el resto de la pantalla no llegaba a
+montarse nunca. Sin error en consola, sin nada en el type-check, y en iOS
+perfecto. Por eso el componente hace `{...rest}` primero y solo después pisa lo
+suyo. Vale para cualquier wrapper de un componente que RN clone.
+
+**`Device.isDevice` es `false` en el emulador de Android.** Y ahí es
+justamente donde las push se prueban gratis. `registerForPushNotifications`
+cortaba con `if (!Device.isDevice) return null` pensando en el simulador de
+iOS: el token no se registraba nunca, el backend loguaba `push_no_tokens` y no
+había ningún error en la app que lo explicara. El corte se sacó; lo que queda es
+el `try/catch`, que en `__DEV__` avisa por qué falló —sin eso, un `projectId`
+mal configurado, un emulador sin Google Play y un permiso denegado son todos el
+mismo `null`.
+
+**El estado del chaleco sale de `GET /mobile/device`, no de las alertas.**
+`vestStatus.ts` fue una heurística de una hora sobre los avisos mientras el
+backend no guardaba si el episodio se había cerrado. Ahora `device.placement_ok`
+existe y `vestPlacement` viene en el DTO: acomodarse el chaleco apaga el cartel
+en el acto. Si algo necesita "¿está mal puesto ahora?", va por ahí y no contando
+alertas.
 
 **Las variantes de hermanos de Tailwind no existen en RN.** `last:`, `first:`,
 `odd:`, `hover:` y compañía no hacen nada: no hay selectores CSS. El separador

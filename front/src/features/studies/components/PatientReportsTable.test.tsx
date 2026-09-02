@@ -67,6 +67,31 @@ describe('PatientReportsTable', () => {
     expect(screen.getByText('Cortando el pasto')).toBeTruthy()
   })
 
+  it('dice a qué hallazgo responde un registro que contesta un aviso', () => {
+    // "Por aviso" a secas no alcanza: en un estudio con varias alertas, el
+    // médico necesita saber cuál de ellas contestó el paciente — la misma
+    // pertenencia que sobre el gráfico marca la banda del hallazgo.
+    const { container } = render(
+      <PatientReportsTable
+        reports={[
+          report({
+            id: 'respuesta',
+            source: 'push_response',
+            alertId: 'alert-1',
+            alertKind: 'tachycardia',
+            offsetMs: 15_000,
+            visibleInChart: true,
+          }),
+        ]}
+        pendingSignalTotal={0}
+        onLocate={vi.fn()}
+      />,
+    )
+
+    expect(container.textContent).toContain('Aviso · Taquicardia')
+    expect(container.textContent).toContain('marcado sobre el hallazgo')
+  })
+
   it('sin registros explica de dónde salen, en vez de mostrar una tabla vacía', () => {
     render(<PatientReportsTable reports={[]} pendingSignalTotal={0} onLocate={vi.fn()} />)
 
@@ -87,6 +112,7 @@ function report(overrides: Partial<StudyPatientReport> = {}): StudyPatientReport
     activityOther: null,
     notes: null,
     alertId: null,
+    alertKind: null,
     createdAt: '2026-08-30T14:31:00Z',
     offsetMs: 8_000,
     visibleInChart: true,

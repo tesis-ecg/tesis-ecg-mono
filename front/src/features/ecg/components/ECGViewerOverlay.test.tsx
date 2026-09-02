@@ -142,6 +142,8 @@ function signal(): ECGSignal {
         startMs: startTimestamp + 45_000,
         endMs: startTimestamp + 65_000,
         confidenceScore: 0.97,
+        linkedAnnotationId: null,
+        description: null,
       },
     ],
   }

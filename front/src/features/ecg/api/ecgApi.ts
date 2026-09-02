@@ -37,6 +37,8 @@ interface EcgAnnotation {
   startOffsetMs: number
   endOffsetMs: number
   confidenceScore: number | null
+  linkedAnnotationId?: string | null
+  description?: string | null
 }
 
 /**
@@ -128,6 +130,8 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       startMs: manifest.startTimestamp + annotation.startOffsetMs,
       endMs: manifest.startTimestamp + annotation.endOffsetMs,
       confidenceScore: annotation.confidenceScore,
+      linkedAnnotationId: annotation.linkedAnnotationId ?? null,
+      description: annotation.description ?? null,
     })),
   }
 }

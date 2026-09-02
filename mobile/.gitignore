@@ -47,3 +47,4 @@ example
 dist/
 nativewind-env.d.ts
 .env
+google-services.json

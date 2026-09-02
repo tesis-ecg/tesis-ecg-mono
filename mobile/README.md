@@ -55,22 +55,95 @@ pueda alcanzar:
 ## Notificaciones push
 
 **Expo Go no alcanza.** Desde SDK 53 Expo Go no entrega notificaciones en
-Android, así que hace falta un *development build*:
-
-```bash
-npx eas build --profile development --platform android
-```
-
-- **Android**: hay que subir a EAS las credenciales de **FCM V1** (un service
-  account de un proyecto de Firebase gratis, plan Spark).
-- **iOS**: hace falta cuenta de Apple Developer para las credenciales de APNs.
-- Para probar sin hardware sirve un **emulador de Android con Google Play
-  services**.
+Android, así que hace falta un *development build*.
 
 El backend manda los avisos a través del Expo Push Service
 (`back/app/core/push.py`). En desarrollo queda apagado por defecto:
 `EXPO_PUSH_ENABLED=false` usa un sender que solo escribe en el log lo que
-habría mandado.
+habría mandado —incluido el `data` completo—, así que todo el flujo del backend
+se puede depurar sin red y sin credenciales.
+
+### Probarlas de punta a punta: emulador de Android
+
+Es el único camino gratis con entrega real. iOS necesita cuenta paga de Apple
+Developer para la key de APNs; ver el apéndice de abajo para la alternativa.
+
+1. **Backend**: `EXPO_PUSH_ENABLED=true` en `back/.env` y reiniciar el
+   contenedor. El paciente de prueba tiene que tener cuenta de app
+   (`patient.user_id` no nulo).
+2. **Proyecto de EAS** (gratis): `npx eas init && npx eas build:configure`.
+   `eas init` escribe `extra.eas.projectId` en `app.json`; sin eso
+   `getExpoPushTokenAsync` falla con "No projectId found".
+3. **Firebase** (plan Spark, gratis): proyecto nuevo → app Android con el
+   package `com.holter.ecg` → bajar `google-services.json` a
+   `mobile/` y apuntarlo desde `app.json`:
+
+   ```json
+   "android": { "googleServicesFile": "./google-services.json", ... }
+   ```
+
+4. **Credenciales FCM V1**: en Firebase, Configuración del proyecto → Cuentas de
+   servicio → generar clave privada. Subirla con `npx eas credentials` →
+   Android → Push Notifications (FCM V1).
+5. **Recompilar**: `npx expo prebuild -p android --clean && npm run android`.
+   El AVD tiene que ser una **imagen con Google Play** (ícono de Play Store en
+   el AVD Manager): sin Play services no hay FCM.
+
+Comprobación de que el registro funcionó, antes de buscar el problema en otro
+lado:
+
+```bash
+docker compose exec db psql -U holter -d holter -c "select platform, left(token,30) from push_token where deleted_at is null;"
+```
+
+Sin fila ahí, ningún aviso va a llegar. Los logs del backend distinguen los
+casos: `push_no_tokens` (falta el registro), `push_skipped`
+(`EXPO_PUSH_ENABLED=false`) y `push_dispatched`, que es el envío real.
+
+**`push_dispatched` no quiere decir que llegó.** Expo contesta `200 OK` a la
+request entera y después acepta o rechaza **mensaje por mensaje**, así que hay
+que mirar los conteos y no solo el nombre del evento:
+
+```
+push_dispatched sent=0 failed=1 errors=['InvalidCredentials']
+```
+
+Con `sent=0` y `errors=['InvalidCredentials']`, el problema no está en este
+repo: el proyecto de EAS no tiene cargada la clave de servicio de FCM V1 —el
+paso 4 de arriba— y Expo no tiene con qué entregarle a Android. Se verifica con
+`npx eas credentials -p android`, en *Push Notifications (FCM V1)*. El otro
+error frecuente es `DeviceNotRegistered`: el token quedó viejo (se reinstaló la
+app), el backend lo da de baja solo y alcanza con volver a abrir la app.
+
+### Disparar los avisos sin hardware
+
+Los dos tipos de aviso se disparan desde el **simulador de chalecos** del portal
+(`/__sim/vest`, solo admin), en el panel "Avisos al paciente" de cada chaleco:
+
+- **Chaleco mal colocado**: el botón reporta por `POST /ingest/device-status` con
+  la credencial del equipo. Vuelve a marcarlo bien colocado y los carteles rojos
+  de *Inicio* y de *Dispositivo* se apagan — el estado sale de `vestPlacement`,
+  que el backend guarda en la fila del Holter.
+- **Anomalía detectada**: crea un hallazgo anclado dentro de la señal ya subida
+  (hace falta haber mandado al menos un lote). El push abre el formulario de la
+  bitácora en el momento del hallazgo, y la respuesta aparece en el estudio del
+  portal, en la tabla y como marca sobre el ECG.
+
+### Apéndice: simulador de iOS
+
+Un simulador de iOS **no recibe pushes del Expo Push Service** sin cuenta paga
+de Apple Developer. Lo que sí se puede sin nada de eso es inyectar el aviso
+localmente, que alcanza para probar el tap, el ruteo y el formulario:
+
+```bash
+echo '{"aps":{"alert":{"title":"Registrá cómo te sentís","body":"Detectamos algo en tu registro."},"sound":"default"},"body":{"type":"report_request","alertId":"<UUID>","occurredAt":"2026-09-01T14:30:00Z"}}' | xcrun simctl push booted com.holter.ecg -
+```
+
+El `data` de un push remoto sale de la clave **`body`** de nivel superior del
+payload APNs, no de `aps` — así lo lee `expo-notifications`. El `alertId` real
+lo devuelve el endpoint que disparó el aviso, y también sale del log
+`push_skipped` del backend. Para el otro aviso, `"type":"vest_misplaced"`.
+Requiere que la app haya pedido el permiso de notificaciones (Perfil → activar).
 
 ## Stack y convenciones
 

@@ -263,6 +263,9 @@ def sent_pushes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[uuid.UUID, Any]]:
     for module in (
         "app.modules.ingest.ingest_service",
         "app.modules.ingest.processing",
+        # `schedule_alert_push` importa la tarea adentro de la función, así que
+        # lo que hay que pisar es el atributo del módulo donde vive.
+        "app.modules.patient_app.notifications_service",
     ):
         monkeypatch.setattr(f"{module}.notify_patient_task", _spy)
     return sent

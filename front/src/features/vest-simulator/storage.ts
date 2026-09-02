@@ -44,8 +44,13 @@ export function loadFleet(): VestConfig[] {
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
     // Se filtra en vez de descartar todo: una config vieja e incompleta no
-    // debería tirar abajo las que sí sirven.
-    return parsed.filter(isVestConfig)
+    // debería tirar abajo las que sí sirven. Los campos agregados después
+    // toman su default acá y no en el consumidor, que si no tendría que
+    // defenderse del `undefined` en cada lectura.
+    return parsed.filter(isVestConfig).map((config) => ({
+      ...config,
+      placementOk: config.placementOk ?? true,
+    }))
   } catch {
     // localStorage puede fallar entero (modo privado de Safari, cuota llena).
     // El simulador tiene que seguir andando sin persistencia.

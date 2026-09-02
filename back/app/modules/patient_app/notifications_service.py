@@ -78,12 +78,19 @@ async def notify_patient_task(patient_id: uuid.UUID, message: PushMessage) -> No
             if dead:
                 await repo.deactivate_push_tokens(session, dead)
                 await session.commit()
+            # Los códigos de error y no solo el conteo: Expo contesta 200 y
+            # rechaza mensaje por mensaje, así que un proyecto sin credenciales
+            # de FCM cargadas se veía igual que un token vencido —`failed=2` y
+            # nada más—, y no había forma de saber que el problema estaba en la
+            # consola de Expo y no en este código.
+            errors = sorted({result.error for result in results if result.error})
             await logger.ainfo(
                 "push_dispatched",
                 patient_id=str(patient_id),
                 sent=sum(1 for result in results if result.ok),
                 failed=sum(1 for result in results if not result.ok),
                 deactivated=len(dead),
+                errors=errors,
             )
     except Exception:  # noqa: BLE001 — una notificación no puede tumbar la ingesta
         await logger.aexception("push_task_failed", patient_id=str(patient_id))

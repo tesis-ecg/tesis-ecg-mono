@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models.alert import Alert
 from app.db.models.device import Device, DeviceStatus
@@ -243,9 +244,16 @@ async def get_patient_report(
 
 
 async def list_reports_for_study(db: AsyncSession, study_id: uuid.UUID) -> list[PatientReport]:
+    """Los registros del estudio, con la alerta y el evento que los originaron.
+
+    El eager load no es una optimización: el portal necesita saber a qué
+    hallazgo responde cada registro para dibujarlos unidos sobre el ECG, y un
+    lazy load de `report.alert` desde código async explota con `MissingGreenlet`.
+    """
     result = await db.scalars(
         select(PatientReport)
         .where(PatientReport.study_id == study_id, PatientReport.deleted_at.is_(None))
+        .options(selectinload(PatientReport.alert).selectinload(Alert.event))
         .order_by(PatientReport.occurred_at.asc(), PatientReport.id.asc())
     )
     return list(result.all())

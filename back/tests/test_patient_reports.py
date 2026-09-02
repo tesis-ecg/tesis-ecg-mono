@@ -304,3 +304,115 @@ async def test_catalogos(
     body = response.json()
     assert {item["value"] for item in body["symptoms"]} >= {"palpitaciones", "dolor_pecho"}
     assert {item["value"] for item in body["activities"]} >= {"durmiendo", "ejercicio"}
+
+
+# --------------------------------------------------------------------------- #
+# Respuesta a un aviso
+# --------------------------------------------------------------------------- #
+
+
+async def test_la_respuesta_a_un_aviso_queda_pegada_al_hallazgo_que_contesta(
+    client: AsyncClient,
+    s3: None,
+    db: AsyncSession,
+    as_user: Callable[[User], AsyncClient],
+    make_user: Callable[..., Any],
+    make_patient: Callable[..., Any],
+    make_patient_account: Callable[..., Any],
+    make_device: Callable[..., Any],
+    mobile_headers: Callable[[User], dict[str, str]],
+) -> None:
+    """El flujo completo: hallazgo → aviso → respuesta → marca sobre la banda.
+
+    Lo que fija el test es la pertenencia. El paciente contesta cuando ve la
+    notificación, y por hora de pared esa marca cae en un instante que el
+    chaleco todavía no subió: suelta, no se pintaría nunca. Anclada al hallazgo
+    que responde cae en el medio de su banda y viaja con `linkedAnnotationId`,
+    que es lo que le dice al médico a cuál de los avisos pertenece.
+    """
+    patient = await make_patient()
+    account = await make_patient_account(patient)
+    device, api_key = await make_device(patient=patient)
+    # 4 s grabados: el hallazgo se ancla adentro, la respuesta llega "ahora".
+    body, _ = await _ingest(client, db, device, api_key, 2000)
+    study_id = body["studyId"]
+
+    admin = await make_user(UserRole.ADMIN)
+    as_user(admin)
+    anomalia = await client.post(
+        f"/studies/{study_id}/simulate-anomaly",
+        json={
+            "eventType": "tachycardia",
+            "severity": "high",
+            "secondsBeforeEnd": 3,
+            "durationSeconds": 2,
+        },
+    )
+    assert anomalia.status_code == 200, anomalia.text
+    alert_id, event_id = anomalia.json()["alertId"], anomalia.json()["eventId"]
+
+    # Sin `occurredAt`: se guarda con la hora del aviso, que es "ahora" y cae
+    # más allá de lo grabado. Es el caso que dejaba la respuesta invisible.
+    respuesta = await client.post(
+        "/mobile/reports",
+        json={"alertId": alert_id, "symptoms": ["palpitaciones"], "activity": "reposo"},
+        headers=mobile_headers(account),
+    )
+    assert respuesta.status_code == 201, respuesta.text
+    report_id = respuesta.json()["id"]
+
+    as_user(admin)
+    manifest = (await client.get(f"/studies/{study_id}/ecg/manifest")).json()
+    por_id = {item["id"]: item for item in manifest["annotations"]}
+    hallazgo, marca = por_id[event_id], por_id[report_id]
+
+    assert marca["linkedAnnotationId"] == event_id
+    assert marca["description"] == "Palpitaciones"
+    assert marca["startOffsetMs"] == (hallazgo["startOffsetMs"] + hallazgo["endOffsetMs"]) // 2
+
+    # La solapa ubica el registro en el mismo lugar: si dijera "sin señal", el
+    # botón "Ver en el ECG" faltaría para una marca que el visor sí dibuja.
+    reportes = (await client.get(f"/studies/{study_id}/patient-reports")).json()
+    assert reportes["pendingSignalTotal"] == 0
+    registro = reportes["items"][0]
+    assert registro["visibleInChart"] is True
+    assert registro["offsetMs"] == marca["startOffsetMs"]
+    assert registro["alertKind"] == "tachycardia"
+
+
+async def test_un_registro_espontaneo_conserva_su_hora_de_pared(
+    client: AsyncClient,
+    s3: None,
+    db: AsyncSession,
+    as_user: Callable[[User], AsyncClient],
+    make_user: Callable[..., Any],
+    make_patient: Callable[..., Any],
+    make_patient_account: Callable[..., Any],
+    make_device: Callable[..., Any],
+    mobile_headers: Callable[[User], dict[str, str]],
+) -> None:
+    """Sin aviso detrás no hay a qué anclarse, y el registro se ubica solo."""
+    patient = await make_patient()
+    account = await make_patient_account(patient)
+    device, api_key = await make_device(patient=patient)
+    body, _ = await _ingest(client, db, device, api_key, 2000)
+    study_id = body["studyId"]
+    study = await db.get(Study, study_id)
+    assert study is not None
+
+    espontaneo = await client.post(
+        "/mobile/reports",
+        json={
+            **SYMPTOM_REPORT,
+            "occurredAt": (study.started_at + timedelta(seconds=2)).isoformat(),
+        },
+        headers=mobile_headers(account),
+    )
+    assert espontaneo.status_code == 201, espontaneo.text
+
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = (await client.get(f"/studies/{study_id}/ecg/manifest")).json()
+    marca = {item["id"]: item for item in manifest["annotations"]}[espontaneo.json()["id"]]
+
+    assert marca["linkedAnnotationId"] is None
+    assert marca["startOffsetMs"] == 2000

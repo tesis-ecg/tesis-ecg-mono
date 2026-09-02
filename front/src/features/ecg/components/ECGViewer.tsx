@@ -14,9 +14,11 @@ import { cn } from '@/lib/utils'
 
 import {
   ANNOTATION_SEVERITY,
-  annotationIcon,
-  annotationLabel,
+  annotationChartIcon,
+  annotationChartLabel,
+  buildAnnotationLinks,
   compareAnnotationsForPainting,
+  isAnnotationHighlighted,
 } from '../annotationMeta'
 import { centerRangeAt, layoutVisibleAnnotationLabels } from '../annotationLayout'
 import { drawAnnotationBands, type ECGAnnotationColors } from '../annotationPlugin'
@@ -147,6 +149,10 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     () => [...signal.annotations].sort(compareAnnotationsForPainting),
     [signal.annotations],
   )
+  const annotationLinks = useMemo(
+    () => buildAnnotationLinks(signal.annotations),
+    [signal.annotations],
+  )
 
   const annotationLabelLayouts = useMemo(() => {
     if (!overlayViewport || !plotArea) return []
@@ -266,6 +272,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
               startTimestamp,
               tokens.alerts,
               selectedAnnotationIdRef.current,
+              annotationLinks,
             )
           },
         ],
@@ -460,7 +467,16 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       uplotRef.current = null
       lastViewportRef.current = null
     }
-  }, [signal, height, xs, annotationDrawOrder, durationSec, initialWindowSec, initialViewport])
+  }, [
+    signal,
+    height,
+    xs,
+    annotationDrawOrder,
+    annotationLinks,
+    durationSec,
+    initialWindowSec,
+    initialViewport,
+  ])
 
   // API imperativa — convierte timestamps absolutos a segundos desde el inicio.
   useImperativeHandle(
@@ -513,10 +529,15 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           aria-label="Avisos visibles en el gráfico"
         >
           {annotationLabelLayouts.map(({ annotation, lane, leftPx }) => {
-            const Icon = annotationIcon(annotation.category)
+            const Icon = annotationChartIcon(annotation, annotationLinks)
             const severity = ANNOTATION_SEVERITY[annotation.severity]
             const isSelected = annotation.id === selectedAnnotationId
-            const label = annotationLabel(annotation.kind)
+            const isHighlighted = isAnnotationHighlighted(
+              annotation,
+              selectedAnnotationId,
+              annotationLinks,
+            )
+            const label = annotationChartLabel(annotation, annotationLinks)
             return (
               <button
                 key={annotation.id}
@@ -524,17 +545,21 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
                 data-annotation-label-id={annotation.id}
                 aria-label={`${label}, severidad ${severity.label.toLowerCase()}`}
                 aria-pressed={isSelected}
-                title={`${label} · ${severity.label}`}
+                title={
+                  annotation.description
+                    ? `${label} · ${annotation.description}`
+                    : `${label} · ${severity.label}`
+                }
                 onClick={() => onAnnotationSelect?.(annotation)}
                 className={cn(
                   'pointer-events-auto absolute flex h-6 max-w-full cursor-pointer items-center gap-1 rounded-full border px-2 text-xs font-medium shadow-sm backdrop-blur-sm',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                  isSelected && 'ring-2 ring-primary/50',
+                  isHighlighted && 'ring-2 ring-primary/50',
                 )}
                 style={{
                   left: leftPx,
                   top: 4 + lane * 28,
-                  zIndex: isSelected ? 20 : 10,
+                  zIndex: isHighlighted ? 20 : 10,
                   color: `var(--ecg-alert-${annotation.severity})`,
                   borderColor: `var(--ecg-alert-${annotation.severity})`,
                   backgroundColor: `var(--ecg-alert-${annotation.severity}-bg)`,

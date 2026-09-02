@@ -298,6 +298,56 @@ async def test_senal_recuperada_no_genera_alerta(
     assert alertas == []
 
 
+async def test_la_colocacion_queda_guardada_en_el_equipo(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+) -> None:
+    """El estado actual es un dato del equipo, no una inferencia sobre las alertas.
+
+    Sin esto la app tenía que adivinar por tiempo si el chaleco seguía mal
+    puesto, y acomodárselo no apagaba el cartel hasta que pasara la ventana.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    assert device.placement_ok is None, "un equipo recién entregado no reportó nada"
+
+    await _device_status(client, device, api_key)
+    await db.refresh(device)
+    assert device.placement_ok is False
+    assert device.placement_reported_at is not None
+
+    await _device_status(client, device, api_key, event="signal_recovered", durationSeconds=0)
+    await db.refresh(device)
+    assert device.placement_ok is True
+
+
+async def test_un_episodio_nuevo_vuelve_a_avisar(
+    client: AsyncClient,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+    sent_pushes: list[tuple[Any, PushMessage]],
+) -> None:
+    """El debounce protege contra el rebote, no contra un episodio distinto.
+
+    Si el chaleco se acomodó y se volvió a soltar cinco minutos después, eso es
+    algo nuevo que el paciente tiene que saber. Absorberlo por la ventana de 30
+    minutos dejaba el aviso mudo justo cuando volvía a importar.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    primero = await _device_status(client, device, api_key)
+    await _device_status(client, device, api_key, event="signal_recovered", durationSeconds=0)
+    segundo = await _device_status(client, device, api_key)
+
+    assert primero.json()["notified"] is True
+    assert segundo.json()["notified"] is True
+    assert segundo.json()["alertId"] != primero.json()["alertId"]
+    assert len(sent_pushes) == 2
+
+
 async def test_equipo_sin_paciente_no_notifica(
     client: AsyncClient,
     make_device: Callable[..., Any],

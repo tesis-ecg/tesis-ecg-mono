@@ -30,8 +30,19 @@ export function VestSimulator() {
     staleTime: 60_000,
   })
 
-  const { vests, addVest, removeVest, updateVest, run, runAll, rebootVest, stop, stopAll } =
-    useVestFleet()
+  const {
+    vests,
+    addVest,
+    removeVest,
+    updateVest,
+    run,
+    runAll,
+    rebootVest,
+    setPlacement,
+    simulateAnomaly,
+    stop,
+    stopAll,
+  } = useVestFleet()
   const [editing, setEditing] = useState<string | null>(null)
 
   const editingVest = useMemo(
@@ -99,6 +110,8 @@ export function VestSimulator() {
               onRemove={() => removeVest(vest.config.id)}
               onEdit={() => setEditing(vest.config.id)}
               onReboot={() => rebootVest(vest.config.id)}
+              onSetPlacement={(ok) => void setPlacement(vest.config.id, ok)}
+              onSimulateAnomaly={(body) => void simulateAnomaly(vest.config.id, body)}
             />
           ))}
         </div>

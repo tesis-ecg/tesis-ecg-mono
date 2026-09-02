@@ -1462,7 +1462,7 @@
         "type": "object"
       },
       "MobileDeviceOut": {
-        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `dashboard_stale_hours` que no manda nada",
+        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `dashboard_stale_hours` que no manda nada\n\n`vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo\npuede estar grabando y transmitiendo perfecto y no registrar nada igual\nporque no hace contacto con la piel. Son dos preguntas distintas y la\npantalla las dibuja en dos lugares distintos.",
         "properties": {
           "batteryPercent": {
             "anyOf": [
@@ -1575,11 +1575,29 @@
               }
             ],
             "title": "Studystartedat"
+          },
+          "vestPlacement": {
+            "title": "Vestplacement",
+            "type": "string"
+          },
+          "vestPlacementAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vestplacementat"
           }
         },
         "required": [
           "hasDevice",
           "state",
+          "vestPlacement",
+          "vestPlacementAt",
           "deviceId",
           "serial",
           "model",
@@ -2710,6 +2728,95 @@
         "title": "RunningStudyOut",
         "type": "object"
       },
+      "SimulateAnomalyOut": {
+        "properties": {
+          "alertId": {
+            "format": "uuid",
+            "title": "Alertid",
+            "type": "string"
+          },
+          "eventId": {
+            "format": "uuid",
+            "title": "Eventid",
+            "type": "string"
+          },
+          "occurredAt": {
+            "format": "date-time",
+            "title": "Occurredat",
+            "type": "string"
+          },
+          "offsetMs": {
+            "title": "Offsetms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alertId",
+          "eventId",
+          "occurredAt",
+          "offsetMs"
+        ],
+        "title": "SimulateAnomalyOut",
+        "type": "object"
+      },
+      "SimulateAnomalyRequest": {
+        "description": "Lo que el simulador de chalecos manda para fabricar un hallazgo.\n\nEl hallazgo se ancla **dentro de la señal ya ingerida** (`secondsBeforeEnd`\ndesde el final de lo grabado) y no en el instante del pedido. Eso es lo que\nhace que el `occurredAt` del push caiga dentro de la grabación y que la\nrespuesta del paciente se pueda pintar sobre el ECG sin esperar al lote\nsiguiente.",
+        "properties": {
+          "durationSeconds": {
+            "default": 8,
+            "exclusiveMinimum": 0.0,
+            "maximum": 600.0,
+            "title": "Durationseconds",
+            "type": "number"
+          },
+          "eventType": {
+            "$ref": "#/components/schemas/SimulatedAnomalyType",
+            "default": "afib"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "secondsBeforeEnd": {
+            "default": 30,
+            "maximum": 86400.0,
+            "minimum": 0.0,
+            "title": "Secondsbeforeend",
+            "type": "number"
+          },
+          "severity": {
+            "default": "high",
+            "enum": [
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "title": "SimulateAnomalyRequest",
+        "type": "object"
+      },
+      "SimulatedAnomalyType": {
+        "description": "Hallazgos que el disparador manual sabe fabricar.\n\nSon los clínicos y no los de calidad de señal: el aviso al paciente existe\npara preguntarle cómo se sentía, y \"el electrodo hizo ruido\" no es una\npregunta que él pueda contestar. Cada valor tiene ya su etiqueta en el\nportal (`features/alerts/labels.ts`) y en la app (`deviceMeta.ts`), así que\nninguno aparece como \"Hallazgo\" genérico.",
+        "enum": [
+          "tachycardia",
+          "bradycardia",
+          "afib",
+          "pvc",
+          "pause"
+        ],
+        "title": "SimulatedAnomalyType",
+        "type": "string"
+      },
       "StudyDetailOut": {
         "properties": {
           "deviceSerial": {
@@ -2817,6 +2924,17 @@
             ],
             "title": "Confidencescore"
           },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
           "endOffsetMs": {
             "title": "Endoffsetms",
             "type": "integer"
@@ -2829,6 +2947,18 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "linkedAnnotationId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linkedannotationid"
           },
           "severity": {
             "enum": [
@@ -3181,6 +3311,17 @@
             ],
             "title": "Alertid"
           },
+          "alertKind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alertkind"
+          },
           "createdAt": {
             "format": "date-time",
             "title": "Createdat",
@@ -3268,6 +3409,7 @@
           "activityOther",
           "notes",
           "alertId",
+          "alertKind",
           "createdAt",
           "offsetMs",
           "visibleInChart"
@@ -8009,6 +8151,92 @@
           }
         },
         "summary": "List Study Patient Reports",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/simulate-anomaly": {
+      "post": {
+        "description": "Banco de pruebas: fabrica un hallazgo clínico y notifica al paciente.\n\nSolo admin y solo fuera de preview/producción — escribe un `ecg_event` y una\n`alert` reales sobre la historia de un paciente. Es el reemplazo temporal\ndel pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar\nel aviso de anomalía, el formulario de la bitácora y la respuesta sobre el\nECG sin hardware.",
+        "operationId": "simulate_anomaly_studies__study_id__simulate_anomaly_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulateAnomalyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulateAnomalyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Simulate Anomaly",
         "tags": [
           "studies"
         ]

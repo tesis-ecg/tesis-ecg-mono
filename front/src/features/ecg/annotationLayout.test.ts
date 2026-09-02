@@ -70,6 +70,8 @@ function annotation(overrides: Partial<ECGAnnotation>): ECGAnnotation {
     startMs: 0,
     endMs: 1_000,
     confidenceScore: null,
+    linkedAnnotationId: null,
+    description: null,
     ...overrides,
   }
 }

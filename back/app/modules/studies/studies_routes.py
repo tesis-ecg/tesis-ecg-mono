@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.study import StudyStatus
@@ -8,6 +8,9 @@ from app.dependencies.auth_dependencies import RoleScope, get_doctor_scope
 from app.dependencies.common_dependencies import get_db
 from app.modules.studies import studies_service as service
 from app.modules.studies.studies_schemas import (
+    SimulateAnomalyInput,
+    SimulateAnomalyOut,
+    SimulateAnomalyRequest,
     StudyDetailOut,
     StudyEcgManifestOut,
     StudyEcgOut,
@@ -86,6 +89,39 @@ async def cancel_study(
             actor_id=scope.user.id,
         ),
         db,
+    )
+
+
+@router.post("/{study_id}/simulate-anomaly", response_model=SimulateAnomalyOut)
+async def simulate_anomaly(
+    study_id: uuid.UUID,
+    data: SimulateAnomalyRequest,
+    background: BackgroundTasks,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> SimulateAnomalyOut:
+    """Banco de pruebas: fabrica un hallazgo clínico y notifica al paciente.
+
+    Solo admin y solo fuera de preview/producción — escribe un `ecg_event` y una
+    `alert` reales sobre la historia de un paciente. Es el reemplazo temporal
+    del pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar
+    el aviso de anomalía, el formulario de la bitácora y la respuesta sobre el
+    ECG sin hardware.
+    """
+    if not scope.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "FORBIDDEN", "message": "Requiere rol de administrador."},
+        )
+    return await service.simulate_anomaly(
+        SimulateAnomalyInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+            data=data,
+        ),
+        db,
+        background,
     )
 
 

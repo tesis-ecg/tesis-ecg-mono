@@ -38,16 +38,15 @@ export function usePendingAlerts() {
 /**
  * Si el chaleco está mal colocado ahora mismo.
  *
- * Sale de los avisos y no de `GET /mobile/device`, que no lo expone. Va con
- * `status: 'all'`: el aviso del chaleco no pide respuesta y por eso queda fuera
- * de `pending` —el mismo motivo por el que no aparece en la pila de Inicio— así
- * que buscarlo por ese lado no lo encontraría nunca. La regla de hasta cuándo
- * ese aviso significa "ahora" vive en `vestStatus`, aparte de este módulo
- * porque es lógica pura y ahí se puede testear sin montar la app.
+ * Sale de `GET /mobile/device`, que expone la última colocación reportada por
+ * el equipo. Antes se deducía de los avisos con una ventana de una hora, porque
+ * el backend no guardaba el estado: acomodarse el chaleco no apagaba el cartel
+ * hasta que esa hora pasara. Además comparte query con la pantalla que la usa,
+ * así que el push que la invalida refresca las dos cosas de una.
  */
 export function useVestMisplaced(): boolean {
-  const alerts = useAlerts({ limit: 10, offset: 0, status: 'all' })
-  return isVestMisplaced(alerts.data?.items ?? [])
+  const device = useDevice()
+  return isVestMisplaced(device.data)
 }
 
 const ALERT_PAGE_SIZE = 20

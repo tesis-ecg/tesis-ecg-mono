@@ -1,3 +1,4 @@
+import enum
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -85,6 +86,15 @@ class StudyEcgAnnotationOut(CamelModel):
     startOffsetMs: int
     endOffsetMs: int
     confidenceScore: float | None
+    #: Cuando el registro es la respuesta del paciente al aviso de un hallazgo,
+    #: el id de la anotación de ese hallazgo. El visor las dibuja unidas: sin
+    #: esto, una respuesta y su taquicardia son dos marcas sueltas en la traza
+    #: y el médico no tiene cómo saber cuál contesta a cuál. Va en `None`
+    #: cuando el hallazgo no llegó a la señal (o el aviso no cuelga de uno).
+    linkedAnnotationId: uuid.UUID | None = None
+    #: Texto corto para el visor. Hoy solo lo llenan los registros del
+    #: paciente, con los síntomas que informó.
+    description: str | None = None
 
 
 class StudyPatientReportOut(CamelModel):
@@ -111,6 +121,9 @@ class StudyPatientReportOut(CamelModel):
     activityOther: str | None
     notes: str | None
     alertId: uuid.UUID | None
+    #: Tipo del hallazgo que disparó el aviso respondido, ya resuelto contra el
+    #: evento. `None` en los registros espontáneos.
+    alertKind: str | None
     createdAt: datetime
     offsetMs: int | None
     visibleInChart: bool
@@ -152,6 +165,62 @@ class StudyEcgManifestOut(CamelModel):
     levels: list[StudyEcgLevelOut]
     segments: list[StudyEcgSegmentOut] = Field(default_factory=list)
     annotations: list[StudyEcgAnnotationOut] = Field(default_factory=list)
+
+
+class SimulatedAnomalyType(enum.StrEnum):
+    """Hallazgos que el disparador manual sabe fabricar.
+
+    Son los clínicos y no los de calidad de señal: el aviso al paciente existe
+    para preguntarle cómo se sentía, y "el electrodo hizo ruido" no es una
+    pregunta que él pueda contestar. Cada valor tiene ya su etiqueta en el
+    portal (`features/alerts/labels.ts`) y en la app (`deviceMeta.ts`), así que
+    ninguno aparece como "Hallazgo" genérico.
+    """
+
+    TACHYCARDIA = "tachycardia"
+    BRADYCARDIA = "bradycardia"
+    AFIB = "afib"
+    PVC = "pvc"
+    PAUSE = "pause"
+
+
+class SimulateAnomalyRequest(CamelModel):
+    """Lo que el simulador de chalecos manda para fabricar un hallazgo.
+
+    El hallazgo se ancla **dentro de la señal ya ingerida** (`secondsBeforeEnd`
+    desde el final de lo grabado) y no en el instante del pedido. Eso es lo que
+    hace que el `occurredAt` del push caiga dentro de la grabación y que la
+    respuesta del paciente se pueda pintar sobre el ECG sin esperar al lote
+    siguiente.
+    """
+
+    eventType: SimulatedAnomalyType = SimulatedAnomalyType.AFIB
+    #: Solo `high` y `critical`: son las que despiertan al celular
+    #: (`notifications_service.PUSHABLE_SEVERITIES`). Una `low` no notificaría y
+    #: el botón no haría nada visible, que es peor que no ofrecer la opción.
+    severity: Literal["high", "critical"] = "high"
+    durationSeconds: float = Field(default=8, gt=0, le=600)
+    secondsBeforeEnd: float = Field(default=30, ge=0, le=86_400)
+    message: str | None = Field(default=None, max_length=1024)
+
+
+class SimulateAnomalyOut(CamelModel):
+    alertId: uuid.UUID
+    eventId: uuid.UUID
+    #: Instante del hallazgo en hora de pared. Es el que viaja en el push y el
+    #: que la app usa para anclar el formulario.
+    occurredAt: datetime
+    #: El mismo instante como offset desde el inicio de la grabación, que es la
+    #: coordenada del gráfico del portal.
+    offsetMs: int
+
+
+@dataclass(frozen=True)
+class SimulateAnomalyInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID | None
+    data: SimulateAnomalyRequest
 
 
 @dataclass(frozen=True)

@@ -107,6 +107,8 @@ function signal(): ECGSignal {
         startMs: 1_700_000_002_000,
         endMs: 1_700_000_004_000,
         confidenceScore: null,
+        linkedAnnotationId: null,
+        description: null,
       },
     ],
   }

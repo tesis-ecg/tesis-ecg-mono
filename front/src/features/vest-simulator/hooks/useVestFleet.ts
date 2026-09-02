@@ -16,7 +16,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { uploadWithRetries } from '../api/simulatorApi'
+import { unwrapError } from '@/lib/api'
+
+import {
+  postDeviceStatus,
+  simulateAnomaly as postSimulatedAnomaly,
+  uploadWithRetries,
+  type SimulateAnomalyBody,
+} from '../api/simulatorApi'
 import {
   ackUpTo,
   acquireDevice,
@@ -216,6 +223,89 @@ export function useVestFleet(initial?: VestConfig[]) {
       )
     },
     [vests, patch, log, persistClocks],
+  )
+
+  /**
+   * Prende y apaga la colocación del chaleco por el canal corto del equipo.
+   *
+   * No pasa por el worker ni por el ciclo de lotes a propósito: el equipo real
+   * reporta esto **fuera** del ciclo de envío, justamente para que el paciente
+   * no se entere una hora después. Por eso también anda con el chaleco
+   * detenido, que es como se va a usar para probar.
+   *
+   * El estado se guarda en la config aunque el POST falle no: si el backend no
+   * lo registró, la pantalla no puede decir que sí.
+   */
+  const setPlacement = useCallback(
+    async (id: string, ok: boolean) => {
+      const target = vests.find((vest) => vest.config.id === id)
+      if (!target) return
+      const { config } = target
+      if (!config.serial || !config.apiKey) return
+
+      const device = acquireDevice(clocks.current, id, config, restoredClocks.current[id])
+      try {
+        const ack = await postDeviceStatus(
+          ok ? 'signal_recovered' : 'lead_off',
+          {
+            serial: config.serial,
+            apiKey: config.apiKey,
+            uptimeMs: device.clock.uptimeMs,
+            firmwareVersion: '1.4.2',
+            batteryPct: device.clock.batteryPct,
+          },
+          // Por encima del dT del requerimiento: lo que se está simulando es un
+          // electrodo suelto sostenido, no un rebote de medio segundo.
+          ok ? 0 : 180,
+        )
+        updateVest(id, { placementOk: ok })
+        if (ok) {
+          log(id, 'info', 'Chaleco bien colocado: se cerró el episodio, sin aviso al paciente.')
+        } else if (ack.notified) {
+          log(id, 'warn', `Chaleco mal colocado: aviso enviado (alerta ${ack.alertId}).`)
+        } else {
+          // `notified: false` con el chaleco mal puesto tiene dos causas y las
+          // dos se depuran distinto; decir solo "no se notificó" no alcanza.
+          log(
+            id,
+            'warn',
+            'Chaleco mal colocado, pero no se notificó: el equipo no tiene paciente asignado ' +
+              'o el aviso cayó dentro del debounce del episodio anterior.',
+          )
+        }
+      } catch (error) {
+        log(id, 'error', `No se pudo reportar la colocación: ${(error as Error).message}`)
+      }
+    },
+    [vests, updateVest, log],
+  )
+
+  /**
+   * Fabrica un hallazgo clínico sobre la señal ya subida.
+   *
+   * Necesita `studyId`, es decir un lote ya ingerido: el hallazgo se ancla
+   * dentro de la grabación para que la respuesta del paciente sea ubicable en
+   * el gráfico, y sin muestras no hay dónde anclarlo.
+   */
+  const simulateAnomaly = useCallback(
+    async (id: string, body: SimulateAnomalyBody) => {
+      const target = vests.find((vest) => vest.config.id === id)
+      const studyId = target?.stats.studyId
+      if (!studyId) return
+
+      try {
+        const anomaly = await postSimulatedAnomaly(studyId, body)
+        log(
+          id,
+          'warn',
+          `Anomalía simulada (${body.eventType}, ${body.severity}) a los ` +
+            `${Math.round(anomaly.offsetMs / 1000)} s de grabación. Alerta ${anomaly.alertId}.`,
+        )
+      } catch (error) {
+        log(id, 'error', `No se pudo simular la anomalía: ${unwrapError(error)}`)
+      }
+    },
+    [vests, log],
   )
 
   const run = useCallback(
@@ -496,5 +586,17 @@ export function useVestFleet(initial?: VestConfig[]) {
     vests.forEach((vest) => void run(vest.config.id))
   }, [vests, run])
 
-  return { vests, addVest, removeVest, updateVest, run, runAll, rebootVest, stop, stopAll }
+  return {
+    vests,
+    addVest,
+    removeVest,
+    updateVest,
+    run,
+    runAll,
+    rebootVest,
+    setPlacement,
+    simulateAnomaly,
+    stop,
+    stopAll,
+  }
 }

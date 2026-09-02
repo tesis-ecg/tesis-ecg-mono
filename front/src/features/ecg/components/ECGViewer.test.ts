@@ -32,6 +32,8 @@ describe('drawAnnotationBands', () => {
       startMs: 2_000,
       endMs: 5_000,
       confidenceScore: 0.97,
+      linkedAnnotationId: null,
+      description: null,
     }
     const colors = {
       low: { stroke: 'gray', fill: 'lightgray' },
@@ -75,6 +77,8 @@ describe('drawAnnotationBands', () => {
       startMs: 1_000,
       endMs: 2_000,
       confidenceScore: null,
+      linkedAnnotationId: null,
+      description: null,
     }
     const selected: ECGAnnotation = {
       ...regular,

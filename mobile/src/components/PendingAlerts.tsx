@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, ChevronRight } from "lucide-react-native";
+import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react-native";
 import { useState } from "react";
 import {
   Easing,
@@ -163,7 +163,7 @@ export function PendingAlerts({ alerts, onOpen }: PendingAlertsProps) {
         className="flex-row items-center gap-3"
       >
         <View className="size-5 items-center justify-center">
-          <Bell size={22} color="#000" />
+          <TriangleAlert size={22} color="#000" />
         </View>
         <Heading className="flex-1">
           {alerts.length === 1

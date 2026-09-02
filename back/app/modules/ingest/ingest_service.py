@@ -399,14 +399,20 @@ async def report_device_status(
 ) -> DeviceStatusAckOut:
     """Registra el aviso del chaleco y despierta al paciente si hace falta.
 
-    Tres decisiones que valen la pena:
+    Cuatro decisiones que valen la pena:
 
     - La alerta se crea con `event_id = NULL`. El chaleco está contando algo que
       pasa **ahora**, y la señal correspondiente recién va a existir en el
       próximo envío. Forzar un `ecg_event` sería inventar coordenadas.
-    - Hay debounce por paciente: dentro de la ventana no se crea una alerta
-      nueva ni se notifica. Un equipo que rebota mientras alguien se lo acomoda
-      no puede vaciarle la batería al celular.
+    - La colocación se guarda en el equipo (`device.placement_ok`) además de
+      quedar como alerta. La alerta es el registro de que pasó; la columna es el
+      estado actual, que es lo que la app dibuja. Sin ella, "ya me lo acomodé"
+      no tiene dónde escribirse y la pantalla tiene que adivinarlo por tiempo.
+    - Hay debounce por paciente, pero **dentro del episodio**: se absorbe el
+      aviso repetido de un chaleco que ya venía mal, no el primero de un
+      episodio nuevo. Un equipo que rebota mientras alguien se lo acomoda no
+      puede vaciarle la batería al celular; un chaleco que se acomodó y se
+      volvió a soltar a los cinco minutos sí tiene que avisar.
     - El push va en background. La respuesta al equipo no puede depender de que
       `exp.host` conteste, porque el chaleco tiene la radio prendida esperándola.
     """
@@ -421,6 +427,12 @@ async def report_device_status(
         device.firmware_version = ctx.firmware_version
 
     event = input_data.data.event
+    # Se lee antes de pisarlo: es lo que distingue "sigue mal" de "se volvió a
+    # soltar", y de eso depende si el debounce corresponde.
+    was_bad = device.placement_ok is False
+    device.placement_ok = event is VestStatusEvent.SIGNAL_RECOVERED
+    device.placement_reported_at = now
+
     # `signal_recovered` cierra el episodio: se guarda la telemetría y nada más.
     # Avisarle al paciente que "ya está bien" cuando probablemente ni vio el
     # aviso anterior es ruido.
@@ -429,7 +441,11 @@ async def report_device_status(
         return DeviceStatusAckOut(notified=False, alertId=None, serverTime=now)
 
     window_start = now - timedelta(minutes=settings.vest_status_debounce_minutes)
-    recent = await repo.get_recent_alert(db, device.patient_id, VEST_ALERT_KIND, window_start)
+    recent = (
+        await repo.get_recent_alert(db, device.patient_id, VEST_ALERT_KIND, window_start)
+        if was_bad
+        else None
+    )
     if recent is not None:
         await db.commit()
         await logger.ainfo(

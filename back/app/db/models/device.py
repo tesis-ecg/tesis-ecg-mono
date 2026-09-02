@@ -5,7 +5,17 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, String, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -62,6 +72,13 @@ class Device(TimestampMixin, Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_battery_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sd_free_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Última colocación reportada por el equipo (`POST /ingest/device-status`).
+    #: `None` no es "está bien": es que todavía no reportó ninguna de las dos
+    #: cosas. La app lo dibuja como estado desconocido y no como correcto.
+    placement_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    placement_reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[DeviceStatus] = mapped_column(
         Enum(
             DeviceStatus,

@@ -59,6 +59,17 @@ export interface VestConfig {
   signal: SignalConfig
   frames: FrameAnomalies
   network: NetworkFaults
+  /**
+   * Si el chaleco está bien colocado sobre la piel.
+   *
+   * No entra en la generación de señal: es un estado del equipo que se reporta
+   * por el canal corto (`POST /ingest/device-status`) y que el backend guarda
+   * en la fila del Holter. Vive en la config —y no en las stats— para que
+   * sobreviva a recargar la página, igual que la API key: el backend recuerda
+   * la última colocación reportada y una pantalla que arrancara siempre en
+   * "bien puesto" mentiría sobre el estado real.
+   */
+  placementOk: boolean
 }
 
 export type VestPhase = 'idle' | 'generating' | 'uploading' | 'waiting' | 'done' | 'error'

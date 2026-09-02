@@ -1,24 +1,24 @@
-import { Bell, ChevronLeft, ChevronRight } from 'lucide-react-native'
-import { useRouter } from 'expo-router'
-import { useMemo, useState } from 'react'
+import { Bell, ChevronLeft, ChevronRight } from "lucide-react-native";
+import { useRouter } from "expo-router";
+import { useMemo, useState } from "react";
 
-import type { AlertStatus } from '@/features/patient/api'
-import { routeForAlert } from '@/features/notifications/routeForAlert'
-import { alertMeta } from '@/features/patient/deviceMeta'
-import { useInfiniteAlerts } from '@/features/patient/hooks'
-import type { PatientAlert } from '@/features/patient/types'
-import { cn } from '@/lib/cn'
-import { formatDateTime } from '@/lib/format'
-import * as haptics from '@/lib/haptics'
-import { ActivityIndicator, Pressable, Text, View } from '@/tw'
-import { Badge } from '@/components/ui/Badge'
-import { Button } from '@/components/ui/Button'
-import { Card } from '@/components/ui/Card'
-import { EmptyState } from '@/components/ui/EmptyState'
-import { ErrorState } from '@/components/ui/ErrorState'
-import { Refresh } from '@/components/ui/Refresh'
-import { Screen } from '@/components/ui/Screen'
-import { Body, Caption, Heading } from '@/components/ui/typography'
+import type { AlertStatus } from "@/features/patient/api";
+import { routeForAlert } from "@/features/notifications/routeForAlert";
+import { alertMeta } from "@/features/patient/deviceMeta";
+import { useInfiniteAlerts } from "@/features/patient/hooks";
+import type { PatientAlert } from "@/features/patient/types";
+import { cn } from "@/lib/cn";
+import { formatDateTime } from "@/lib/format";
+import * as haptics from "@/lib/haptics";
+import { ActivityIndicator, Pressable, Text, View } from "@/tw";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { Refresh } from "@/components/ui/Refresh";
+import { Screen } from "@/components/ui/Screen";
+import { Body, Caption, Heading } from "@/components/ui/typography";
 
 /**
  * Los tres filtros, en el orden en que se leen.
@@ -29,57 +29,68 @@ import { Body, Caption, Heading } from '@/components/ui/typography'
  * venía a resolver.
  */
 const FILTERS: { value: AlertStatus; label: string }[] = [
-  { value: 'all', label: 'Todas' },
-  { value: 'pending', label: 'Pendientes' },
-  { value: 'answered', label: 'Respondidas' },
-]
+  { value: "all", label: "Todas" },
+  { value: "pending", label: "Pendientes" },
+  { value: "answered", label: "Respondidas" },
+];
 
 /** Qué decir cuando el filtro elegido no tiene nada para mostrar. */
-const EMPTY_TEXT: Record<AlertStatus, { title: string; description: string }> = {
-  all: {
-    title: 'Todavía no hay notificaciones',
-    description: 'Cuando haya algo para revisar, va a aparecer acá.',
-  },
-  pending: {
-    title: 'No tenés avisos sin responder',
-    description: 'Contestaste todo lo que te pedimos. Te avisamos si aparece algo nuevo.',
-  },
-  answered: {
-    title: 'Todavía no respondiste ninguno',
-    description: 'Los avisos que contestes van a quedar guardados acá.',
-  },
-}
+const EMPTY_TEXT: Record<AlertStatus, { title: string; description: string }> =
+  {
+    all: {
+      title: "Todavía no hay notificaciones",
+      description: "Cuando haya algo para revisar, va a aparecer acá.",
+    },
+    pending: {
+      title: "No tenés avisos sin responder",
+      description:
+        "Contestaste todo lo que te pedimos. Te avisamos si aparece algo nuevo.",
+    },
+    answered: {
+      title: "Todavía no respondiste ninguno",
+      description: "Los avisos que contestes van a quedar guardados acá.",
+    },
+  };
 
 export default function NotificationsScreen() {
-  const router = useRouter()
-  const [filter, setFilter] = useState<AlertStatus>('pending')
-  const alerts = useInfiniteAlerts(filter)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const items = useMemo(() => alerts.data?.pages.flatMap((page) => page.items) ?? [], [alerts.data])
+  const router = useRouter();
+  const [filter, setFilter] = useState<AlertStatus>("pending");
+  const alerts = useInfiniteAlerts(filter);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const items = useMemo(
+    () => alerts.data?.pages.flatMap((page) => page.items) ?? [],
+    [alerts.data],
+  );
   // El mismo número que el badge de Inicio, y sale de la primera página porque
   // el backend lo cuenta sobre el total, no sobre lo que se trajo hasta acá.
   // No depende del filtro: es cuántos avisos quedan sin responder, siempre.
-  const pendingTotal = alerts.data?.pages[0]?.pendingTotal ?? 0
+  const pendingTotal = alerts.data?.pages[0]?.pendingTotal ?? 0;
 
   const refresh = async () => {
-    setIsRefreshing(true)
-    await alerts.refetch()
-    haptics.tap()
-    setIsRefreshing(false)
-  }
+    setIsRefreshing(true);
+    await alerts.refetch();
+    haptics.tap();
+    setIsRefreshing(false);
+  };
 
   const openAlert = (alert: PatientAlert) => {
-    const destination = routeForAlert(alert)
-    if (!destination) return
-    haptics.tap()
-    if (destination.pathname === '/report') {
-      router.push({ pathname: destination.pathname, params: destination.params })
-    } else if (destination.pathname === '/report-response') {
-      router.push({ pathname: destination.pathname, params: destination.params })
+    const destination = routeForAlert(alert);
+    if (!destination) return;
+    haptics.tap();
+    if (destination.pathname === "/report") {
+      router.push({
+        pathname: destination.pathname,
+        params: destination.params,
+      });
+    } else if (destination.pathname === "/report-response") {
+      router.push({
+        pathname: destination.pathname,
+        params: destination.params,
+      });
     } else {
-      router.push(destination.pathname)
+      router.push(destination.pathname);
     }
-  }
+  };
 
   /*
     Header fijo, igual que el del formulario: el título dice cuántos avisos hay
@@ -99,7 +110,9 @@ export default function NotificationsScreen() {
         >
           <ChevronLeft size={24} color="#172126" />
         </Pressable>
-        <Heading className="flex-1 text-center font-bold">Notificaciones ({pendingTotal})</Heading>
+        <Heading className="flex-1 text-center font-bold">
+          Notificaciones ({pendingTotal})
+        </Heading>
         {/* Contrapeso del botón de volver: sin esto el título queda corrido. */}
         <View className="size-11" />
       </View>
@@ -111,22 +124,24 @@ export default function NotificationsScreen() {
             label={option.label}
             isSelected={filter === option.value}
             onPress={() => {
-              if (filter === option.value) return
-              haptics.selection()
-              setFilter(option.value)
+              if (filter === option.value) return;
+              haptics.selection();
+              setFilter(option.value);
             }}
           />
         ))}
       </View>
     </View>
-  )
+  );
 
-  const empty = EMPTY_TEXT[filter]
+  const empty = EMPTY_TEXT[filter];
 
   return (
     <Screen
       fixedHeader={header}
-      refreshControl={<Refresh refreshing={isRefreshing} onRefresh={() => void refresh()} />}
+      refreshControl={
+        <Refresh refreshing={isRefreshing} onRefresh={() => void refresh()} />
+      }
     >
       {alerts.isPending ? (
         <View className="items-center py-16">
@@ -134,21 +149,35 @@ export default function NotificationsScreen() {
         </View>
       ) : alerts.isError && items.length === 0 ? (
         <Card>
-          <ErrorState error={alerts.error} onRetry={() => void alerts.refetch()} />
+          <ErrorState
+            error={alerts.error}
+            onRetry={() => void alerts.refetch()}
+          />
         </Card>
       ) : items.length === 0 ? (
         <Card>
-          <EmptyState icon={Bell} title={empty.title} description={empty.description} />
+          <EmptyState
+            icon={Bell}
+            title={empty.title}
+            description={empty.description}
+          />
         </Card>
       ) : (
         <View className="gap-3">
           {items.map((alert) => (
-            <NotificationCard key={alert.id} alert={alert} onPress={() => openAlert(alert)} />
+            <NotificationCard
+              key={alert.id}
+              alert={alert}
+              onPress={() => openAlert(alert)}
+            />
           ))}
 
           {alerts.isError ? (
             <Card>
-              <ErrorState error={alerts.error} onRetry={() => void alerts.refetch()} />
+              <ErrorState
+                error={alerts.error}
+                onRetry={() => void alerts.refetch()}
+              />
             </Card>
           ) : null}
 
@@ -163,7 +192,7 @@ export default function NotificationsScreen() {
         </View>
       )}
     </Screen>
-  )
+  );
 }
 
 /**
@@ -178,9 +207,9 @@ function FilterPill({
   isSelected,
   onPress,
 }: {
-  label: string
-  isSelected: boolean
-  onPress: () => void
+  label: string;
+  isSelected: boolean;
+  onPress: () => void;
 }) {
   return (
     <Pressable
@@ -189,32 +218,38 @@ function FilterPill({
       accessibilityLabel={label}
       onPress={onPress}
       className={cn(
-        'min-h-11 flex-1 items-center justify-center rounded-full px-3',
-        isSelected ? 'bg-primary-500' : 'border border-gray-100 bg-white',
+        "min-h-11 items-center justify-center rounded-full px-4 shadow-lg h-12",
+        isSelected ? "bg-primary-500" : "bg-white",
       )}
     >
       <Text
         numberOfLines={1}
         className={cn(
-          'text-[15px] font-semibold',
-          isSelected ? 'text-white' : 'text-gray-700',
+          "text-[15px] font-semibold",
+          isSelected ? "text-white" : "text-gray-700",
         )}
       >
         {label}
       </Text>
     </Pressable>
-  )
+  );
 }
 
-function NotificationCard({ alert, onPress }: { alert: PatientAlert; onPress: () => void }) {
-  const destination = routeForAlert(alert)
-  const meta = alertMeta(alert.kind)
-  const Icon = meta.icon
-  const isDanger = meta.tone === 'danger'
+function NotificationCard({
+  alert,
+  onPress,
+}: {
+  alert: PatientAlert;
+  onPress: () => void;
+}) {
+  const destination = routeForAlert(alert);
+  const meta = alertMeta(alert.kind);
+  const Icon = meta.icon;
+  const isDanger = meta.tone === "danger";
 
   return (
     <Pressable
-      accessibilityRole={destination ? 'button' : undefined}
+      accessibilityRole={destination ? "button" : undefined}
       accessibilityLabel={`${meta.label}. ${alert.message}`}
       disabled={!destination}
       onPress={onPress}
@@ -228,23 +263,26 @@ function NotificationCard({ alert, onPress }: { alert: PatientAlert; onPress: ()
         */}
         <View
           className={cn(
-            'mt-0.5 size-11 items-center justify-center rounded-full',
-            isDanger ? 'bg-error-100' : 'bg-primary-50',
+            "mt-0.5 size-11 items-center justify-center rounded-full",
+            isDanger ? "bg-error-100" : "bg-primary-50",
           )}
         >
-          <Icon size={22} color={isDanger ? '#88271d' : '#0b2185'} />
+          <Icon size={22} color={isDanger ? "#88271d" : "#0b2185"} />
         </View>
         <View className="flex-1 gap-2">
           <View className="flex-row items-start justify-between gap-2">
             <Heading
-              className={cn('flex-1 text-[17px]', isDanger ? 'text-error-700' : 'text-gray-900')}
+              className={cn(
+                "flex-1 text-[17px]",
+                isDanger ? "text-error-700" : "text-gray-900",
+              )}
             >
               {meta.label}
             </Heading>
             {alert.requiresResponse ? (
               <Badge
-                label={alert.needsReport ? 'Pendiente' : 'Respondida'}
-                tone={alert.needsReport ? 'warning' : 'success'}
+                label={alert.needsReport ? "Pendiente" : "Respondida"}
+                tone={alert.needsReport ? "warning" : "success"}
               />
             ) : null}
           </View>
@@ -258,5 +296,5 @@ function NotificationCard({ alert, onPress }: { alert: PatientAlert; onPress: ()
         ) : null}
       </Card>
     </Pressable>
-  )
+  );
 }

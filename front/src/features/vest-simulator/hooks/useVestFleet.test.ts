@@ -102,6 +102,7 @@ function config(id: string): VestConfig {
     batchMinutes: 0.001,
     batchCount: 1,
     cadence: { kind: 'instant' },
+    placementOk: true,
     signal: { ...DEFAULT_SIGNAL_CONFIG, seed: id.charCodeAt(0) },
     frames: {
       corruptCrcPct: 0,

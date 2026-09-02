@@ -35,12 +35,17 @@ function projectId(): string | undefined {
  * Nunca tira: que fallen las notificaciones no puede impedir usar la app. El
  * paciente igual ve los avisos pendientes al abrir Inicio — el push acelera el
  * aviso, no es el único camino.
+ *
+ * No hay corte por `Device.isDevice`. Lo había, y era un bug de banco de
+ * pruebas: `isDevice` es `false` **también en el emulador de Android**, que es
+ * justamente el entorno donde las push sí funcionan gratis (con Google Play
+ * services y credenciales FCM). El corte hacía que el token nunca se
+ * registrara y que ningún aviso pudiera llegar, sin ningún error a la vista.
+ * En el simulador de iOS el pedido del token falla y lo absorbe el `catch`,
+ * pero el permiso ya quedó pedido — que es la condición para que
+ * `xcrun simctl push` muestre algo.
  */
 export async function registerForPushNotifications(): Promise<string | null> {
-  // Un emulador sin Google Play o un simulador de iOS no tienen a quién
-  // registrarse; pedir el token ahí solo produce un error confuso.
-  if (!Device.isDevice) return null
-
   try {
     await ensureAndroidChannel()
 
@@ -51,7 +56,17 @@ export async function registerForPushNotifications(): Promise<string | null> {
     const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId: projectId() })
     await sendToken(token, Platform.OS as PushPlatform)
     return token
-  } catch {
+  } catch (error) {
+    // Silencioso en producción, ruidoso en desarrollo: sin esto, un
+    // `projectId` mal configurado, un emulador sin Google Play y un permiso
+    // denegado son todos el mismo `null` y no hay por dónde empezar a mirar.
+    if (__DEV__) {
+      console.warn(
+        '[push] no se pudo registrar el token',
+        Device.isDevice ? '' : '(emulador/simulador)',
+        error,
+      )
+    }
     return null
   }
 }

@@ -158,6 +158,8 @@ export function mockEcgSignal(
         startMs: startTimestamp + 60_000,
         endMs: startTimestamp + 72_000,
         confidenceScore: null,
+        linkedAnnotationId: null,
+        description: null,
       },
       {
         id: 'mock-medium',
@@ -167,6 +169,8 @@ export function mockEcgSignal(
         startMs: startTimestamp + 150_000,
         endMs: startTimestamp + 165_000,
         confidenceScore: null,
+        linkedAnnotationId: null,
+        description: null,
       },
       {
         id: 'mock-high',
@@ -176,6 +180,8 @@ export function mockEcgSignal(
         startMs: startTimestamp + 240_000,
         endMs: startTimestamp + 285_000,
         confidenceScore: 0.91,
+        linkedAnnotationId: null,
+        description: null,
       },
       {
         id: 'mock-critical',
@@ -185,6 +191,8 @@ export function mockEcgSignal(
         startMs: startTimestamp + 360_000,
         endMs: startTimestamp + 420_000,
         confidenceScore: 0.97,
+        linkedAnnotationId: null,
+        description: null,
       },
     ],
   }

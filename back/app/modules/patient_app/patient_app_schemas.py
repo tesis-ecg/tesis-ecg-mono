@@ -79,10 +79,19 @@ class MobileDeviceOut(CamelModel):
     - ``never_connected``: asignado pero todavía no se encendió
     - ``recording``: hay un estudio en curso y llegaron datos hace poco
     - ``stale``: hace más de `dashboard_stale_hours` que no manda nada
+
+    `vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo
+    puede estar grabando y transmitiendo perfecto y no registrar nada igual
+    porque no hace contacto con la piel. Son dos preguntas distintas y la
+    pantalla las dibuja en dos lugares distintos.
     """
 
     hasDevice: bool
     state: str
+    #: ``ok`` | ``bad`` | ``unknown``. ``unknown`` es que el equipo nunca
+    #: reportó su colocación, que no es lo mismo que estar bien puesto.
+    vestPlacement: str
+    vestPlacementAt: datetime | None
     deviceId: uuid.UUID | None
     serial: str | None
     model: str | None

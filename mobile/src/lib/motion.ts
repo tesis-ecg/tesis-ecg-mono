@@ -74,6 +74,45 @@ export function usePressScale(scale = 0.97) {
   }
 }
 
+/** Cuánto tarda una vuelta del ícono que gira mientras algo carga. */
+export const SPIN_DURATION = 900
+
+/**
+ * Giro continuo mientras `active`, para el ícono de un botón que está cargando.
+ *
+ * Es la única animación de la app que **no** respeta "Reducir movimiento", y
+ * vale la pena decir por qué: acá el movimiento no explica de dónde salió algo
+ * ni adorna, es el único indicio de que el toque entró y todavía no terminó.
+ * Apagarlo deja al botón sin ninguna respuesta, que es peor que el mareo que la
+ * preferencia quiere evitar — y es el mismo criterio del sistema operativo, que
+ * sigue girando su propio indicador de carga con la opción activada.
+ *
+ * Al frenar no vuelve para atrás: termina la vuelta en curso y recién ahí se
+ * resetea. Animar de 300° a 0° se lee como un rebobinado, o sea como que algo
+ * se deshizo, que es lo contrario de lo que acaba de pasar.
+ */
+export function useSpin(active: boolean, duration = SPIN_DURATION) {
+  const angle = useSharedValue(0)
+
+  useEffect(() => {
+    if (!active) {
+      cancelAnimation(angle)
+      const lastTurn = Math.ceil(angle.value / 360) * 360
+      angle.value = withTiming(lastTurn, { duration: DURATION }, (finished) => {
+        if (finished) angle.value = 0
+      })
+      return
+    }
+    angle.value = 0
+    angle.value = withRepeat(withTiming(360, { duration, easing: Easing.linear }), -1, false)
+    // Igual que en `usePulse`: sin esto el loop se sigue calculando en el hilo
+    // de UI después de que la pantalla se desmontó.
+    return () => cancelAnimation(angle)
+  }, [active, duration, angle])
+
+  return useAnimatedStyle(() => ({ transform: [{ rotate: `${angle.value}deg` }] }))
+}
+
 /**
  * Duración de un ciclo del latido de "en vivo".
  *

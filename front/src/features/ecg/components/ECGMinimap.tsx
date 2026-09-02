@@ -5,9 +5,11 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 
 import {
   ANNOTATION_SEVERITY,
-  annotationIcon,
-  annotationLabel,
+  annotationChartIcon,
+  annotationChartLabel,
+  buildAnnotationLinks,
   compareAnnotationsForPainting,
+  isAnnotationHighlighted,
 } from '../annotationMeta'
 import type { ECGAnnotation, ECGSignal, ECGViewportChange } from '../types'
 
@@ -48,6 +50,7 @@ export function ECGMinimap({
   const endTimestamp = signal.startTimestamp + durationSec * 1000
 
   const tokens = useMemo(() => readTokens(), [])
+  const links = useMemo(() => buildAnnotationLinks(signal.annotations), [signal.annotations])
   const annotationDrawOrder = useMemo(() => {
     const sorted = [...signal.annotations].sort(compareAnnotationsForPainting)
     const selectedIndex = sorted.findIndex((annotation) => annotation.id === selectedAnnotationId)
@@ -195,9 +198,14 @@ export function ECGMinimap({
             {annotationDrawOrder.map((annotation) => {
               const startPct = annotationPercent(annotation.startMs)
               const endPct = annotationPercent(annotation.endMs)
-              const Icon = annotationIcon(annotation.category)
+              const Icon = annotationChartIcon(annotation, links)
               const severity = ANNOTATION_SEVERITY[annotation.severity]
-              const isSelected = annotation.id === selectedAnnotationId
+              const label = annotationChartLabel(annotation, links)
+              const isSelected = isAnnotationHighlighted(
+                annotation,
+                selectedAnnotationId ?? null,
+                links,
+              )
               return (
                 <div key={annotation.id}>
                   <span
@@ -219,7 +227,7 @@ export function ECGMinimap({
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        aria-label={`${annotationLabel(annotation.kind)}, severidad ${severity.label.toLowerCase()}`}
+                        aria-label={`${label}, severidad ${severity.label.toLowerCase()}`}
                         aria-pressed={isSelected}
                         onClick={() => onAnnotationSelect?.(annotation)}
                         className={cn(
@@ -238,7 +246,7 @@ export function ECGMinimap({
                       </button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {annotationLabel(annotation.kind)} · {severity.label}
+                      {label} · {annotation.description ?? severity.label}
                     </TooltipContent>
                   </Tooltip>
                 </div>

@@ -132,6 +132,87 @@ export async function uploadWithRetries(
   }
 }
 
+/** Lo que el chaleco puede reportar fuera del ciclo de envío. */
+export type VestStatusEvent = 'signal_quality_bad' | 'lead_off' | 'signal_recovered'
+
+export interface DeviceStatusAck {
+  notified: boolean
+  alertId: string | null
+  serverTime: string
+}
+
+/**
+ * Canal corto del chaleco: `POST /ingest/device-status`.
+ *
+ * Va por `fetch` y con credencial de equipo por el mismo motivo que
+ * `postFrames`: es lo que va a mandar el co-procesador WiFi, sin cookie de por
+ * medio. Lo único distinto es el `Content-Type`, que acá es JSON.
+ */
+export async function postDeviceStatus(
+  event: VestStatusEvent,
+  headers: IngestHeaders,
+  durationSeconds: number,
+  signal?: AbortSignal,
+): Promise<DeviceStatusAck> {
+  const requestHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${headers.apiKey}`,
+    'X-Device-Serial': headers.serial,
+    'X-Firmware-Version': headers.firmwareVersion,
+  }
+  if (headers.uptimeMs !== null) {
+    requestHeaders['X-Device-Uptime-Ms'] = String(Math.round(headers.uptimeMs))
+  }
+  if (headers.batteryPct !== null) {
+    requestHeaders['X-Battery-Pct'] = String(Math.round(headers.batteryPct))
+  }
+
+  const response = await fetch('/api/ingest/device-status', {
+    method: 'POST',
+    headers: requestHeaders,
+    body: JSON.stringify({ event, durationSeconds }),
+    signal,
+  })
+
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) {
+    const message = (payload?.message as string) ?? `HTTP ${response.status}`
+    throw new Error(message)
+  }
+  return payload as DeviceStatusAck
+}
+
+export type SimulatedAnomalyType = 'tachycardia' | 'bradycardia' | 'afib' | 'pvc' | 'pause'
+
+export interface SimulateAnomalyBody {
+  eventType: SimulatedAnomalyType
+  severity: 'high' | 'critical'
+  durationSeconds?: number
+  secondsBeforeEnd?: number
+}
+
+export interface SimulatedAnomaly {
+  alertId: string
+  eventId: string
+  occurredAt: string
+  offsetMs: number
+}
+
+/**
+ * Fabrica un hallazgo clínico sobre la señal ya subida y notifica al paciente.
+ *
+ * Va por el cliente axios del portal y no con la credencial del equipo: no es
+ * algo que el chaleco reporte, es lo que produciría el pipeline de análisis
+ * —hoy stub— del lado del backend. Requiere sesión de admin.
+ */
+export async function simulateAnomaly(
+  studyId: string,
+  body: SimulateAnomalyBody,
+): Promise<SimulatedAnomaly> {
+  const { data } = await api.post<SimulatedAnomaly>(`/studies/${studyId}/simulate-anomaly`, body)
+  return data
+}
+
 export interface SimulatorDevice {
   id: string
   serial: string

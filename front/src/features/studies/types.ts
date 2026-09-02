@@ -66,8 +66,20 @@ export interface StudyPatientReport {
   activityOther: string | null
   notes: string | null
   alertId: string | null
+  /**
+   * Tipo del hallazgo que disparó el aviso respondido (`tachycardia`, …), ya
+   * resuelto por el backend. `null` en los registros espontáneos.
+   */
+  alertKind: string | null
   createdAt: string
-  /** Offset dentro de la grabación; `null` mientras no haya señal debajo. */
+  /**
+   * Offset dentro de la grabación; `null` mientras no haya señal debajo.
+   *
+   * Para una respuesta a un aviso **no es la hora de pared del registro** sino
+   * el punto del hallazgo que contesta: es donde el visor dibuja su marca, y
+   * las dos vistas tienen que coincidir para que "Ver en el ECG" lleve al
+   * lugar correcto.
+   */
   offsetMs: number | null
   visibleInChart: boolean
 }

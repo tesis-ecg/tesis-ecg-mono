@@ -11,6 +11,7 @@ import { Screen } from '@/components/ui/Screen'
 import { Toggle } from '@/components/ui/Toggle'
 import { Body, Caption, Title } from '@/components/ui/typography'
 import { useAuth } from '@/features/auth/AuthContext'
+import { registerForPushNotifications } from '@/features/notifications/registerPushToken'
 import { useNotificationPermission } from '@/features/notifications/useNotificationPermission'
 import { calculateAge } from '@/lib/format'
 import { brandGradient } from '@/lib/gradients'
@@ -60,7 +61,14 @@ export default function Profile() {
    */
   const handleNotificationsToggle = () => {
     if (!permission.granted && permission.canAskAgain) {
-      void permission.request()
+      // El registro del token va acá y no solo en el arranque de la sesión:
+      // `NotificationsBridge` lo intenta una vez por sesión, y si el paciente
+      // rechazó el permiso esa vez, activarlo después dejaba el celular sin
+      // token registrado hasta el siguiente arranque de la app — con las
+      // notificaciones "encendidas" en pantalla y ningún aviso llegando.
+      void permission.request().then((granted) => {
+        if (granted) void registerForPushNotifications()
+      })
       return
     }
     void Linking.openSettings()
@@ -78,9 +86,9 @@ export default function Profile() {
 
   return (
     <Screen
+      fixedHeader={<Title>Mi perfil</Title>}
       refreshControl={<Refresh refreshing={isRefreshing} onRefresh={() => void handleRefresh()} />}
     >
-      <Title className="pt-2 pb-1">Mi perfil</Title>
 
       <AnimatedView entering={enterAt(0)}>
         <Card className="items-center gap-3 py-8">
