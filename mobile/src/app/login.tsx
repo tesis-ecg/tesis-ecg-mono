@@ -19,10 +19,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { BrandLockup } from "@/components/BrandMark";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
-import { Body, Caption, Title } from "@/components/ui/typography";
+import { Caption } from "@/components/ui/typography";
 import { useAuth } from "@/features/auth/AuthContext";
 import { unwrapError } from "@/lib/api";
-import { heroScrim } from "@/lib/gradients";
 import * as haptics from "@/lib/haptics";
 import { Pressable, Text, View } from "@/tw";
 

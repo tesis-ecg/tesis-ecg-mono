@@ -44,7 +44,8 @@
           "color": "#0b2185",
           "defaultChannel": "alerts"
         }
-      ]
+      ],
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,
