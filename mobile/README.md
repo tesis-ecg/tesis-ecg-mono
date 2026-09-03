@@ -32,8 +32,8 @@ Metro. Con la app ya instalada alcanza `npm start`, que arranca Metro en modo
 `--dev-client`.
 
 Hay que volver a compilar (`npm run ios`) cada vez que cambien las dependencias
-nativas o los plugins de `app.json`; `ios/` y `android/` son carpetas generadas
-(están en `.gitignore`) y se regeneran con `npx expo prebuild`.
+nativas o los plugins de `app.config.ts`; `ios/` y `android/` son carpetas
+generadas (están en `.gitignore`) y se regeneran con `npx expo prebuild`.
 
 **Instalá con npm, no con pnpm.** `react-native-css` sólo funciona con
 `lightningcss` 1.30.1 y ese pin vive en el campo `overrides` de `package.json`,
@@ -51,6 +51,137 @@ pueda alcanzar:
 | Emulador de Android | `http://10.0.2.2:8000` |
 | Simulador de iOS | `http://localhost:8000` |
 | Teléfono físico | `http://<IP-de-tu-máquina>:8000` |
+
+## Correr contra el backend de producción
+
+```
+EXPO_PUBLIC_API_URL=https://tesis-ecg.vercel.app/api
+```
+
+**El `/api` no es opcional.** `tesis-ecg.vercel.app` es el proyecto Vercel del
+*portal*, que reescribe `/api/*` al backend (ver `docs/adr/001-same-origin-api-proxy.md`).
+Sin el sufijo, `POST /mobile/auth/login` cae en el fallback SPA y devuelve 405.
+
+`EXPO_PUBLIC_*` se **inlinea en el bundle**: no alcanza con editar `.env`, hay
+que rebundlear (`npx expo start --dev-client -c`) o rebuildear.
+
+Y como `.env` está gitignoreado, **EAS Build no lo sube**. Para los builds de
+EAS la variable vive en el bloque `env` de los perfiles `preview` y
+`production` de `eas.json`.
+
+Qué se puede ejercitar contra producción y qué no:
+
+- **Chaleco mal colocado**: sí. El simulador manda `POST /ingest/device-status`,
+  que se autentica con la credencial del equipo y no está gateado por entorno.
+- **Anomalía detectada**: no. `POST /studies/{id}/simulate-anomaly` corta con
+  403 cuando `ENVIRONMENT` es `production` o `preview`
+  (`is_secure_environment`, en `studies_service.py`). Ese aviso solo se puede
+  disparar contra un backend en `development`.
+
+## Builds con EAS
+
+Los perfiles viven en `eas.json`. Cada build sale firmado desde EAS y se
+instala directo en el celular, sin cadena de Xcode ni Android Studio.
+
+| Perfil | Android | iOS | Uso |
+|---|---|---|---|
+| `development` | APK con dev-client | App con dev-client | Debug con Metro en un device físico |
+| `preview` | APK (`buildType: apk`) | Build interno | Compartir para probar; se instala por link |
+| `production` | AAB para Play Store | IPA para App Store | Release. Auto-incrementa `versionCode` / `buildNumber` |
+
+`EXPO_PUBLIC_API_URL` viaja **inlineado en el bundle**, así que cada perfil lo
+declara en su bloque `env` de `eas.json` — `.env` local no llega al build de
+EAS porque está gitignoreado.
+
+### Archivos de Firebase (google-services.json y GoogleService-Info.plist)
+
+Los archivos de configuración de Firebase quedan **fuera de git** (están en
+`mobile/.gitignore`) y viajan a EAS como *file environment variables*
+encriptadas. `app.config.ts` las lee con fallback al archivo local, así que el
+mismo config sirve para `expo prebuild` local y para los builds de EAS:
+
+```ts
+android: {
+  googleServicesFile: process.env.GOOGLE_SERVICES_JSON ?? './google-services.json',
+  ...
+}
+```
+
+Estado esperado en el disco (para dev local y `expo prebuild`):
+
+```
+mobile/google-services.json        # Android
+mobile/GoogleService-Info.plist    # iOS — solo si se usa Firebase en iOS (ver abajo)
+```
+
+**Ver qué está subido a EAS**:
+
+```bash
+npx eas env:list --environment preview
+npx eas env:list --environment production
+```
+
+**Subir o actualizar** el archivo (mismo comando; ya está hecho para Android):
+
+```bash
+# Android
+npx eas env:set --scope project --name GOOGLE_SERVICES_JSON \
+  --type file --value ./google-services.json --visibility secret \
+  --environment preview --environment production
+```
+
+Corré ese comando cuando Firebase regenera el archivo, o cuando cambia el
+`package` / `bundleIdentifier`. `env:set` crea la variable si no existe y la
+sobreescribe si ya estaba. Reemplazá también la copia local
+(`mobile/google-services.json`) para que los builds locales usen el mismo
+archivo.
+
+**iOS**: hoy la app **no necesita `GoogleService-Info.plist`**. Los pushes en
+iOS salen por APNs a través del Expo Push Service — las credenciales (APNs key,
+provisioning profile) las maneja EAS con `npx eas credentials`, no como archivo
+en el repo. Si más adelante se suma Firebase Analytics / Crashlytics para iOS,
+el patrón es idéntico al de Android:
+
+```bash
+# iOS — solo si se agrega Firebase iOS SDK
+npx eas env:set --scope project --name GOOGLE_SERVICES_INFO_PLIST \
+  --type file --value ./GoogleService-Info.plist --visibility secret \
+  --environment preview --environment production
+```
+
+Y sumar la línea correspondiente a `app.config.ts`:
+
+```ts
+ios: {
+  googleServicesFile: process.env.GOOGLE_SERVICES_INFO_PLIST ?? './GoogleService-Info.plist',
+  ...
+}
+```
+
+### Correr un build
+
+```bash
+# Preview — APK de Android instalable por link
+npx eas build -p android --profile preview
+
+# Preview — iOS (necesita cuenta paga de Apple Developer; el device tiene que
+# estar registrado con `npx eas device:create` antes del primer build)
+npx eas build -p ios --profile preview
+
+# Production
+npx eas build -p android --profile production
+npx eas build -p ios --profile production
+
+# Ambas plataformas en un solo comando
+npx eas build --profile preview
+npx eas build --profile production
+```
+
+Cada build imprime una URL con el progreso. Al terminar, Android muestra un
+botón **Install** con QR — se abre desde el celular y se instala el APK.
+El `version` (nombre visible) de `app.config.ts` se sube a mano por cada
+release; `versionCode` y `buildNumber` los auto-incrementa el perfil
+`production`.
 
 ## Notificaciones push
 
@@ -72,16 +203,13 @@ Developer para la key de APNs; ver el apéndice de abajo para la alternativa.
    contenedor. El paciente de prueba tiene que tener cuenta de app
    (`patient.user_id` no nulo).
 2. **Proyecto de EAS** (gratis): `npx eas init && npx eas build:configure`.
-   `eas init` escribe `extra.eas.projectId` en `app.json`; sin eso
+   `eas init` escribe `extra.eas.projectId` en `app.config.ts`; sin eso
    `getExpoPushTokenAsync` falla con "No projectId found".
 3. **Firebase** (plan Spark, gratis): proyecto nuevo → app Android con el
    package `com.holter.ecg` → bajar `google-services.json` a
-   `mobile/` y apuntarlo desde `app.json`:
-
-   ```json
-   "android": { "googleServicesFile": "./google-services.json", ... }
-   ```
-
+   `mobile/`. `app.config.ts` ya lo lee desde ahí para builds locales; para
+   los builds de EAS hay que subirlo además como env var — ver
+   [Builds con EAS](#builds-con-eas).
 4. **Credenciales FCM V1**: en Firebase, Configuración del proyecto → Cuentas de
    servicio → generar clave privada. Subirla con `npx eas credentials` →
    Android → Push Notifications (FCM V1).

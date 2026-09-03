@@ -1,0 +1,65 @@
+import type { ExpoConfig } from "expo/config";
+
+const config: ExpoConfig = {
+  name: "Holter",
+  slug: "holter-paciente",
+  version: "1.0.0",
+  orientation: "portrait",
+  icon: "./assets/images/icon.png",
+  scheme: "holter",
+  userInterfaceStyle: "light",
+  ios: {
+    bundleIdentifier: "com.holter.ecg",
+    supportsTablet: false,
+  },
+  android: {
+    googleServicesFile:
+      process.env.GOOGLE_SERVICES_JSON ?? "./google-services.json",
+    adaptiveIcon: {
+      backgroundColor: "#0b2185",
+      foregroundImage: "./assets/images/android-icon-foreground.png",
+      backgroundImage: "./assets/images/android-icon-background.png",
+      monochromeImage: "./assets/images/android-icon-monochrome.png",
+    },
+    predictiveBackGestureEnabled: false,
+    package: "com.holter.ecg",
+  },
+  web: {
+    output: "static",
+    favicon: "./assets/images/favicon.png",
+  },
+  plugins: [
+    "expo-router",
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: "#0b2185",
+        image: "./assets/images/splash-icon.png",
+        imageWidth: 76,
+      },
+    ],
+    "expo-secure-store",
+    [
+      "expo-notifications",
+      {
+        icon: "./assets/images/notification-icon.png",
+        color: "#0b2185",
+        defaultChannel: "alerts",
+      },
+    ],
+    "expo-image",
+  ],
+  experiments: {
+    typedRoutes: true,
+    reactCompiler: true,
+  },
+  extra: {
+    router: {},
+    eas: {
+      projectId: "72c67bbc-26ee-4175-82e3-3bc11be1bb11",
+    },
+  },
+  owner: "tserra",
+};
+
+export default config;
