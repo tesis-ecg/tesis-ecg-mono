@@ -44,3 +44,9 @@ __pycache__/
 .coverage
 htmlcov/
 coverage.xml
+
+# Índice local de CodeGraph. Su .gitignore interno alcanza para git, pero no
+# para eas-cli: globea `**/.gitignore` con fast-glob y `dot: false`, así que
+# nunca entra a carpetas ocultas y termina copiando `daemon.sock` al tarball
+# del build ("Cannot copy a socket file"). Tiene que estar acá arriba.
+.codegraph
