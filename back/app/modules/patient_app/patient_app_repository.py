@@ -8,9 +8,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.db.models.alert import Alert
 from app.db.models.device import Device, DeviceStatus
@@ -143,11 +143,38 @@ async def list_patient_alerts(
         Alert.kind.is_(None),
         Alert.kind != VEST_MISPLACED_KIND,
     )
+    vest_alert = aliased(Alert)
+    latest_vest_alert_id = (
+        select(vest_alert.id)
+        .where(
+            vest_alert.patient_id == patient_id,
+            vest_alert.kind == VEST_MISPLACED_KIND,
+            vest_alert.deleted_at.is_(None),
+        )
+        .order_by(vest_alert.created_at.desc(), vest_alert.id.asc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    has_bad_assigned_device = exists(
+        select(Device.id).where(
+            Device.patient_id == patient_id,
+            Device.status == DeviceStatus.ASSIGNED,
+            Device.deleted_at.is_(None),
+            Device.placement_ok.is_(False),
+        )
+    )
+    current_vest_alert = and_(
+        Alert.kind == VEST_MISPLACED_KIND,
+        Alert.id == latest_vest_alert_id,
+        has_bad_assigned_device,
+    )
+    unanswered_alert = and_(requires_response, PatientReport.id.is_(None))
     # El filtro se arma una vez y se aplica a la página y al total: si los dos
     # no filtran igual, la lista dice "5 avisos" y dibuja 2.
     status_filter = {
         MobileAlertStatus.PENDING: (requires_response, PatientReport.id.is_(None)),
         MobileAlertStatus.ANSWERED: (requires_response, PatientReport.id.is_not(None)),
+        MobileAlertStatus.ACTIONABLE: (or_(unanswered_alert, current_vest_alert),),
     }.get(status, ())
     base = (
         select(
@@ -163,9 +190,17 @@ async def list_patient_alerts(
     )
     if status_filter:
         base = base.where(*status_filter)
-    result = await db.execute(
-        base.order_by(Alert.created_at.desc(), Alert.id.asc()).limit(limit).offset(offset)
-    )
+    if status is MobileAlertStatus.ACTIONABLE:
+        # La mala colocación exige una acción física inmediata y por eso va
+        # antes que cualquier pedido clínico, aunque este último sea más nuevo.
+        base = base.order_by(
+            case((Alert.kind == VEST_MISPLACED_KIND, 0), else_=1),
+            Alert.created_at.desc(),
+            Alert.id.asc(),
+        )
+    else:
+        base = base.order_by(Alert.created_at.desc(), Alert.id.asc())
+    result = await db.execute(base.limit(limit).offset(offset))
     rows: list[AlertRow] = [
         (alert, event_type, event_metadata, report_id, answered_at)
         for alert, event_type, event_metadata, report_id, answered_at in result.all()

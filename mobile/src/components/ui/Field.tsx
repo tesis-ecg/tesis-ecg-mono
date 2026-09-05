@@ -101,6 +101,12 @@ export const Field = forwardRef<RNTextInput, FieldProps>(function Field(
           accessibilityLabel={label}
           placeholderTextColor="#a0a8ae"
           multiline={multiline}
+          // Android centra verticalmente el texto de un `TextInput` multilínea;
+          // iOS lo arranca arriba. El campo de "contanos qué sentiste" mide 88 pt
+          // y en Android el placeholder flotaba a media altura, como si el cuadro
+          // fuera un campo de una línea muy alto — y al escribir el texto seguía
+          // centrado, corriéndose solo al llegar a la tercera línea.
+          textAlignVertical={multiline ? 'top' : undefined}
           onFocus={(event) => {
             setIsFocused(true)
             onFocus?.(event)
@@ -109,7 +115,17 @@ export const Field = forwardRef<RNTextInput, FieldProps>(function Field(
             setIsFocused(false)
             onBlur?.(event)
           }}
-          className={cn('flex-1 text-[17px] text-gray-900', className)}
+          className={cn(
+            'flex-1 text-[17px] text-gray-900',
+            // El `EditText` de Android trae su propio padding, heredado del
+            // drawable de fondo, que se suma al `py-3` del cuadro: aun alineado
+            // arriba, el texto arrancaba 13 dp más abajo que en iOS. Tiene que
+            // ser `p-0` y no `py-0` — medido: con solo los verticales el padding
+            // del drawable sobrevive y el hueco no se mueve ni un pixel. El aire
+            // lo pone el contenedor, que es el que sabe cuánto mide el campo.
+            multiline && 'p-0',
+            className,
+          )}
           {...props}
         />
 

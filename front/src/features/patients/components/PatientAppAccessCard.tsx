@@ -13,6 +13,7 @@ import {
   useSendPatientPasswordReset,
 } from '../hooks/usePatientAppAccess'
 import type { Patient } from '../types'
+import { ConfirmAppAccessDialog, type AppAccessAction } from './ConfirmAppAccessDialog'
 import { PatientCredentialsDialog } from './PatientCredentialsDialog'
 
 interface PatientAppAccessCardProps {
@@ -30,6 +31,7 @@ interface PatientAppAccessCardProps {
 export function PatientAppAccessCard({ patient }: PatientAppAccessCardProps) {
   const [password, setPassword] = useState<string | null>(null)
   const [variant, setVariant] = useState<'created' | 'regenerated'>('regenerated')
+  const [confirming, setConfirming] = useState<AppAccessAction | null>(null)
   const createAccount = useCreatePatientAppAccount()
   const regenerate = useRegeneratePatientAppPassword()
   const sendReset = useSendPatientPasswordReset()
@@ -37,6 +39,7 @@ export function PatientAppAccessCard({ patient }: PatientAppAccessCardProps) {
   const handleCreate = () => {
     createAccount.mutate(patient.id, {
       onSuccess: ({ password: value }) => {
+        setConfirming(null)
         setVariant('created')
         setPassword(value)
       },
@@ -47,6 +50,7 @@ export function PatientAppAccessCard({ patient }: PatientAppAccessCardProps) {
   const handleRegenerate = () => {
     regenerate.mutate(patient.id, {
       onSuccess: ({ password: value }) => {
+        setConfirming(null)
         setVariant('regenerated')
         setPassword(value)
       },
@@ -56,10 +60,19 @@ export function PatientAppAccessCard({ patient }: PatientAppAccessCardProps) {
 
   const handleReset = () => {
     sendReset.mutate(patient.id, {
-      onSuccess: () => toast.success(`Le mandamos un mail a ${patient.contactEmail}.`),
+      onSuccess: () => {
+        setConfirming(null)
+        toast.success(`Le mandamos un mail a ${patient.contactEmail}.`)
+      },
       onError: (error) => toast.error(unwrapError(error)),
     })
   }
+
+  const CONFIRM = {
+    create: { onConfirm: handleCreate, isPending: createAccount.isPending },
+    regenerate: { onConfirm: handleRegenerate, isPending: regenerate.isPending },
+    reset: { onConfirm: handleReset, isPending: sendReset.isPending },
+  } as const
 
   return (
     <>
@@ -98,21 +111,22 @@ export function PatientAppAccessCard({ patient }: PatientAppAccessCardProps) {
               </div>
             </dl>
 
-            <div className="flex flex-col gap-2 sm:flex-row">
+            {/* Los botones miden su contenido: a ancho completo se leían como
+                el call-to-action de la ficha, y son dos acciones de mantenimiento
+                que además no se pueden deshacer. */}
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
-                onClick={handleRegenerate}
+                onClick={() => setConfirming('regenerate')}
                 disabled={regenerate.isPending}
-                className="sm:flex-1"
               >
                 <RefreshCw className="mr-1 size-4" aria-hidden />
                 {regenerate.isPending ? 'Generando…' : 'Regenerar contraseña'}
               </Button>
               <Button
                 variant="outline"
-                onClick={handleReset}
+                onClick={() => setConfirming('reset')}
                 disabled={sendReset.isPending || !patient.contactEmail}
-                className="sm:flex-1"
               >
                 <Mail className="mr-1 size-4" aria-hidden />
                 {sendReset.isPending ? 'Enviando…' : 'Enviar mail de recuperación'}
@@ -124,12 +138,26 @@ export function PatientAppAccessCard({ patient }: PatientAppAccessCardProps) {
             </p>
           </>
         ) : (
-          <Button onClick={handleCreate} disabled={createAccount.isPending}>
-            <KeyRound className="mr-1 size-4" aria-hidden />
-            {createAccount.isPending ? 'Creando…' : 'Crear acceso'}
-          </Button>
+          <div className="flex">
+            <Button onClick={() => setConfirming('create')} disabled={createAccount.isPending}>
+              <KeyRound className="mr-1 size-4" aria-hidden />
+              {createAccount.isPending ? 'Creando…' : 'Crear acceso'}
+            </Button>
+          </div>
         )}
       </Card>
+
+      {confirming && (
+        <ConfirmAppAccessDialog
+          action={confirming}
+          patientName={patient.fullName}
+          contactEmail={patient.contactEmail}
+          isPending={CONFIRM[confirming].isPending}
+          open
+          onOpenChange={(next) => !next && setConfirming(null)}
+          onConfirm={CONFIRM[confirming].onConfirm}
+        />
+      )}
 
       {password && (
         <PatientCredentialsDialog

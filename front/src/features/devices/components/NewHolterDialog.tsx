@@ -1,5 +1,6 @@
 import { Plus } from 'lucide-react'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ import { HolterForm } from './HolterForm'
 
 export function NewHolterDialog() {
   const [open, setOpen] = useState(false)
+  const navigate = useNavigate()
   const createHolter = useCreateHolter()
 
   const handleSubmit = (values: HolterFormValues) => {
@@ -27,6 +29,10 @@ export function NewHolterDialog() {
       onSuccess: (holter) => {
         toast.success(`Holter ${holter.serial} creado.`)
         setOpen(false)
+        // Al detalle del equipo, no de vuelta al listado: lo que sigue después
+        // de dar de alta un chaleco es grabarle su API key en el firmware, y
+        // `justCreated` hace que la card la muestre sin tener que revelarla.
+        navigate(`/devices/${holter.id}`, { state: { justCreated: true } })
       },
       onError: (error) => {
         toast.error(unwrapError(error))
@@ -46,8 +52,8 @@ export function NewHolterDialog() {
         <DialogHeader>
           <DialogTitle>Agregar Holter</DialogTitle>
           <DialogDescription>
-            Registrá un nuevo Holter en el inventario. Empieza como disponible y podés asignarlo a
-            un paciente desde su perfil.
+            Registrá un nuevo Holter en el inventario. Empieza como disponible y te llevamos a su
+            ficha, donde está la API key para grabarle el firmware.
           </DialogDescription>
         </DialogHeader>
         <HolterForm

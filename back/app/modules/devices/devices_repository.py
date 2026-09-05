@@ -238,12 +238,16 @@ async def create_device(
     model: str,
     firmware_version: str | None,
     api_key_hash: str,
+    api_key_encrypted: str,
+    api_key_rotated_at: datetime,
 ) -> Device:
     device = Device(
         serial_number=serial,
         model=model,
         firmware_version=firmware_version,
         api_key_hash=api_key_hash,
+        api_key_encrypted=api_key_encrypted,
+        api_key_rotated_at=api_key_rotated_at,
         status=DeviceStatus.AVAILABLE,
     )
     db.add(device)

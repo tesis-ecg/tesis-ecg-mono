@@ -9,7 +9,7 @@ import {
   UserX,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { EmptyState } from '@/components/EmptyState'
@@ -22,6 +22,7 @@ import { useAuth } from '@/features/auth/AuthContext'
 import { AssignDeviceToDoctorDialog } from '@/features/devices/components/AssignDeviceToDoctorDialog'
 import { DeleteHolterDialog } from '@/features/devices/components/DeleteHolterDialog'
 import { EditHolterDialog } from '@/features/devices/components/EditHolterDialog'
+import { HolterApiKeyCard } from '@/features/devices/components/HolterApiKeyCard'
 import { HolterHealthCard } from '@/features/devices/components/HolterHealthCard'
 import { HolterStatusBadge } from '@/features/devices/components/HolterStatusBadge'
 import { ReassignHolterDialog } from '@/features/devices/components/ReassignHolterDialog'
@@ -37,6 +38,11 @@ import { formatDate, formatDateTime, formatRelativeTime } from '@/lib/time'
 export function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  // Lo setea `NewHolterDialog` al traer acá un equipo recién dado de alta: en
+  // ese momento la API key es justo lo que el admin vino a buscar.
+  const justCreated = Boolean(
+    (useLocation().state as { justCreated?: boolean } | null)?.justCreated,
+  )
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const isMedico = user?.role === 'medico'
@@ -190,6 +196,9 @@ export function DeviceDetail() {
           />
         </>
       )}
+
+      {/* API key — solo admin: habilita a subir señal como este equipo. */}
+      {isAdmin && !isRetired && <HolterApiKeyCard holter={h} defaultRevealed={justCreated} />}
 
       {/* Paciente asignado */}
       <Card className="p-6">

@@ -14,6 +14,7 @@ import { Screen } from "@/components/ui/Screen";
 import { Spinner } from "@/components/ui/Spinner";
 import { Body, Caption, Display, Heading } from "@/components/ui/typography";
 import { useAuth } from "@/features/auth/AuthContext";
+import { routeForAlert } from "@/features/notifications/routeForAlert";
 import { DEVICE_STATE } from "@/features/patient/deviceMeta";
 import {
   useDevice,
@@ -144,14 +145,28 @@ export default function Home() {
     >
       {pending.length > 0 && (
         <AnimatedView className="mb-4" entering={enterAt(0)}>
+          {/*
+            El destino sale de `routeForAlert` y no de un `push` armado acá.
+            Estaba duplicado, y la copia se quedó atrás: cuando el formulario
+            empezó a recibir el tipo de hallazgo, el centro de avisos se lo
+            mandaba y esta pantalla no, así que el mismo aviso encabezaba
+            "Ritmo irregular" entrando por la campana y "Revisemos este momento"
+            entrando por Inicio.
+          */}
           <PendingAlerts
             alerts={pending}
-            onOpen={(alert) =>
+            onOpen={(alert) => {
+              const destination = routeForAlert(alert);
+              if (!destination) return;
+              if (destination.pathname === "/(tabs)/device") {
+                router.push(destination.pathname);
+                return;
+              }
               router.push({
-                pathname: "/report",
-                params: { alertId: alert.id, occurredAt: alert.detectedAt },
-              })
-            }
+                pathname: destination.pathname,
+                params: destination.params,
+              });
+            }}
           />
         </AnimatedView>
       )}

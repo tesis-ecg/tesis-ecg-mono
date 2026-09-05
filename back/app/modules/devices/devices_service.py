@@ -1,7 +1,5 @@
 """Devices service."""
 
-import hashlib
-import secrets
 import uuid
 from datetime import UTC, datetime
 
@@ -9,6 +7,12 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.device_keys import (
+    decrypt_api_key,
+    encrypt_api_key,
+    generate_api_key,
+    hash_api_key,
+)
 from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device, DeviceStatus
 from app.modules.auth import auth_repository as auth_repo
@@ -154,15 +158,16 @@ async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> Holt
             detail={"code": "SERIAL_CONFLICT", "message": "Ya existe un Holter con ese serial."},
         )
 
-    api_key = secrets.token_urlsafe(32)
-    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    api_key = generate_api_key()
     try:
         device = await repo.create_device(
             db,
             serial=input_data.data.serial.strip(),
             model=input_data.data.model.strip(),
             firmware_version=input_data.data.firmwareVersion,
-            api_key_hash=api_key_hash,
+            api_key_hash=hash_api_key(api_key),
+            api_key_encrypted=encrypt_api_key(api_key),
+            api_key_rotated_at=datetime.now(UTC),
         )
         await _audit_device(db, AuditEventType.DEVICE_CREATED, input_data.actor_id, device.id)
         await db.commit()
@@ -177,21 +182,23 @@ async def create_holter(input_data: HolterCreateInput, db: AsyncSession) -> Holt
 
 
 async def rotate_api_key(input_data: HolterIdInput, db: AsyncSession) -> HolterApiKeyOut:
-    """Genera una API key nueva para un equipo existente y devuelve la anterior inútil.
+    """Genera una API key nueva para un equipo existente y deja la anterior inútil.
 
-    Hace falta porque `create_holter` entrega la key en claro una sola vez y no
-    hay forma de recuperarla después (en la base solo vive el sha256). Sin esto,
-    un equipo ya dado de alta no se puede volver a aprovisionar — ni conectar al
-    simulador — sin borrarlo y crearlo de nuevo.
+    `get_api_key` alcanza para releer la key de un equipo, así que rotar dejó de
+    ser la única forma de aprovisionar uno ya dado de alta. Sigue haciendo falta
+    para lo que sí es una rotación: la key se filtró, o el equipo cambió de manos.
 
-    La rotación es inmediata: la key vieja deja de servir en el mismo commit.
+    Es inmediata y no se puede deshacer: la key vieja deja de servir en el mismo
+    commit, y el chaleco que la tenga cargada empieza a recibir 401.
     """
     device = await repo.get_device_by_id(db, input_data.device_id)
     if device is None:
         raise _not_found()
 
-    api_key = secrets.token_urlsafe(32)
-    device.api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    api_key = generate_api_key()
+    device.api_key_hash = hash_api_key(api_key)
+    device.api_key_encrypted = encrypt_api_key(api_key)
+    device.api_key_rotated_at = datetime.now(UTC)
     await _audit_device(
         db,
         AuditEventType.DEVICE_API_KEY_ROTATED,
@@ -200,11 +207,50 @@ async def rotate_api_key(input_data: HolterIdInput, db: AsyncSession) -> HolterA
         {"serial": device.serial_number},
     )
     await db.commit()
+    return _api_key_out(device, api_key)
+
+
+async def get_api_key(input_data: HolterIdInput, db: AsyncSession) -> HolterApiKeyOut:
+    """La API key en claro de un equipo. Solo admin (lo impone la ruta).
+
+    Cada lectura queda auditada: la key habilita a subir señal como ese
+    dispositivo, así que leerla es un evento y no una consulta más.
+    """
+    device = await repo.get_device_by_id(db, input_data.device_id)
+    if device is None:
+        raise _not_found()
+
+    api_key = decrypt_api_key(device.api_key_encrypted) if device.api_key_encrypted else None
+    if api_key is None:
+        # Un equipo dado de alta antes de que la key se guardara cifrada, o un
+        # ciphertext que ya no abre con el secreto actual. En los dos casos la
+        # key es irrecuperable y la única salida honesta es rotarla.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "API_KEY_UNAVAILABLE",
+                "message": "La API key de este equipo no se puede recuperar. "
+                "Rotala para generar una nueva.",
+            },
+        )
+
+    await _audit_device(
+        db,
+        AuditEventType.DEVICE_API_KEY_VIEWED,
+        input_data.actor_id,
+        device.id,
+        {"serial": device.serial_number},
+    )
+    await db.commit()
+    return _api_key_out(device, api_key)
+
+
+def _api_key_out(device: Device, api_key: str) -> HolterApiKeyOut:
     return HolterApiKeyOut(
         deviceId=device.id,
         serial=device.serial_number,
         apiKey=api_key,
-        rotatedAt=datetime.now(UTC),
+        rotatedAt=device.api_key_rotated_at or device.created_at,
     )
 
 

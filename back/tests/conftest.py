@@ -38,8 +38,6 @@ for key, value in TEST_ENV.items():
 
 # ruff: noqa: E402  — el entorno tiene que estar armado antes de importar `app`.
 import asyncio
-import hashlib
-import secrets
 import uuid
 from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -50,6 +48,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.core.device_keys import encrypt_api_key, generate_api_key, hash_api_key
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.doctor import Doctor
 from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
@@ -395,17 +394,19 @@ def make_device(db: AsyncSession) -> Callable[..., object]:
     ) -> tuple[Device, str]:
         """Devuelve `(device, api_key_en_claro)`.
 
-        La key en claro solo existe acá: en la base va el sha256, igual que en
-        producción.
+        En la base van las dos copias que guarda producción: el sha256 que valida
+        la ingesta y la copia cifrada que el admin puede volver a leer.
         """
-        api_key = kwargs.pop("api_key", secrets.token_urlsafe(32))
+        api_key = kwargs.pop("api_key", generate_api_key())
         assert isinstance(api_key, str)
         if status is None:
             status = DeviceStatus.ASSIGNED if patient is not None else DeviceStatus.AVAILABLE
         device = Device(
             serial_number=kwargs.pop("serial_number", f"HOL-{uuid.uuid4().hex[:10].upper()}"),
             model=kwargs.pop("model", "Holter ECG"),
-            api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+            api_key_hash=hash_api_key(api_key),
+            api_key_encrypted=encrypt_api_key(api_key),
+            api_key_rotated_at=datetime.now(UTC),
             patient_id=patient.id if patient is not None else None,
             doctor_id=_owner_doctor_id(doctor, patient),
             status=status,

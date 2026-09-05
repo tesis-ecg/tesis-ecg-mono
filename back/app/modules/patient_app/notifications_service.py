@@ -21,29 +21,68 @@ logger = structlog.get_logger(__name__)
 #: igual en Inicio cuando el paciente la abre.
 PUSHABLE_SEVERITIES = frozenset({AlertSeverity.HIGH, AlertSeverity.CRITICAL})
 
-_ANOMALY_TITLE = "Registrá cómo te sentís"
+# Copy de los avisos.
+#
+# Tres reglas, y las tres salieron de que el paciente no abría las
+# notificaciones anteriores ("Registrá cómo te sentís" no dice de qué se trata):
+#
+# 1. El título dice **qué pasó**, no qué tiene que hacer. Un aviso que arranca
+#    con la tarea se lee como una tarea más del teléfono y se descarta.
+# 2. El cuerpo dice **por qué importa** antes del pedido: sin el "tu médico lo
+#    necesita para leer tu estudio", contestar parece opcional.
+# 3. Cierra con un **call-to-action** en imperativo. Expo no dibuja botones en la
+#    notificación, así que el CTA tiene que estar en el texto o no existe.
+#
+# Y nada de jerga: las etiquetas son las mismas que muestra la app en
+# `features/patient/deviceMeta.ts`, para que el aviso y la pantalla que abre
+# digan la misma palabra.
+_ANOMALY_TITLE_BY_KIND = {
+    "tachycardia": "Tu chaleco registró latidos más rápidos de lo habitual",
+    "bradycardia": "Tu chaleco registró latidos más lentos de lo habitual",
+    "afib": "Tu chaleco registró un ritmo irregular",
+    "pvc": "Tu chaleco registró un latido adelantado",
+    "pause": "Tu chaleco registró una pausa en el ritmo",
+    "noise": "Un tramo de tu registro salió con ruido",
+    "symptom_marker": "Marcaste un síntoma en el chaleco",
+}
+_ANOMALY_TITLE_FALLBACK = "Hay un momento de tu registro para revisar"
 _ANOMALY_BODY = (
-    "Detectamos algo en tu registro. Contanos qué estabas haciendo: le sirve a tu médico."
+    "Contanos cómo te sentías en ese momento: tu médico lo necesita para leer tu estudio. "
+    "Tocá para responder, es un minuto."
 )
-_VEST_TITLE = "Revisá cómo tenés puesto el chaleco"
-_VEST_BODY = "Hace un rato que la señal no llega bien. Acomodátelo para no perder el estudio."
+_VEST_TITLE = "El chaleco no está registrando bien"
+_VEST_BODY = (
+    "Hace un rato que la señal llega mal. Tocá para ver cómo acomodarlo: "
+    "si sigue así, hoy se pierde el estudio."
+)
 
 
-def anomaly_message(alert_id: uuid.UUID, occurred_at_iso: str) -> PushMessage:
+def anomaly_title(kind: str | None) -> str:
+    """Título del aviso, con el hallazgo nombrado en el idioma del paciente."""
+    if kind is None:
+        return _ANOMALY_TITLE_FALLBACK
+    return _ANOMALY_TITLE_BY_KIND.get(kind, _ANOMALY_TITLE_FALLBACK)
+
+
+def anomaly_message(
+    alert_id: uuid.UUID, occurred_at_iso: str, kind: str | None = None
+) -> PushMessage:
     """Aviso de anomalía detectada.
 
     El `data` es lo que hace que tocar la notificación abra el formulario ya
-    anclado a ese momento, en vez de la home.
+    anclado a ese momento, en vez de la home. El `kind` viaja por la misma vía y
+    con el mismo propósito: el formulario lo usa para encabezar con **qué** se
+    detectó, que es lo que le permite al paciente reconstruir qué estaba
+    haciendo. Un push viejo sin `kind` sigue abriendo el formulario igual.
     """
-    return PushMessage(
-        title=_ANOMALY_TITLE,
-        body=_ANOMALY_BODY,
-        data={
-            "type": "report_request",
-            "alertId": str(alert_id),
-            "occurredAt": occurred_at_iso,
-        },
-    )
+    data = {
+        "type": "report_request",
+        "alertId": str(alert_id),
+        "occurredAt": occurred_at_iso,
+    }
+    if kind:
+        data["kind"] = kind
+    return PushMessage(title=anomaly_title(kind), body=_ANOMALY_BODY, data=data)
 
 
 def vest_message(alert_id: uuid.UUID, occurred_at_iso: str) -> PushMessage:

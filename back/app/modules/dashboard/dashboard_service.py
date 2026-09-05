@@ -1,7 +1,7 @@
 """Dashboard service."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,23 +16,37 @@ from app.modules.dashboard import dashboard_repository as repo
 from app.modules.dashboard.dashboard_schemas import (
     AttentionPatientOut,
     AttentionPatientsInput,
+    DashboardActivityInput,
+    DashboardActivityOut,
+    DashboardActivityPointOut,
     DashboardAlertOut,
     DashboardAlertsInput,
+    DashboardFleetOut,
     DashboardKpisInput,
     DashboardKpisOut,
     DashboardOverviewInput,
     DashboardOverviewOut,
+    DashboardSeverityBucketOut,
+    DashboardTrendOut,
     DeviceWatchdogInput,
     DeviceWatchdogOut,
     RunningStudiesInput,
     RunningStudyOut,
 )
+from app.modules.dashboard.dashboard_time import dashboard_date, dashboard_day_start_utc
 
 # Orden de prioridad del merge de alertas. Las 4 severities del ORM mapean 1:1
 # en minúsculas contra el SEVERITY del FE.
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 _DEVICE_ALERT_SEVERITY = "medium"
+
+#: Cuántos días dibuja el gráfico de actividad de la home, y el largo de la
+#: ventana con la que se compara la semana anterior.
+ACTIVITY_DAYS = 7
+
+#: De más grave a menos: el orden en que el donut y su leyenda tienen que leerse.
+_SEVERITY_ORDER = ("critical", "high", "medium", "low")
 
 
 def _patient_name(patient: Patient) -> str:
@@ -183,6 +197,63 @@ async def list_device_watchdog(
     return items
 
 
+async def get_activity(
+    input_data: DashboardActivityInput, db: AsyncSession
+) -> DashboardActivityOut:
+    """Series y totales de la home.
+
+    El relleno con ceros vive acá y no en el repositorio: una serie con huecos
+    hace que el gráfico dibuje siete barras cuando hubo actividad todos los días
+    y cuatro cuando no, y el eje deja de ser comparable de un vistazo.
+    """
+    now = datetime.now(UTC)
+    today = dashboard_date(now)
+    first_day = today - timedelta(days=input_data.days - 1)
+    current_since = now - timedelta(days=input_data.days)
+    previous_since = current_since - timedelta(days=input_data.days)
+
+    alerts_by_day, reports_by_day, studies_by_day = await repo.count_activity_by_day(
+        db, input_data.doctor_id, dashboard_day_start_utc(first_day)
+    )
+    alerts_window, studies_window, patients_window = await repo.count_windows(
+        db, input_data.doctor_id, current_since, previous_since
+    )
+    by_severity = await repo.count_pending_alerts_by_severity(db, input_data.doctor_id)
+    assigned, transmitting = await repo.count_fleet(db, input_data.doctor_id, _stale_before())
+
+    days = [
+        _activity_point(
+            first_day + timedelta(days=offset), alerts_by_day, reports_by_day, studies_by_day
+        )
+        for offset in range(input_data.days)
+    ]
+    return DashboardActivityOut(
+        days=days,
+        alertsTrend=DashboardTrendOut(current=alerts_window[0], previous=alerts_window[1]),
+        studiesTrend=DashboardTrendOut(current=studies_window[0], previous=studies_window[1]),
+        patientsTrend=DashboardTrendOut(current=patients_window[0], previous=patients_window[1]),
+        pendingBySeverity=[
+            DashboardSeverityBucketOut(severity=severity, count=by_severity.get(severity, 0))
+            for severity in _SEVERITY_ORDER
+        ],
+        fleet=DashboardFleetOut(assigned=assigned, transmitting=transmitting),
+    )
+
+
+def _activity_point(
+    day: date,
+    alerts: dict[date, int],
+    reports: dict[date, int],
+    studies: dict[date, int],
+) -> DashboardActivityPointOut:
+    return DashboardActivityPointOut(
+        date=day,
+        alerts=alerts.get(day, 0),
+        reports=reports.get(day, 0),
+        studies=studies.get(day, 0),
+    )
+
+
 async def get_overview(
     input_data: DashboardOverviewInput, db: AsyncSession
 ) -> DashboardOverviewOut:
@@ -200,10 +271,14 @@ async def get_overview(
     watchdog = await list_device_watchdog(
         DeviceWatchdogInput(doctor_id=input_data.doctor_id, limit=input_data.widget_limit), db
     )
+    activity = await get_activity(
+        DashboardActivityInput(doctor_id=input_data.doctor_id, days=ACTIVITY_DAYS), db
+    )
     return DashboardOverviewOut(
         kpis=kpis,
         alerts=alerts,
         attentionPatients=attention_patients,
         runningStudies=running_studies,
         deviceWatchdog=watchdog,
+        activity=activity,
     )

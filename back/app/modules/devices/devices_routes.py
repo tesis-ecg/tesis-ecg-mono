@@ -171,16 +171,32 @@ async def reassign_holter(
     )
 
 
+@router.get("/{device_id}/api-key", response_model=HolterApiKeyOut)
+async def get_holter_api_key(
+    device_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> HolterApiKeyOut:
+    """Devuelve la API key en claro del equipo, para grabarla en su firmware.
+
+    Solo admin: la key habilita a subir señal como ese dispositivo, así que
+    entregarla es equivalente a entregar el equipo. Cada lectura queda auditada.
+    """
+    return await service.get_api_key(
+        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db
+    )
+
+
 @router.post("/{device_id}/api-key", response_model=HolterApiKeyOut)
 async def rotate_holter_api_key(
     device_id: uuid.UUID,
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterApiKeyOut:
-    """Rota la API key del equipo y la devuelve en claro **una sola vez**.
+    """Rota la API key del equipo: genera una nueva y deja la anterior inútil.
 
-    Solo admin: la key habilita a subir señal como ese dispositivo, así que
-    entregarla es equivalente a entregar el equipo.
+    Solo admin, por lo mismo que el GET. Es inmediato y no se puede deshacer —
+    el chaleco que tenga cargada la key vieja empieza a recibir 401.
     """
     return await service.rotate_api_key(
         HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db

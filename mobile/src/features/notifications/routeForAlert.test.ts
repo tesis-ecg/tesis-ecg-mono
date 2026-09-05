@@ -16,10 +16,12 @@ const base: PatientAlert = {
 }
 
 describe('routeForAlert', () => {
-  it('abre el formulario para un aviso pendiente', () => {
+  it('abre el formulario para un aviso pendiente, con el tipo de hallazgo', () => {
+    // Entrando por el centro de avisos el `kind` ya está en pantalla: se pasa
+    // tal cual, sin volver a pedirle nada al backend.
     expect(routeForAlert(base)).toEqual({
       pathname: '/report',
-      params: { alertId: 'alert-1', occurredAt: '2026-08-31T12:00:00Z' },
+      params: { alertId: 'alert-1', occurredAt: '2026-08-31T12:00:00Z', kind: 'tachycardia' },
     })
   })
 

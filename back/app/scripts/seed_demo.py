@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -37,6 +36,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Environment, settings
+from app.core.device_keys import encrypt_api_key, generate_api_key, hash_api_key
 from app.core.s3 import delete_keys, ensure_bucket, get_s3_client, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.device import Device, DeviceStatus
@@ -501,11 +501,13 @@ async def _reset(db: AsyncSession, client: Any) -> None:
 
 
 def _new_device(serial: str, status: DeviceStatus, firmware: str) -> Device:
-    api_key = secrets.token_urlsafe(32)
+    api_key = generate_api_key()
     return Device(
         serial_number=serial,
         model="Holter ECG Austral",
-        api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+        api_key_hash=hash_api_key(api_key),
+        api_key_encrypted=encrypt_api_key(api_key),
+        api_key_rotated_at=datetime.now(UTC),
         firmware_version=firmware,
         status=status,
     )

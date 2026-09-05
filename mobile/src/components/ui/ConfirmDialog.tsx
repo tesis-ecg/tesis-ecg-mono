@@ -71,7 +71,16 @@ export function ConfirmDialog({
   if (!visible && !isExiting) return null
 
   return (
-    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={onClose}>
+    <Modal
+      transparent
+      visible
+      animationType="none"
+      statusBarTranslucent
+      // Igual que en `ui/BottomSheet`: sin esto el velo corta justo arriba de la
+      // barra de navegación de Android y deja una franja clara abajo de todo.
+      navigationBarTranslucent
+      onRequestClose={onClose}
+    >
       <View className="flex-1 items-center justify-center px-6">
         {visible ? (
           <>

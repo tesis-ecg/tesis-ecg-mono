@@ -34,7 +34,9 @@ export function NewPatientDialog() {
 
   const handleSubmit = (values: PatientFormValues) => {
     if (isAdmin && !values.doctorId) {
-      toast.error('Seleccioná el médico responsable del paciente.')
+      // `warning` y no `error`: no falló nada, falta un dato del formulario.
+      // El rojo del error queda para lo que el sistema no pudo hacer.
+      toast.warning('Seleccioná el médico responsable del paciente.')
       return
     }
     createPatient.mutate(patientFormToInput(values), {
