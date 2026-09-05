@@ -38,6 +38,24 @@ export interface AssignHolterToDoctorInput {
   doctorId: string
 }
 
+/**
+ * La API key en claro de un equipo, tal como la devuelve el backend.
+ *
+ * Es la credencial que el firmware del chaleco usa para subir la señal de sus
+ * estudios. Se guarda cifrada además de hasheada, así que —a diferencia de la
+ * contraseña de un paciente— se puede volver a leer. Solo la ve un admin.
+ */
+export interface HolterApiKey {
+  deviceId: string
+  serial: string
+  apiKey: string
+  /** Cuándo se generó la key que se está devolviendo. */
+  rotatedAt: string
+}
+
+/** El alta devuelve el equipo **y** su API key recién generada. */
+export type CreatedHolter = Holter & { apiKey: string }
+
 export interface CreateHolterInput {
   serial: string
   model: string

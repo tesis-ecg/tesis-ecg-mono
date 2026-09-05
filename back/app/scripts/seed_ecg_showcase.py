@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -23,6 +22,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Environment, settings
+from app.core.device_keys import encrypt_api_key, generate_api_key, hash_api_key
 from app.core.s3 import delete_keys, ensure_bucket, list_keys, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.device import Device, DeviceStatus
@@ -220,11 +220,14 @@ async def seed_showcase(db: AsyncSession, doctor_email: str) -> Study:
     db.add(patient)
     await db.flush()
 
+    showcase_api_key = generate_api_key()
     device = Device(
         serial_number=SHOWCASE_SERIAL,
         model="Holter ECG Austral (showcase)",
         doctor_id=doctor.id,
-        api_key_hash=hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
+        api_key_hash=hash_api_key(showcase_api_key),
+        api_key_encrypted=encrypt_api_key(showcase_api_key),
+        api_key_rotated_at=datetime.now(UTC),
         firmware_version="showcase-1.0",
         status=DeviceStatus.AVAILABLE,
     )

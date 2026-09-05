@@ -1,9 +1,8 @@
 import { Calendar, CheckCircle2, Clock, HeartPulse, XCircle } from 'lucide-react'
 import { useState } from 'react'
 
-import { KebabMenu } from '@/components/KebabMenu'
+import { KebabMenu, type KebabMenuAction } from '@/components/KebabMenu'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { formatDateTime, formatDurationMs } from '@/lib/time'
 
@@ -31,7 +30,27 @@ export function StudyHeader({ study }: StudyHeaderProps) {
   // Un estudio abierto es el único que se puede terminar. `scheduled` todavía no
   // grabó nada, así que solo admite cancelarse — el backend rechaza completarlo.
   const isRunning = study.status === 'in_progress'
-  const isOpen = isRunning || study.status === 'scheduled'
+
+  // Las dos salidas del estudio viven juntas en el kebab. Finalizar estaba
+  // suelto como botón del header: es la acción más definitiva de la pantalla y
+  // quedaba a un click de distancia del scroll, al lado de datos de lectura.
+  // Las dos son irreversibles, así que las dos se buscan en el mismo lugar.
+  const actions: KebabMenuAction[] = []
+  if (isRunning) {
+    actions.push({
+      label: 'Finalizar estudio',
+      icon: CheckCircle2,
+      onSelect: () => setClosing('complete'),
+    })
+  }
+  if (isRunning || study.status === 'scheduled') {
+    actions.push({
+      label: 'Cancelar estudio',
+      icon: XCircle,
+      variant: 'destructive',
+      onSelect: () => setClosing('cancel'),
+    })
+  }
 
   return (
     <Card className="flex flex-col gap-4 p-6">
@@ -41,24 +60,8 @@ export function StudyHeader({ study }: StudyHeaderProps) {
         <h1 className="text-h5 text-gray-900">Estudio · {study.patientName}</h1>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={status.variant}>{status.label}</Badge>
-          {isRunning && (
-            <Button size="sm" onClick={() => setClosing('complete')}>
-              <CheckCircle2 className="mr-1 size-4" aria-hidden />
-              Finalizar estudio
-            </Button>
-          )}
-          {isOpen && (
-            <KebabMenu
-              label={`Acciones del estudio de ${study.patientName}`}
-              actions={[
-                {
-                  label: 'Cancelar estudio',
-                  icon: XCircle,
-                  variant: 'destructive',
-                  onSelect: () => setClosing('cancel'),
-                },
-              ]}
-            />
+          {actions.length > 0 && (
+            <KebabMenu label={`Acciones del estudio de ${study.patientName}`} actions={actions} />
           )}
         </div>
       </div>

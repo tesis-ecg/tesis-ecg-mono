@@ -620,16 +620,6 @@ _SIMULATED_MESSAGES = {
 }
 
 
-def _simulation_forbidden() -> HTTPException:
-    return HTTPException(
-        status_code=403,
-        detail={
-            "code": "SIMULATION_DISABLED",
-            "message": "Las anomalías simuladas solo existen en desarrollo.",
-        },
-    )
-
-
 def _no_signal() -> HTTPException:
     return HTTPException(
         status_code=409,
@@ -662,13 +652,14 @@ async def simulate_anomaly(
     médico la ve como marca sobre el ECG, que es el flujo real que se quiere
     probar.
 
-    Bloqueado fuera de desarrollo: escribe hallazgos clínicos falsos en la
-    historia de un paciente, y en un entorno real eso es exactamente lo que no
-    puede pasar.
+    Disponible en todos los entornos. Estaba bloqueado fuera de desarrollo, y
+    eso dejaba el flujo completo —push, formulario del paciente, respuesta sobre
+    el ECG— sin forma de demostrarse en el sistema desplegado, que es donde hay
+    que mostrarlo. La barrera que queda es el rol: solo admin
+    (`studies_routes.simulate_anomaly`). Lo escrito queda marcado como tal
+    (`event_metadata["simulated"]`) y el log `anomaly_simulated` guarda quién lo
+    pidió.
     """
-    if settings.is_secure_environment:
-        raise _simulation_forbidden()
-
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
@@ -728,7 +719,7 @@ async def simulate_anomaly(
     # Después del commit, como en la ingesta: un push con un `alertId` que la
     # transacción termina descartando deja al paciente tocando una notificación
     # que abre un formulario roto.
-    patient_app_service.schedule_alert_push(background, patient.id, alert_id, occurred_at)
+    patient_app_service.schedule_alert_push(background, patient.id, alert_id, occurred_at, kind)
     await logger.ainfo(
         "anomaly_simulated",
         study_id=str(study.id),

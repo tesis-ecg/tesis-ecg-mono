@@ -1,8 +1,7 @@
 import { Bell, ChevronLeft, ChevronRight } from "lucide-react-native";
-import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useMemo, useRef, useState } from "react";
 
-import type { AlertStatus } from "@/features/patient/api";
 import { routeForAlert } from "@/features/notifications/routeForAlert";
 import { alertMeta } from "@/features/patient/deviceMeta";
 import { useInfiniteAlerts } from "@/features/patient/hooks";
@@ -10,7 +9,7 @@ import type { PatientAlert } from "@/features/patient/types";
 import { cn } from "@/lib/cn";
 import { formatDateTime } from "@/lib/format";
 import * as haptics from "@/lib/haptics";
-import { ActivityIndicator, Pressable, Text, View } from "@/tw";
+import { ActivityIndicator, Pressable, View } from "@/tw";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -20,51 +19,39 @@ import { Refresh } from "@/components/ui/Refresh";
 import { Screen } from "@/components/ui/Screen";
 import { Body, Caption, Heading } from "@/components/ui/typography";
 
-/**
- * Los tres filtros, en el orden en que se leen.
- *
- * "Pendientes" arranca elegido y no "Todas": el paciente entra acá desde la
- * campana, que le dice cuántos avisos tiene sin responder. Abrir en la lista
- * completa lo obligaba a buscar entre los ya contestados justamente los que
- * venía a resolver.
- */
-const FILTERS: { value: AlertStatus; label: string }[] = [
-  { value: "all", label: "Todas" },
-  { value: "pending", label: "Pendientes" },
-  { value: "answered", label: "Respondidas" },
-];
-
-/** Qué decir cuando el filtro elegido no tiene nada para mostrar. */
-const EMPTY_TEXT: Record<AlertStatus, { title: string; description: string }> =
-  {
-    all: {
-      title: "Todavía no hay notificaciones",
-      description: "Cuando haya algo para revisar, va a aparecer acá.",
-    },
-    pending: {
-      title: "No tenés avisos sin responder",
-      description:
-        "Contestaste todo lo que te pedimos. Te avisamos si aparece algo nuevo.",
-    },
-    answered: {
-      title: "Todavía no respondiste ninguno",
-      description: "Los avisos que contestes van a quedar guardados acá.",
-    },
-  };
-
 export default function NotificationsScreen() {
   const router = useRouter();
-  const [filter, setFilter] = useState<AlertStatus>("pending");
-  const alerts = useInfiniteAlerts(filter);
+  const alerts = useInfiniteAlerts("actionable");
+  const { refetch } = alerts;
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const items = useMemo(
-    () => alerts.data?.pages.flatMap((page) => page.items) ?? [],
-    [alerts.data],
+  const hasFocusedOnce = useRef(false);
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    return (alerts.data?.pages ?? []).flatMap((page) =>
+      page.items.filter((alert) => {
+        if (seen.has(alert.id)) return false;
+        seen.add(alert.id);
+        return true;
+      }),
+    );
+  }, [alerts.data]);
+  // `total`, y no `pendingTotal`: esta bandeja también cuenta el único aviso
+  // vigente de mala colocación. Inicio conserva la cuenta clínica de siempre.
+  const actionableTotal = alerts.data?.pages[0]?.total;
+
+  useFocusEffect(
+    useCallback(() => {
+      // El primer fetch ya lo hace React Query. Al volver desde otra pantalla
+      // se fuerza uno para que una respuesta o una recuperación no queden en caché.
+      if (hasFocusedOnce.current) void refetch();
+      hasFocusedOnce.current = true;
+
+      // `signal_recovered` no manda otro push: mientras esta pantalla siga
+      // abierta hay que consultar el estado para retirar el aviso por sí solo.
+      const interval = setInterval(() => void refetch(), 60_000);
+      return () => clearInterval(interval);
+    }, [refetch]),
   );
-  // El mismo número que el badge de Inicio, y sale de la primera página porque
-  // el backend lo cuenta sobre el total, no sobre lo que se trajo hasta acá.
-  // No depende del filtro: es cuántos avisos quedan sin responder, siempre.
-  const pendingTotal = alerts.data?.pages[0]?.pendingTotal ?? 0;
 
   const refresh = async () => {
     setIsRefreshing(true);
@@ -92,49 +79,27 @@ export default function NotificationsScreen() {
     }
   };
 
-  /*
-    Header fijo, igual que el del formulario: el título dice cuántos avisos hay
-    sin responder, y con la lista scrolleando ese número se perdía apenas el
-    paciente bajaba un poco. Los filtros van acá arriba por lo mismo — cambiar
-    de vista no puede depender de volver al principio de la lista. El gradiente
-    lo aporta `Screen`.
-  */
+  // El encabezado queda fijo para que la cantidad de tareas vigentes no se
+  // pierda al recorrer una lista larga. El gradiente lo aporta `Screen`.
   const header = (
-    <View className="gap-4">
-      <View className="flex-row items-center gap-3">
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Volver"
-          onPress={() => router.back()}
-          className="size-11 items-center justify-center rounded-full bg-white"
-        >
-          <ChevronLeft size={24} color="#172126" />
-        </Pressable>
-        <Heading className="flex-1 text-center font-bold">
-          Notificaciones ({pendingTotal})
-        </Heading>
-        {/* Contrapeso del botón de volver: sin esto el título queda corrido. */}
-        <View className="size-11" />
-      </View>
-
-      <View className="flex-row gap-2">
-        {FILTERS.map((option) => (
-          <FilterPill
-            key={option.value}
-            label={option.label}
-            isSelected={filter === option.value}
-            onPress={() => {
-              if (filter === option.value) return;
-              haptics.selection();
-              setFilter(option.value);
-            }}
-          />
-        ))}
-      </View>
+    <View className="flex-row items-center gap-3">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Volver"
+        onPress={() => router.back()}
+        className="size-11 items-center justify-center rounded-full bg-white"
+      >
+        <ChevronLeft size={24} color="#172126" />
+      </Pressable>
+      <Heading className="flex-1 text-center font-bold">
+        {actionableTotal === undefined
+          ? "Notificaciones"
+          : `Notificaciones (${actionableTotal})`}
+      </Heading>
+      {/* Contrapeso del botón de volver: sin esto el título queda corrido. */}
+      <View className="size-11" />
     </View>
   );
-
-  const empty = EMPTY_TEXT[filter];
 
   return (
     <Screen
@@ -158,8 +123,8 @@ export default function NotificationsScreen() {
         <Card>
           <EmptyState
             icon={Bell}
-            title={empty.title}
-            description={empty.description}
+            title="No tenés notificaciones pendientes"
+            description="No hay nada que necesites hacer ahora. Te avisamos si aparece algo nuevo."
           />
         </Card>
       ) : (
@@ -192,46 +157,6 @@ export default function NotificationsScreen() {
         </View>
       )}
     </Screen>
-  );
-}
-
-/**
- * Un filtro de la fila.
- *
- * `flex-1` y no ancho por contenido: con tres pastillas de anchos distintos, la
- * fila se lee como tres botones sueltos y no como un control con tres estados.
- * El alto es el mínimo de toque de la app, no el que pide el texto.
- */
-function FilterPill({
-  label,
-  isSelected,
-  onPress,
-}: {
-  label: string;
-  isSelected: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="tab"
-      accessibilityState={{ selected: isSelected }}
-      accessibilityLabel={label}
-      onPress={onPress}
-      className={cn(
-        "min-h-11 items-center justify-center rounded-full px-4 shadow-lg h-12",
-        isSelected ? "bg-primary-500" : "bg-white",
-      )}
-    >
-      <Text
-        numberOfLines={1}
-        className={cn(
-          "text-[15px] font-semibold",
-          isSelected ? "text-white" : "text-gray-700",
-        )}
-      >
-        {label}
-      </Text>
-    </Pressable>
   );
 }
 

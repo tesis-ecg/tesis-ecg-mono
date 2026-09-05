@@ -317,6 +317,21 @@ def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
 _PUSHABLE = {ECGEventSeverity.HIGH: 1, ECGEventSeverity.CRITICAL: 2}
 
 
+@dataclass(frozen=True)
+class Pushable:
+    """La alerta que se va a notificar, con lo que el push necesita saber.
+
+    El `kind` viaja hasta acá porque el título del aviso lo nombra ("tu chaleco
+    registró un ritmo irregular") y el formulario que abre lo encabeza. Deducirlo
+    después, del lado del push, obligaría a releer el evento con la transacción
+    ya cerrada.
+    """
+
+    rank: int
+    alert_id: uuid.UUID
+    kind: str
+
+
 async def _persist_events(
     db: AsyncSession,
     batch: ECGBatch,
@@ -324,14 +339,14 @@ async def _persist_events(
     events: list[DerivedEvent],
     start_sample_index: int,
     sample_rate: int,
-) -> tuple[int, tuple[int, uuid.UUID] | None]:
+) -> tuple[int, Pushable | None]:
     """Persiste los eventos y devuelve `(cuántos, la alerta más severa a notificar)`.
 
     La alerta viaja hacia arriba en vez de notificarse acá porque todavía no se
     commiteó: mandarle al paciente un push con un `alertId` que después la
     transacción descarta lo dejaría tocando una notificación rota.
     """
-    pushable: tuple[int, uuid.UUID] | None = None
+    pushable: Pushable | None = None
     for derived in events:
         absolute = start_sample_index + derived.start_sample
         event = ECGEvent(
@@ -365,8 +380,8 @@ async def _persist_events(
             # Un lote de 1 h puede traer varias anomalías. Se notifica una sola
             # —la más severa— para no vaciar la batería del celular ni saturar
             # al paciente con avisos que va a terminar silenciando.
-            if rank is not None and (pushable is None or rank > pushable[0]):
-                pushable = (rank, alert.id)
+            if rank is not None and (pushable is None or rank > pushable.rank):
+                pushable = Pushable(rank=rank, alert_id=alert.id, kind=derived.kind)
     return len(events), pushable
 
 
@@ -377,7 +392,7 @@ async def _persist_events(
 
 async def _process_one_batch(
     db: AsyncSession, study: Study, batch: ECGBatch
-) -> tuple[int, int, tuple[int, uuid.UUID] | None]:
+) -> tuple[int, int, Pushable | None]:
     """Procesa un lote con el estudio ya bloqueado; no maneja la transacción."""
     if batch.frames_s3_key is None:
         raise RuntimeError("El lote no tiene tramas archivadas.")
@@ -474,12 +489,14 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
             raise RuntimeError("el estudio del lote no existe")
 
         processed: list[tuple[ECGBatch, int, int]] = []
-        pushable: tuple[int, uuid.UUID] | None = None
+        pushable: Pushable | None = None
         for pending in await repo.list_batches_to_process(db, study.id):
             failed_batch_id = pending.id
             samples, events, batch_pushable = await _process_one_batch(db, study, pending)
             processed.append((pending, samples, events))
-            if batch_pushable is not None and (pushable is None or batch_pushable[0] > pushable[0]):
+            if batch_pushable is not None and (
+                pushable is None or batch_pushable.rank > pushable.rank
+            ):
                 pushable = batch_pushable
 
         patient_id = study.patient_id
@@ -496,7 +513,8 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
         # que existir cuando el paciente toque la notificación.
         if pushable is not None:
             await notify_patient_task(
-                patient_id, anomaly_message(pushable[1], datetime.now(UTC).isoformat())
+                patient_id,
+                anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
             )
     except Exception as error:  # noqa: BLE001 — el estado del lote tiene que reflejarlo
         await db.rollback()

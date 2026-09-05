@@ -49,6 +49,22 @@ export interface CatalogOptionOut {
   "label": string
 }
 
+export interface DashboardActivityOut {
+  "days": Array<DashboardActivityPointOut>
+  "alertsTrend": DashboardTrendOut
+  "studiesTrend": DashboardTrendOut
+  "patientsTrend": DashboardTrendOut
+  "pendingBySeverity": Array<DashboardSeverityBucketOut>
+  "fleet": DashboardFleetOut
+}
+
+export interface DashboardActivityPointOut {
+  "date": string
+  "alerts": number
+  "reports": number
+  "studies": number
+}
+
 export interface DashboardAlertOut {
   "id": string
   "patientId": string
@@ -57,6 +73,11 @@ export interface DashboardAlertOut {
   "severity": string
   "detectedAt": string
   "studyId": string | null
+}
+
+export interface DashboardFleetOut {
+  "assigned": number
+  "transmitting": number
 }
 
 export interface DashboardKpisOut {
@@ -74,6 +95,17 @@ export interface DashboardOverviewOut {
   "attentionPatients": Array<AttentionPatientOut>
   "runningStudies": Array<RunningStudyOut>
   "deviceWatchdog": Array<DeviceWatchdogOut>
+  "activity": DashboardActivityOut
+}
+
+export interface DashboardSeverityBucketOut {
+  "severity": string
+  "count": number
+}
+
+export interface DashboardTrendOut {
+  "current": number
+  "previous": number
 }
 
 export type DeviceStatus = "available" | "assigned" | "maintenance" | "retired"
@@ -252,7 +284,7 @@ export interface MobileAlertOut {
   "answeredAt": string | null
 }
 
-export type MobileAlertStatus = "all" | "pending" | "answered"
+export type MobileAlertStatus = "all" | "pending" | "answered" | "actionable"
 
 export interface MobileCatalogsOut {
   "symptoms": Array<CatalogOptionOut>

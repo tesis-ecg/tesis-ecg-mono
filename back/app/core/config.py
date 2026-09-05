@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # refresh corto lo obligaría a re-loguearse justo cuando llega el aviso.
     mobile_refresh_expire_days: int = Field(default=60, ge=1, le=365)
     auth_rate_limit_secret: str | None = Field(default=None, min_length=32)
+    # Cifra la copia legible de la API key de cada chaleco (`app.core.device_keys`).
+    # Si no está, la clave se deriva por HKDF del `jwt_secret`: un secreto nuevo
+    # obligatorio rompería todos los .env, el compose y el deploy de una.
+    device_api_key_secret: str | None = Field(default=None, min_length=32)
     readiness_token: str | None = Field(default=None, min_length=32)
 
     frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:5173")
@@ -70,8 +74,8 @@ class Settings(BaseSettings):
     # Los dos límites alimentan el `default` de un Query(ge=1, le=50), y FastAPI no
     # valida el default: las cotas tienen que estar acá o un .env fuera de rango
     # pasaría sin chistar cuando el FE llama sin query params.
-    dashboard_widget_limit: int = Field(default=6, ge=1, le=50)
-    dashboard_alerts_limit: int = Field(default=10, ge=1, le=50)
+    dashboard_widget_limit: int = Field(default=4, ge=1, le=50)
+    dashboard_alerts_limit: int = Field(default=8, ge=1, le=50)
 
     # Push (Expo). Apagado por defecto: los tests y CI no salen a internet, y
     # con esto en falso el sender es un noop que igual registra qué se habría

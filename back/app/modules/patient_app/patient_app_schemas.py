@@ -231,15 +231,19 @@ class MobileReportListInput:
 class MobileAlertStatus(enum.StrEnum):
     """Qué avisos pide la app.
 
-    Son tres y no un booleano porque el centro de avisos ofrece las tres vistas
-    como filtro. `ANSWERED` no es "todo lo que no está pendiente": el aviso de
-    chaleco mal colocado no pide respuesta, así que no cae en ninguno de los dos
-    lados y solo aparece en `ALL`.
+    `ACTIONABLE` es la bandeja operativa del paciente: pedidos clínicos todavía
+    sin responder más, como máximo, el episodio vigente de chaleco mal colocado.
+    Las otras tres vistas se conservan para compatibilidad con clientes previos.
+
+    `ANSWERED` no es "todo lo que no está pendiente": el aviso de chaleco mal
+    colocado no pide respuesta, así que solo aparece en `ALL` o en `ACTIONABLE`
+    mientras el equipo siga reportando mala colocación.
     """
 
     ALL = "all"
     PENDING = "pending"
     ANSWERED = "answered"
+    ACTIONABLE = "actionable"
 
 
 @dataclass(frozen=True)

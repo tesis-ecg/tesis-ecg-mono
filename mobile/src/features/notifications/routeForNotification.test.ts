@@ -9,6 +9,25 @@ describe('routeForNotification', () => {
         type: 'report_request',
         alertId: 'alert-1',
         occurredAt: '2026-08-30T14:30:00Z',
+        kind: 'afib',
+      }),
+    ).toEqual({
+      pathname: '/report',
+      // El `kind` viaja para que el formulario pueda encabezar con qué se
+      // detectó: sin eso el paciente tiene que adivinar de qué le hablamos.
+      params: { alertId: 'alert-1', occurredAt: '2026-08-30T14:30:00Z', kind: 'afib' },
+    })
+  })
+
+  it('un aviso viejo sin tipo igual abre el formulario', () => {
+    // Los pushes que ya estaban en la bandeja antes de este cambio no traen
+    // `kind`. La clave no puede viajar vacía: el formulario decide con su
+    // presencia si tiene algo que nombrar.
+    expect(
+      routeForNotification({
+        type: 'report_request',
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
       }),
     ).toEqual({
       pathname: '/report',

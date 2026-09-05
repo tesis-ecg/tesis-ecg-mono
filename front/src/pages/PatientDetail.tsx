@@ -1,6 +1,7 @@
 import {
   Activity,
   ArrowLeft,
+  ClipboardList,
   FileSearch,
   Heart,
   HeartPulse,
@@ -209,9 +210,18 @@ export function PatientDetail() {
       {/* Tabs */}
       <Tabs value={tab} onValueChange={setTab} className="flex flex-col gap-4">
         <TabsList>
-          <TabsTrigger value="resumen">Resumen</TabsTrigger>
-          <TabsTrigger value="estudios">Estudios</TabsTrigger>
-          <TabsTrigger value="dispositivo">Dispositivo</TabsTrigger>
+          <TabsTrigger value="resumen">
+            <ClipboardList className="size-4" aria-hidden />
+            Resumen
+          </TabsTrigger>
+          <TabsTrigger value="estudios">
+            <Activity className="size-4" aria-hidden />
+            Estudios
+          </TabsTrigger>
+          <TabsTrigger value="dispositivo">
+            <HeartPulse className="size-4" aria-hidden />
+            Dispositivo
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="resumen" className="flex flex-col gap-4">

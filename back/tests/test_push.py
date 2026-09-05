@@ -9,6 +9,7 @@ Dos superficies distintas:
   avisa al paciente que lo tiene mal puesto sin esperar al envío de la hora.
 """
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,6 +27,7 @@ from app.core.push import (
     PushMessage,
 )
 from app.db.models.alert import Alert, AlertSeverity
+from app.db.models.device import DeviceStatus
 from app.db.models.push_token import PushToken
 from app.db.models.user import User
 from app.ml.decompression import FLAG_EVENT_MARKER
@@ -402,6 +404,11 @@ async def test_una_anomalia_notifica_una_sola_vez_y_abre_la_bitacora(
     assert len(sent_pushes) == 1, "un lote de 1 h no puede disparar una notificación por evento"
     _, mensaje = sent_pushes[0]
     assert mensaje.data["type"] == "report_request"
+    # El tipo de hallazgo viaja con el aviso: nombra el título del push y
+    # encabeza el formulario que abre, para que el paciente pueda reconstruir
+    # qué estaba haciendo en ese momento.
+    assert mensaje.data["kind"] == "symptom_marker"
+    assert "síntoma" in mensaje.title
     alert_id = mensaje.data["alertId"]
 
     # El paciente responde el formulario que abrió la notificación.
@@ -524,3 +531,120 @@ async def test_historial_de_avisos_pagina_y_filtra_por_estado(
     assert vest_out["needsReport"] is False
     assert vest_out["reportId"] is None
     assert vest_out["answeredAt"] is None
+
+
+async def test_bandeja_actionable_muestra_solo_el_episodio_vigente_del_chaleco(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_patient_account: Callable[..., Any],
+    make_device: Callable[..., Any],
+    mobile_headers: Callable[[User], dict[str, str]],
+) -> None:
+    patient = await make_patient()
+    account = await make_patient_account(patient)
+    device, _ = await make_device(patient=patient, placement_ok=False)
+    now = datetime.now(UTC)
+    vest_vieja = Alert(
+        patient_id=patient.id,
+        kind="vest_misplaced",
+        severity=AlertSeverity.HIGH,
+        message="Primer episodio de mala colocación.",
+        created_at=now - timedelta(minutes=10),
+    )
+    vest_vigente = Alert(
+        patient_id=patient.id,
+        kind="vest_misplaced",
+        severity=AlertSeverity.HIGH,
+        message="El chaleco sigue mal colocado.",
+        created_at=now - timedelta(minutes=2),
+    )
+    pendiente = Alert(
+        patient_id=patient.id,
+        kind="afib",
+        severity=AlertSeverity.CRITICAL,
+        message="Contanos cómo te sentiste.",
+        created_at=now,
+    )
+    respondida = Alert(
+        patient_id=patient.id,
+        kind="other",
+        severity=AlertSeverity.MEDIUM,
+        message="Aviso ya respondido.",
+        created_at=now - timedelta(minutes=1),
+    )
+    db.add_all([vest_vieja, vest_vigente, pendiente, respondida])
+    await db.flush()
+
+    headers = mobile_headers(account)
+    respuesta = await client.post(
+        "/mobile/reports",
+        json={"alertId": str(respondida.id), "symptoms": ["mareo"], "activity": "reposo"},
+        headers=headers,
+    )
+    assert respuesta.status_code == 201, respuesta.text
+
+    first_page = await client.get("/mobile/alerts?limit=1&status=actionable", headers=headers)
+    second_page = await client.get(
+        "/mobile/alerts?limit=1&offset=1&status=actionable", headers=headers
+    )
+    assert first_page.status_code == 200, first_page.text
+    assert second_page.status_code == 200, second_page.text
+    assert first_page.json()["total"] == 2
+    assert first_page.json()["pendingTotal"] == 1
+    assert [item["id"] for item in first_page.json()["items"]] == [str(vest_vigente.id)]
+    assert [item["id"] for item in second_page.json()["items"]] == [str(pendiente.id)]
+
+    # La recuperación cambia estado, no borra historia: el aviso desaparece de
+    # la bandeja operativa pero sigue disponible en `all`.
+    device.placement_ok = True
+    await db.flush()
+    recovered = await client.get("/mobile/alerts?limit=10&status=actionable", headers=headers)
+    assert [item["id"] for item in recovered.json()["items"]] == [str(pendiente.id)]
+    assert recovered.json()["total"] == 1
+    assert recovered.json()["pendingTotal"] == 1
+
+    # Sin una medición actual o sin equipo asignado tampoco se afirma que el
+    # chaleco está mal colocado.
+    device.placement_ok = None
+    await db.flush()
+    unknown = await client.get("/mobile/alerts?status=actionable", headers=headers)
+    assert [item["id"] for item in unknown.json()["items"]] == [str(pendiente.id)]
+
+    device.placement_ok = False
+    device.patient_id = None
+    device.status = DeviceStatus.AVAILABLE
+    await db.flush()
+    unassigned = await client.get("/mobile/alerts?status=actionable", headers=headers)
+    assert [item["id"] for item in unassigned.json()["items"]] == [str(pendiente.id)]
+
+
+def test_el_titulo_del_aviso_nombra_el_hallazgo() -> None:
+    """Un push que no dice de qué es, no se abre.
+
+    "Registrá cómo te sentís" describía la tarea y no el motivo, así que en la
+    bandeja era indistinguible de cualquier otro recordatorio. El título ahora
+    nombra el hallazgo con las mismas palabras que usa la app.
+    """
+    from app.modules.patient_app.notifications_service import anomaly_message
+
+    afib = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00", "afib")
+
+    assert afib.title == "Tu chaleco registró un ritmo irregular"
+    assert afib.data["kind"] == "afib"
+    # El cuerpo cierra con la acción: Expo no dibuja botones, así que el CTA
+    # tiene que estar en el texto o no existe.
+    assert afib.body.endswith("Tocá para responder, es un minuto.")
+
+
+def test_un_tipo_desconocido_no_deja_el_aviso_mudo() -> None:
+    """Un `kind` nuevo del pipeline no puede romper la notificación."""
+    from app.modules.patient_app.notifications_service import anomaly_message
+
+    sin_kind = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00")
+    raro = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00", "algo_nuevo")
+
+    assert sin_kind.title == "Hay un momento de tu registro para revisar"
+    assert raro.title == sin_kind.title
+    # Sin `kind` la clave no viaja: el formulario cae en su etiqueta genérica.
+    assert "kind" not in sin_kind.data

@@ -102,11 +102,11 @@ async def simulate_anomaly(
 ) -> SimulateAnomalyOut:
     """Banco de pruebas: fabrica un hallazgo clínico y notifica al paciente.
 
-    Solo admin y solo fuera de preview/producción — escribe un `ecg_event` y una
-    `alert` reales sobre la historia de un paciente. Es el reemplazo temporal
-    del pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar
-    el aviso de anomalía, el formulario de la bitácora y la respuesta sobre el
-    ECG sin hardware.
+    Solo admin, en cualquier entorno — escribe un `ecg_event` y una `alert`
+    reales sobre la historia de un paciente. Es el reemplazo temporal del
+    pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar el
+    aviso de anomalía, el formulario de la bitácora y la respuesta sobre el ECG
+    sin hardware — también en el sistema desplegado, que es donde se demuestra.
     """
     if not scope.is_admin:
         raise HTTPException(

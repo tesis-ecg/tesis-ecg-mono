@@ -73,10 +73,52 @@ export interface DeviceWatchdogItem {
   reason: DeviceWatchdogReason
 }
 
+// --- Actividad (lo que alimenta los gráficos de la home) ---
+
+export interface ActivityPoint {
+  /** `YYYY-MM-DD`. Siempre vienen 7, con ceros donde no pasó nada. */
+  date: string
+  alerts: number
+  reports: number
+  studies: number
+}
+
+/**
+ * Flujo de los últimos 7 días contra los 7 anteriores.
+ *
+ * Es flujo y no stock: `current` es cuántas alertas *entraron* esta semana, no
+ * cuántas quedan pendientes. Por eso la tarjeta lo rotula "últimos 7 días" en
+ * vez de presentarlo como un delta del número grande.
+ */
+export interface ActivityTrend {
+  current: number
+  previous: number
+}
+
+export interface SeverityBucket {
+  severity: AlertSeverity
+  count: number
+}
+
+export interface FleetHealth {
+  assigned: number
+  transmitting: number
+}
+
+export interface DashboardActivity {
+  days: ActivityPoint[]
+  alertsTrend: ActivityTrend
+  studiesTrend: ActivityTrend
+  patientsTrend: ActivityTrend
+  pendingBySeverity: SeverityBucket[]
+  fleet: FleetHealth
+}
+
 export interface DashboardOverview {
   kpis: DashboardKpis
   alerts: DashboardAlert[]
   attentionPatients: AttentionPatient[]
   runningStudies: RunningStudy[]
   deviceWatchdog: DeviceWatchdogItem[]
+  activity: DashboardActivity
 }

@@ -57,6 +57,10 @@
   --color-warning-300: #f7dcac;
   --color-warning-400: #f3d097;
   --color-warning-500: #efc482;
+  /* El único ámbar de la rampa que contrasta sobre blanco: el 500 se pierde y
+     el 700 se lee marrón. Es el mismo tono con el que el visor de ECG pinta la
+     severidad alta (`--ecg-alert-high`), que ahora sale de acá. */
+  --color-warning-600: #b86a16;
   --color-warning-700: #4a2b14;
 
   /* ---------- Info (de ican) ---------- */
@@ -126,7 +130,7 @@
   --ecg-alert-medium-bg: rgba(41, 77, 236, 0.14);
   --ecg-alert-medium-timeline-bg: rgba(41, 77, 236, 0.28);
   --ecg-alert-medium-marker-bg: #dbe3ff;
-  --ecg-alert-high: #b86a16;
+  --ecg-alert-high: var(--color-warning-600);
   --ecg-alert-high-bg: rgba(239, 196, 130, 0.24);
   --ecg-alert-high-timeline-bg: rgba(239, 196, 130, 0.48);
   --ecg-alert-high-marker-bg: #fae8ca;
