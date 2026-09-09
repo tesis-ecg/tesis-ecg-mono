@@ -89,14 +89,23 @@ async def test_a_reboot_lets_the_cursor_jump_forward_over_the_lost_frames(
     assert study.last_boot_id == 4
 
 
-async def test_a_reboot_does_not_let_the_cursor_go_backwards(
+async def test_a_rewound_seq_that_is_not_archived_is_rejected_loudly(
     client, s3, db, make_patient, make_device
 ) -> None:
-    """La `seq` no rebobina en un reinicio: §4.3 la describe como continua entre boots.
+    """El modo de falla más caro de la integración, cerrado (`INTEGRACION.md` §11.6).
 
-    Un lote que arranca antes del cursor con otro `bootId` solo puede ser un
-    error, y aceptarlo sobreescribiría en S3 los objetos del estudio, que se
-    nombran con el `first_seq` del lote.
+    Los cursores del log viven en la metadata de la flash. Al actualizar el
+    firmware cambia el formato de esa metadata y el equipo arranca `writeSeq_` en
+    0, así que sus tramas caen enteras por debajo de nuestro cursor.
+
+    Antes eso se contestaba como duplicado: se re-confirmaba el cursor viejo y el
+    equipo borraba de su flash un lote que **nunca se archivó**. Pérdida
+    permanente y silenciosa de todo el estudio nuevo — el equipo creía que llegó
+    y nosotros que era una repetición.
+
+    Ahora falla con un código propio. El estudio en curso hay que cerrarlo antes
+    de que este equipo pueda volver a subir, que es la regla operativa que ya
+    pedía el documento.
     """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
@@ -106,19 +115,40 @@ async def test_a_reboot_does_not_let_the_cursor_go_backwards(
     ).json()
     cursor = first["lastAcceptedSeq"]
 
-    second = (
-        await post_frames(
-            client, device, api_key, build_frames(1500, boot_id=4, first_seq=0, t0_ms=0)
-        )
-    ).json()
+    response = await post_frames(
+        client, device, api_key, build_frames(1500, boot_id=4, first_seq=0, t0_ms=0)
+    )
 
-    assert second["framesAccepted"] > 0  # se re-confirman, para que el equipo no cicle
-    assert second["framesDuplicate"] == second["framesAccepted"]
-    assert second["batchId"] is None  # nada nuevo se archivó
-    assert second["lastAcceptedSeq"] == cursor
-    study = await db.get(Study, second["studyId"])
+    assert response.status_code == 409
+    assert response.json()["code"] == "STUDY_SEQ_REWIND"
+    # El cursor no se movió: lo ya archivado sigue siendo lo único confirmado.
+    study = await db.get(Study, first["studyId"])
     assert study is not None
     assert study.last_ingested_seq == cursor
+
+
+async def test_a_rewound_seq_that_IS_archived_is_still_a_duplicate(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """La retransmisión legítima bajo otro `bootId` se sigue re-confirmando.
+
+    Es el caso que hay que no romper al cerrar el de arriba: mirando solo los
+    números los dos son idénticos. Lo que los separa es si las tramas están
+    archivadas, y acá lo están, así que el ACK las vuelve a confirmar para que el
+    equipo no reintente el mismo lote para siempre.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(1800, boot_id=2, first_seq=0)
+
+    first = (await post_frames(client, device, api_key, frames)).json()
+
+    replay = build_frames(1800, boot_id=5, first_seq=0, t0_ms=0)
+    second = (await post_frames(client, device, api_key, replay)).json()
+
+    assert second["framesDuplicate"] == len(replay)
+    assert second["batchId"] is None  # nada nuevo se archivó
+    assert second["lastAcceptedSeq"] == first["lastAcceptedSeq"]
 
 
 async def test_boot_id_wrapping_from_15_to_0_counts_as_a_change(

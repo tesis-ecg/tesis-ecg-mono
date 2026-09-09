@@ -2,6 +2,25 @@ export type ECGAnnotationSeverity = 'low' | 'medium' | 'high' | 'critical'
 
 export type ECGAnnotationCategory = 'signal_quality' | 'clinical' | 'patient_marker' | 'technical'
 
+/** Un tramo contiguo de grabación, con su hora de pared real. */
+export interface ECGTimelineSegment {
+  ordinal: number
+  /** Dónde arranca dentro del buffer de muestras (que no deja huecos). */
+  startSampleIndex: number
+  sampleCount: number
+  /** Hora real de la primera y la última muestra del tramo. */
+  startEpochMs: number
+  endEpochMs: number
+  bootId: number | null
+  /**
+   * `ntp` es una hora sincronizada por el puente WiFi. `server_receive` es el
+   * camino viejo, derivado de la hora de recepción del backend, así que trae
+   * adentro la latencia del pedido. `none` es el puente sin sincronizar.
+   */
+  anchorSource: 'ntp' | 'none' | 'server_receive'
+  anchorUncertaintyMs: number | null
+}
+
 export interface ECGAnnotation {
   id: string
   kind: string
@@ -40,6 +59,23 @@ export interface ECGSignal {
   samples: Float32Array
   /** Timestamp UNIX en ms del primer sample (`samples[0]`). */
   startTimestamp: number
+  /**
+   * Hora de pared de cada muestra, en ms epoch, alineada con `samples`.
+   *
+   * Es lo que permite que el eje sea hora real y no tiempo transcurrido. Existe
+   * porque las dos cosas dejan de coincidir en cuanto el chaleco deja de grabar
+   * un rato: el buffer de muestras pega los bordes del hueco y el índice de
+   * muestra se corre respecto de la hora para todo lo que viene después.
+   */
+  timestampsMs: Float64Array
+  /**
+   * Índices de `samples` donde arranca cada tramo posterior al primero. El visor
+   * corta la traza ahí para que un hueco se vea como un hueco y no como una
+   * línea que une dos instantes que nunca fueron contiguos.
+   */
+  gapIndices: number[]
+  /** Tramos contiguos de grabación con su hora real. Vacío en estudios legacy. */
+  timeline: ECGTimelineSegment[]
   /** Hallazgos y problemas de calidad alineados al mismo eje temporal. */
   annotations: ECGAnnotation[]
 }

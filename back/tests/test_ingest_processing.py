@@ -130,9 +130,12 @@ async def test_pyramid_levels_are_exact_reductions_of_the_signal(
     signal = np.frombuffer(get_object(study.ecg_segments[0]["key"]), dtype="<f4")
     for level in study.ecg_pyramid_levels:
         bucket = level["samplesPerBucket"]
-        stored = np.frombuffer(get_object(level["key"]), dtype="<f4")
+        # Un nivel es una lista de chunks: cada lote anexa el suyo en vez de
+        # reescribir el nivel entero. Concatenados en orden dan el nivel completo.
+        parts = [get_object(chunk["key"]) for chunk in level["chunks"]]
+        stored = np.frombuffer(b"".join(parts), dtype="<f4")
         assert stored.size == level["pointCount"]
-        assert len(get_object(level["key"])) == level["byteLength"]
+        assert sum(len(part) for part in parts) == sum(c["byteLength"] for c in level["chunks"])
         # Cada bucket contiene el min y el max reales de su tramo.
         for index in range(stored.size // 2):
             chunk = signal[index * bucket : (index + 1) * bucket]
@@ -613,3 +616,100 @@ async def test_duration_reflects_a_real_gap_between_batches(
     assert samples_ms == 6_000  # 3000 muestras a 500 SPS
     # El hueco de 3 h está en la duración, no disuelto.
     assert (study.duration_ms or 0) > 3 * 3_600_000
+
+
+# --------------------------------------------------------------------------- #
+# Regresión del hallazgo 3 del informe de Biomédica (8/9/2026)
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_work_per_batch_does_not_grow_with_the_study(
+    client, s3, db, make_patient, make_device, monkeypatch
+) -> None:
+    """Un lote tarda lo mismo sea el primero o el trigésimo.
+
+    Es la causa de los `500 INTERNAL_ERROR` que reportó Biomédica. `rebuild_pyramid`
+    releía de S3 **todas** las envolventes ya archivadas del estudio en cada lote:
+    el lote 1 leía un objeto, el lote 30 leía treinta. Cuadrático sobre la
+    duración del estudio, y corriendo con la fila del estudio bloqueada, así que
+    el POST siguiente esperaba ese lock hasta morir en el `statement_timeout` de
+    15 s — que es exactamente el tiempo que midieron en los lotes que fallaron.
+
+    Se mide en lecturas de S3 y no en segundos: el reloj de un test es ruido, y
+    lo que hay que fijar es la complejidad, no la velocidad de esta máquina.
+    """
+    from app.core import s3 as s3_module
+    from app.modules.ingest import processing
+
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    reads: list[int] = []
+    counter = {"n": 0}
+    real_get = s3_module.get_object
+
+    def counting_get(key: str) -> bytes:
+        counter["n"] += 1
+        return real_get(key)
+
+    monkeypatch.setattr(processing, "get_object", counting_get)
+
+    frames = build_frames(24_000)
+    per_batch = max(len(frames) // 12, 1)
+    for start in range(0, len(frames), per_batch):
+        counter["n"] = 0
+        await _ingest_and_process(client, db, device, api_key, frames[start : start + per_batch])
+        reads.append(counter["n"])
+
+    assert len(reads) >= 8, "hacen falta varios lotes para que la tendencia signifique algo"
+    assert len(reads) < processing.LEVEL_COMPACTION_THRESHOLD, (
+        "el test tiene que quedar por debajo del umbral de compactación: "
+        "una compactación es una lectura grande legítima y amortizada, y taparía "
+        "la tendencia que se está midiendo"
+    )
+    # Cota justa a propósito. Cada lote lee sus propias tramas y nada más, así
+    # que el piso es 1 y el techo tiene que ser el piso. Con el comportamiento
+    # viejo el lote N leía N envolventes y esto daba `reads[-1] ≈ len(reads)`.
+    assert max(reads) <= reads[0] + 1, f"el trabajo por lote crece con el estudio: {reads}"
+
+
+async def test_a_contended_lock_leaves_the_batch_pending_not_failed(
+    client, s3, db, make_patient, make_device, monkeypatch
+) -> None:
+    """Perder la carrera por la fila del estudio no es un lote roto.
+
+    El `lock_timeout` de 3 s hace fallar rápido a la sentencia, que es lo que un
+    request necesita. Pero el procesamiento corre en background y no tiene a
+    nadie esperando: si se rinde y marca el lote `FAILED`, ese lote solo se
+    vuelve a mirar cuando llega OTRO lote del mismo estudio. Si el chaleco ya
+    terminó de subir, la señal se queda archivada en S3 y sin procesar, sin que
+    nadie se entere.
+    """
+    from asyncpg.exceptions import LockNotAvailableError
+    from sqlalchemy.exc import DBAPIError
+
+    from app.modules.ingest import processing
+
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    body = (await post_frames(client, device, api_key, build_frames(900))).json()
+
+    attempts = {"n": 0}
+
+    async def _always_contended(_db, _study_id):
+        attempts["n"] += 1
+        raise DBAPIError("SELECT ... FOR UPDATE", {}, LockNotAvailableError())
+
+    monkeypatch.setattr(processing.repo, "get_study_for_update", _always_contended)
+    monkeypatch.setattr(processing, "LOCK_RETRY_SECONDS", 0)
+
+    await process_batch(db, body["batchId"])
+
+    assert attempts["n"] == processing.LOCK_ATTEMPTS, "tiene que reintentar antes de rendirse"
+    batch = await db.get(ECGBatch, body["batchId"])
+    assert batch is not None
+    await db.refresh(batch)
+    assert batch.processing_status is ProcessingStatus.PENDING, (
+        "un lote que solo perdió la carrera queda pendiente, no fallido"
+    )
+    assert batch.processing_error is None

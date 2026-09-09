@@ -5,6 +5,8 @@ import {
   acquireDevice,
   advanceClock,
   backlogBytes,
+  bridgeEpochMs,
+  initialClock,
   forgetClock,
   reboot,
   recordFrames,
@@ -76,7 +78,14 @@ describe('reloj del equipo simulado', () => {
     // hardware no puede producir y que el backend solo puede leer como una
     // retransmisión completa del estudio.
     const registry: ClockRegistry = new Map()
-    const restored = { bootId: 2, nextSeq: 90_000, t0Ms: 500, uptimeMs: 7_200_000, batteryPct: 61 }
+    const restored = {
+      bootId: 2,
+      nextSeq: 90_000,
+      t0Ms: 500,
+      uptimeMs: 7_200_000,
+      bootEpochMs: 1_757_000_000_000,
+      batteryPct: 61,
+    }
 
     const { clock } = acquireDevice(registry, 'vest-1', makeVestConfig(), restored)
 
@@ -186,5 +195,38 @@ describe('SD del equipo', () => {
 
     expect(window).toHaveLength(MAX_FRAMES_PER_REQUEST)
     expect(window[0].seq).toBe(10)
+  })
+})
+
+describe('ancla de hora del puente simulado', () => {
+  it('el arranque queda fijo mientras el reloj simulado avanza', () => {
+    // El reloj del chaleco simulado corre acelerado: `uptimeMs` avanza
+    // `batchMinutes` por lote, o sea media hora por cada segundo real. Mandar
+    // `Date.now()` como epoch del puente hacía que el backend calculara
+    // `arranque = epoch − uptime` y viera ese arranque irse media hora hacia
+    // atrás en cada envío: la línea de tiempo salía partida en un tramo por lote,
+    // con cada tramo empezando antes de que terminara el anterior.
+    const config = { ...makeVestConfig(), batchMinutes: 30 }
+    const clock = initialClock(config)
+
+    const anchors = [bridgeEpochMs(clock) - clock.uptimeMs]
+    for (let i = 0; i < 5; i++) {
+      advanceClock(clock, { lastSeq: i, sampleCount: 900_000 }, config.batchMinutes)
+      anchors.push(bridgeEpochMs(clock) - clock.uptimeMs)
+    }
+
+    expect(new Set(anchors).size).toBe(1)
+    // Y el epoch acompaña al reloj simulado en vez de quedarse en la hora real.
+    expect(bridgeEpochMs(clock)).toBe(anchors[0] + clock.uptimeMs)
+  })
+
+  it('un reinicio estrena ancla, que es lo que abre un tramo nuevo', () => {
+    const device = { clock: initialClock(makeVestConfig()), sd: { pending: [], overflowed: 0 } }
+    const before = device.clock.bootEpochMs
+
+    reboot(device)
+
+    expect(device.clock.uptimeMs).toBe(0)
+    expect(device.clock.bootEpochMs).toBeGreaterThan(before)
   })
 })

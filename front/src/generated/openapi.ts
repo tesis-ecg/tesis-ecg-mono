@@ -529,19 +529,26 @@ export interface StudyEcgAnnotationOut {
   "severity": "low" | "medium" | "high" | "critical"
   "startOffsetMs": number
   "endOffsetMs": number
+  "startEpochMs": number
+  "endEpochMs": number
   "confidenceScore": number | null
   "linkedAnnotationId"?: string | null
   "description"?: string | null
 }
 
-export interface StudyEcgLevelOut {
+export interface StudyEcgLevelChunkOut {
   "url": string
   "expiresAt": string
   "byteLength": number
   "sha256": string | null
+  "pointCount": number
+}
+
+export interface StudyEcgLevelOut {
   "samplesPerBucket": number
   "pointCount": number
   "encoding"?: string
+  "chunks": Array<StudyEcgLevelChunkOut>
 }
 
 export interface StudyEcgManifestOut {
@@ -557,6 +564,7 @@ export interface StudyEcgManifestOut {
   "raw": StudyEcgObjectOut | null
   "levels": Array<StudyEcgLevelOut>
   "segments"?: Array<StudyEcgSegmentOut>
+  "timeline"?: Array<StudyEcgTimelineSegmentOut>
   "annotations"?: Array<StudyEcgAnnotationOut>
 }
 
@@ -583,6 +591,17 @@ export interface StudyEcgSegmentOut {
   "sha256": string | null
   "startSampleIndex": number
   "sampleCount": number
+}
+
+export interface StudyEcgTimelineSegmentOut {
+  "ordinal": number
+  "startSampleIndex": number
+  "sampleCount": number
+  "startEpochMs": number
+  "endEpochMs": number
+  "bootId": number | null
+  "anchorSource": "ntp" | "none" | "server_receive"
+  "anchorUncertaintyMs": number | null
 }
 
 export interface StudyListResponse {

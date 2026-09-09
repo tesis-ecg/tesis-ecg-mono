@@ -63,10 +63,28 @@ class StudyEcgObjectOut(CamelModel):
     sha256: str | None
 
 
-class StudyEcgLevelOut(StudyEcgObjectOut):
+class StudyEcgLevelChunkOut(StudyEcgObjectOut):
+    """Un tramo de un nivel, aportado por un lote."""
+
+    pointCount: int
+
+
+class StudyEcgLevelOut(CamelModel):
+    """Un nivel de la pirámide, repartido en chunks.
+
+    Antes era un objeto único que se reescribía entero en cada lote. Eso crecía
+    con el estudio y corría con la fila del estudio bloqueada, que es lo que
+    producía los `500` bajo ingesta sostenida. Ahora cada lote anexa lo suyo y
+    los chunks se compactan de a ratos, así que el trabajo por lote es constante.
+
+    El cliente concatena `chunks` en orden — es la misma mecánica que ya usa con
+    `segments`. Un nivel compactado tiene un solo chunk.
+    """
+
     samplesPerBucket: int
     pointCount: int
     encoding: str = "minmax-float32-le"
+    chunks: list[StudyEcgLevelChunkOut]
 
 
 class StudyEcgSegmentOut(StudyEcgObjectOut):
@@ -85,6 +103,11 @@ class StudyEcgAnnotationOut(CamelModel):
     severity: Literal["low", "medium", "high", "critical"]
     startOffsetMs: int
     endOffsetMs: int
+    #: Hora de pared real del aviso, resuelta contra la línea de tiempo. Es lo
+    #: que el visor pinta en el eje: los offsets son sobre el buffer empaquetado
+    #: y se despegan de la hora en cuanto el estudio tiene un hueco.
+    startEpochMs: int
+    endEpochMs: int
     confidenceScore: float | None
     #: Cuando el registro es la respuesta del paciente al aviso de un hallazgo,
     #: el id de la anotación de ese hallazgo. El visor las dibuja unidas: sin
@@ -137,6 +160,28 @@ class StudyPatientReportsResponse(CamelModel):
     pendingSignalTotal: int
 
 
+class StudyEcgTimelineSegmentOut(CamelModel):
+    """Una corrida contigua de grabación, con su hora de pared real.
+
+    El buffer de muestras del estudio es continuo por construcción: cada lote se
+    pega al anterior. La grabación no lo es. Estos tramos son la traducción entre
+    las dos cosas, y son lo que permite dibujar un hueco como hueco en vez de
+    pegar los bordes y correr la hora de todo lo que sigue.
+    """
+
+    ordinal: int
+    startSampleIndex: int
+    sampleCount: int
+    startEpochMs: int
+    endEpochMs: int
+    bootId: int | None
+    #: `ntp` es una hora sincronizada por el puente; `server_receive` es el
+    #: camino viejo, derivado de nuestra hora de recepción y por lo tanto con la
+    #: latencia del pedido adentro. El visor lo usa para avisar cuánto vale.
+    anchorSource: Literal["ntp", "none", "server_receive"]
+    anchorUncertaintyMs: int | None
+
+
 class StudyEcgManifestOut(CamelModel):
     """Manifest v2.
 
@@ -152,7 +197,7 @@ class StudyEcgManifestOut(CamelModel):
     así que el cliente casi nunca necesita mirar `raw` ni `segments`.
     """
 
-    formatVersion: int = 2
+    formatVersion: int = 3
     channel: str = "ecg"
     encoding: str
     sampleRate: int
@@ -164,6 +209,9 @@ class StudyEcgManifestOut(CamelModel):
     raw: StudyEcgObjectOut | None
     levels: list[StudyEcgLevelOut]
     segments: list[StudyEcgSegmentOut] = Field(default_factory=list)
+    #: Tramos contiguos con su hora de pared. Vacío en los estudios seedeados o
+    #: legacy, donde el eje relativo sigue siendo correcto porque no hay huecos.
+    timeline: list[StudyEcgTimelineSegmentOut] = Field(default_factory=list)
     annotations: list[StudyEcgAnnotationOut] = Field(default_factory=list)
 
 

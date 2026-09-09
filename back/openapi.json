@@ -3066,6 +3066,10 @@
             ],
             "title": "Description"
           },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
           "endOffsetMs": {
             "title": "Endoffsetms",
             "type": "integer"
@@ -3101,6 +3105,10 @@
             "title": "Severity",
             "type": "string"
           },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
           "startOffsetMs": {
             "title": "Startoffsetms",
             "type": "integer"
@@ -3113,21 +3121,19 @@
           "severity",
           "startOffsetMs",
           "endOffsetMs",
+          "startEpochMs",
+          "endEpochMs",
           "confidenceScore"
         ],
         "title": "StudyEcgAnnotationOut",
         "type": "object"
       },
-      "StudyEcgLevelOut": {
+      "StudyEcgLevelChunkOut": {
+        "description": "Un tramo de un nivel, aportado por un lote.",
         "properties": {
           "byteLength": {
             "title": "Bytelength",
             "type": "integer"
-          },
-          "encoding": {
-            "default": "minmax-float32-le",
-            "title": "Encoding",
-            "type": "string"
           },
           "expiresAt": {
             "format": "date-time",
@@ -3136,10 +3142,6 @@
           },
           "pointCount": {
             "title": "Pointcount",
-            "type": "integer"
-          },
-          "samplesPerBucket": {
-            "title": "Samplesperbucket",
             "type": "integer"
           },
           "sha256": {
@@ -3163,8 +3165,39 @@
           "expiresAt",
           "byteLength",
           "sha256",
-          "samplesPerBucket",
           "pointCount"
+        ],
+        "title": "StudyEcgLevelChunkOut",
+        "type": "object"
+      },
+      "StudyEcgLevelOut": {
+        "description": "Un nivel de la pirámide, repartido en chunks.\n\nAntes era un objeto único que se reescribía entero en cada lote. Eso crecía\ncon el estudio y corría con la fila del estudio bloqueada, que es lo que\nproducía los `500` bajo ingesta sostenida. Ahora cada lote anexa lo suyo y\nlos chunks se compactan de a ratos, así que el trabajo por lote es constante.\n\nEl cliente concatena `chunks` en orden — es la misma mecánica que ya usa con\n`segments`. Un nivel compactado tiene un solo chunk.",
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgLevelChunkOut"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "encoding": {
+            "default": "minmax-float32-le",
+            "title": "Encoding",
+            "type": "string"
+          },
+          "pointCount": {
+            "title": "Pointcount",
+            "type": "integer"
+          },
+          "samplesPerBucket": {
+            "title": "Samplesperbucket",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "samplesPerBucket",
+          "pointCount",
+          "chunks"
         ],
         "title": "StudyEcgLevelOut",
         "type": "object"
@@ -3193,7 +3226,7 @@
             "type": "string"
           },
           "formatVersion": {
-            "default": 2,
+            "default": 3,
             "title": "Formatversion",
             "type": "integer"
           },
@@ -3239,6 +3272,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/StudyStatus"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgTimelineSegmentOut"
+            },
+            "title": "Timeline",
+            "type": "array"
           }
         },
         "required": [
@@ -3375,6 +3415,74 @@
           "sampleCount"
         ],
         "title": "StudyEcgSegmentOut",
+        "type": "object"
+      },
+      "StudyEcgTimelineSegmentOut": {
+        "description": "Una corrida contigua de grabación, con su hora de pared real.\n\nEl buffer de muestras del estudio es continuo por construcción: cada lote se\npega al anterior. La grabación no lo es. Estos tramos son la traducción entre\nlas dos cosas, y son lo que permite dibujar un hueco como hueco en vez de\npegar los bordes y correr la hora de todo lo que sigue.",
+        "properties": {
+          "anchorSource": {
+            "enum": [
+              "ntp",
+              "none",
+              "server_receive"
+            ],
+            "title": "Anchorsource",
+            "type": "string"
+          },
+          "anchorUncertaintyMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchoruncertaintyms"
+          },
+          "bootId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bootid"
+          },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "sampleCount": {
+            "title": "Samplecount",
+            "type": "integer"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
+          "startSampleIndex": {
+            "title": "Startsampleindex",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal",
+          "startSampleIndex",
+          "sampleCount",
+          "startEpochMs",
+          "endEpochMs",
+          "bootId",
+          "anchorSource",
+          "anchorUncertaintyMs"
+        ],
+        "title": "StudyEcgTimelineSegmentOut",
         "type": "object"
       },
       "StudyListResponse": {
@@ -6013,6 +6121,55 @@
               ],
               "title": "X-Battery-Pct"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-bridge-epoch-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Bridge-Epoch-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Source"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-uncertainty-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Uncertainty-Ms"
+            }
           }
         ],
         "requestBody": {
@@ -6137,6 +6294,55 @@
                 }
               ],
               "title": "X-Battery-Pct"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-bridge-epoch-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Bridge-Epoch-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Source"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-uncertainty-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Uncertainty-Ms"
             }
           }
         ],

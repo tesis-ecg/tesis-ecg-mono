@@ -9,6 +9,7 @@ from app.db.models.ecg_batch import ECGBatch
 from app.db.models.ecg_event import ECGEvent
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User
 
 
@@ -293,3 +294,22 @@ async def get_patient_for_update(db: AsyncSession, patient_id: uuid.UUID) -> Pat
         .with_for_update()
     )
     return result.scalar_one_or_none()
+
+
+async def list_timeline_segments(
+    db: AsyncSession, study_id: uuid.UUID
+) -> list[StudyTimelineSegment]:
+    """Tramos contiguos del estudio, en orden de grabación.
+
+    Es lo que el manifest expone para que el visor pueda dibujar el eje en hora
+    de pared real y los huecos como huecos.
+    """
+    result = await db.execute(
+        select(StudyTimelineSegment)
+        .where(
+            StudyTimelineSegment.study_id == study_id,
+            StudyTimelineSegment.deleted_at.is_(None),
+        )
+        .order_by(StudyTimelineSegment.ordinal)
+    )
+    return list(result.scalars().all())

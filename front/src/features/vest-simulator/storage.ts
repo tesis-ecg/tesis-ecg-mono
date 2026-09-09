@@ -69,13 +69,22 @@ export function saveFleet(configs: VestConfig[]): void {
 function isDeviceClock(value: unknown): value is DeviceClock {
   if (typeof value !== 'object' || value === null) return false
   const c = value as Record<string, unknown>
-  return (
-    typeof c.bootId === 'number' &&
-    typeof c.nextSeq === 'number' &&
-    typeof c.t0Ms === 'number' &&
-    typeof c.uptimeMs === 'number' &&
-    typeof c.batteryPct === 'number'
-  )
+  if (
+    typeof c.bootId !== 'number' ||
+    typeof c.nextSeq !== 'number' ||
+    typeof c.t0Ms !== 'number' ||
+    typeof c.uptimeMs !== 'number' ||
+    typeof c.batteryPct !== 'number'
+  ) {
+    return false
+  }
+  if (typeof c.bootEpochMs !== 'number') {
+    // Reloj guardado antes de que existiera el ancla. Se reconstruye en vez de
+    // descartar el reloj entero: perderlo devolvería el equipo a `seq 0`, que es
+    // el estado que esta persistencia existe para evitar.
+    c.bootEpochMs = Date.now() - c.uptimeMs
+  }
+  return true
 }
 
 /**

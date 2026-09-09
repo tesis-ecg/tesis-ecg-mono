@@ -24,8 +24,44 @@ export interface IngestHeaders {
   serial: string
   apiKey: string
   uptimeMs: number | null
+  /**
+   * Epoch UTC del puente, leído en el MISMO instante que `uptimeMs`. Sale de
+   * `bridgeEpochMs(clock)`, no de `Date.now()`: el reloj del chaleco simulado
+   * corre acelerado y las dos cifras tienen que venir del mismo reloj.
+   */
+  bridgeEpochMs: number | null
   firmwareVersion: string
   batteryPct: number | null
+}
+
+/**
+ * Cabeceras de hora del puente WiFi, iguales a las que manda el ESP32-C3 real
+ * (`docs/integracion-ingesta-con-horario.md`).
+ *
+ * El simulador las manda siempre. Es el banco de pruebas del equipo, así que si
+ * no las mandara dejaría de poder ingerir en cuanto se prenda el modo estricto,
+ * justo cuando más falta hace poder reproducir el comportamiento nuevo.
+ *
+ * La regla que importa es la misma que para el firmware (§3): el epoch y el
+ * uptime tienen que describir **el mismo instante**. Los dos salen del reloj
+ * simulado del chaleco, así que la resta da su arranque exacto y estable.
+ *
+ * Nota para corridas largas: el reloj simulado avanza `batchMinutes` por lote,
+ * mucho más rápido que el real, así que el epoch se va al futuro. Pasadas unas
+ * horas simuladas cruza `ingest_time_sync_max_skew_seconds` y el backend contesta
+ * `422 DEVICE_TIME_INVALID`. Es visible en el panel y se corre subiendo ese
+ * ajuste; taparlo acá mandando la hora real volvería a desalinear el ancla.
+ */
+function timeSyncHeaders(
+  uptimeMs: number | null,
+  bridgeEpochMs: number | null,
+): Record<string, string> {
+  if (uptimeMs === null || bridgeEpochMs === null) return {}
+  return {
+    'X-Bridge-Epoch-Ms': String(Math.round(bridgeEpochMs)),
+    'X-Time-Sync-Source': 'ntp',
+    'X-Time-Sync-Uncertainty-Ms': '50',
+  }
 }
 
 export interface IngestResult {
@@ -68,6 +104,7 @@ export async function postFrames(
   if (headers.batteryPct !== null) {
     requestHeaders['X-Battery-Pct'] = String(Math.round(headers.batteryPct))
   }
+  Object.assign(requestHeaders, timeSyncHeaders(headers.uptimeMs, headers.bridgeEpochMs))
 
   const response = await fetch('/api/ingest/ecg-frames', {
     method: 'POST',
@@ -166,6 +203,7 @@ export async function postDeviceStatus(
   if (headers.batteryPct !== null) {
     requestHeaders['X-Battery-Pct'] = String(Math.round(headers.batteryPct))
   }
+  Object.assign(requestHeaders, timeSyncHeaders(headers.uptimeMs, headers.bridgeEpochMs))
 
   const response = await fetch('/api/ingest/device-status', {
     method: 'POST',

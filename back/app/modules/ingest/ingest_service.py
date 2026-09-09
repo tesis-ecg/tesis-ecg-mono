@@ -11,6 +11,7 @@ Ese corte no es solo una optimización: `INTEGRACION.md` §4.6 pide confirmar
 bytes" de "los procesé" es exactamente eso.
 """
 
+import asyncio
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -25,8 +26,13 @@ from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_timeline_segment import TimeSyncSource
 from app.dependencies.device_dependencies import INGESTABLE_STATUSES, DeviceContext
-from app.ml.decompression import SAMPLE_RATE_HZ, FrameError, FrameInfo, iter_frames, read_header
+
+# `frame_header` y no `decompression`: la ruta del ACK solo valida cabeceras y
+# cuenta tramas, y ese módulo no arrastra numpy. Importarlo acá metía numpy en
+# cada arranque en frío de la función para contestar un 202 que no lo usa.
+from app.ml.frame_header import SAMPLE_RATE_HZ, FrameError, FrameInfo, iter_frames, read_header
 from app.modules.ingest import ingest_repository as repo
 from app.modules.ingest.ingest_schemas import (
     DeviceStatusAckOut,
@@ -48,6 +54,15 @@ def frames_key(study_id: uuid.UUID, first_seq: int) -> str:
     basura huérfana en S3.
     """
     return f"studies/{study_id}/frames/{first_seq:012d}.bin"
+
+
+@dataclass(frozen=True)
+class _Anchor:
+    """Ancla temporal de un lote, con de dónde salió y cuánto vale."""
+
+    epoch_ms: int
+    source: TimeSyncSource
+    uncertainty_ms: int
 
 
 @dataclass(frozen=True)
@@ -197,6 +212,37 @@ async def _resolve_study(
     return study, patient
 
 
+async def _guard_seq_rewind(
+    db: AsyncSession, study: Study, frames: list[_ParsedFrame], boot_id: int
+) -> None:
+    """Corta el modo de falla más caro de la integración (`INTEGRACION.md` §11.6).
+
+    Los cursores del log viven en la metadata de la flash. Si cambia el formato
+    de esa metadata —que es lo que pasa al actualizar el firmware— el equipo
+    arranca `writeSeq_` en 0. Sus tramas caen entonces enteras por debajo de
+    nuestro cursor, `_ack_window` las cuenta como ya almacenadas, y el ACK
+    devuelve el cursor viejo: el equipo da por entregado un lote que **no se
+    archivó** y lo borra de su flash. Pérdida permanente y silenciosa.
+
+    Mirando solo los números ese caso es idéntico a una retransmisión legítima
+    bajo otro `bootId`. Lo que los separa es si las tramas están archivadas, así
+    que se pregunta exactamente eso, y solo en el caso raro que lo amerita: lote
+    entero por debajo del cursor, con `bootId` distinto del último visto.
+    """
+    cursor = study.last_ingested_seq
+    if cursor is None or study.last_boot_id is None or study.last_boot_id == boot_id:
+        return
+    if not frames or frames[-1].info.seq > cursor:
+        return
+    if await repo.has_archived_seq_range(db, study.id, frames[0].info.seq, frames[-1].info.seq):
+        return  # retransmisión legítima: se re-confirma como duplicado
+    raise _conflict(
+        "STUDY_SEQ_REWIND",
+        "El equipo reinició su numeración de tramas y este lote no está archivado. "
+        "Cerrar el estudio en curso antes de aceptar señal nueva.",
+    )
+
+
 async def ingest_frames(
     ctx: DeviceContext,
     input_data: IngestFramesInput,
@@ -217,7 +263,11 @@ async def ingest_frames(
     parsed, rejected = _parse(input_data.payload)
     received = len(input_data.payload) // 256
 
-    epoch_anchor_ms = int(input_data.received_at.timestamp() * 1000) - ctx.uptime_ms
+    # El ancla del tramo: instante UTC en que el `millis()` del equipo valía 0.
+    # Con las cabeceras del puente las dos cifras de la resta las mide el mismo
+    # lado del enlace, así que la latencia del pedido queda afuera de la hora
+    # del paciente (`docs/integracion-ingesta-con-horario.md`).
+    epoch_anchor_ms, sync_source, sync_uncertainty_ms = ctx.boot_epoch_ms(input_data.received_at)
 
     if not parsed:
         # Todas las tramas fallaron la validación. Igual hay que resolver el
@@ -253,6 +303,7 @@ async def ingest_frames(
     ctx = replace(ctx, device=locked_device)
 
     study, patient = await _resolve_study(db, ctx, frames[0].info, epoch_anchor_ms)
+    await _guard_seq_rewind(db, study, frames, boot_id)
     window = _ack_window(frames, study, boot_id)
 
     ctx.device.last_seen_at = input_data.received_at
@@ -274,7 +325,15 @@ async def ingest_frames(
 
     batch_id: uuid.UUID | None = None
     if window.accepted:
-        batch_id = await _store_batch(db, ctx, input_data, study, window, boot_id, epoch_anchor_ms)
+        batch_id = await _store_batch(
+            db,
+            ctx,
+            input_data,
+            study,
+            window,
+            boot_id,
+            _Anchor(epoch_anchor_ms, sync_source, sync_uncertainty_ms),
+        )
         if background is not None:
             from app.modules.ingest.processing import process_batch_task
 
@@ -317,7 +376,7 @@ async def _store_batch(
     study: Study,
     window: _AckWindow,
     boot_id: int,
-    epoch_anchor_ms: int,
+    anchor: _Anchor,
 ) -> uuid.UUID:
     """Archiva los bytes crudos y deja el lote listo para procesar.
 
@@ -332,7 +391,11 @@ async def _store_batch(
 
     key = frames_key(study.id, first_info.seq)
     body = b"".join(frame.payload for frame in accepted)
-    put_object(key, body)
+    # `put_object` es boto3 sincrónico: llamarlo derecho bloquea el event loop
+    # entero mientras dura el handshake TLS y la subida. Va a un thread y se
+    # espera antes del commit — la durabilidad antes del ACK no se toca, que es
+    # lo que hace segura esta ingesta; lo que se saca es el bloqueo.
+    await asyncio.to_thread(put_object, key, body)
 
     n_samples = sum(frame.info.n_samples for frame in accepted)
     duration_ms = (last_info.t0_ms + last_info.duration_ms) - first_info.t0_ms
@@ -341,7 +404,7 @@ async def _store_batch(
         device_id=ctx.device.id,
         study_id=study.id,
         received_at=input_data.received_at,
-        batch_timestamp=(epoch_anchor_ms + first_info.t0_ms) // 1000,
+        batch_timestamp=(anchor.epoch_ms + first_info.t0_ms) // 1000,
         duration_seconds=max(duration_ms // 1000, 0),
         sample_rate=SAMPLE_RATE_HZ,
         num_channels=first_info.n_channels,
@@ -354,7 +417,10 @@ async def _store_batch(
         firmware_version=ctx.firmware_version or ctx.device.firmware_version,
         boot_id=boot_id,
         device_uptime_ms=ctx.uptime_ms,
-        epoch_anchor_ms=epoch_anchor_ms,
+        epoch_anchor_ms=anchor.epoch_ms,
+        bridge_epoch_ms=ctx.bridge_epoch_ms,
+        time_sync_source=anchor.source,
+        time_sync_uncertainty_ms=anchor.uncertainty_ms,
         first_seq=first_info.seq,
         last_seq=last_info.seq,
         frames_count=len(accepted),

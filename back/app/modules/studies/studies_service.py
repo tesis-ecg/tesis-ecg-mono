@@ -1,5 +1,7 @@
+import asyncio
 import math
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NamedTuple
 
@@ -16,6 +18,7 @@ from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.patient_report import PatientReport
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.patient_app import patient_app_repository as patient_app_repo
@@ -31,11 +34,13 @@ from app.modules.studies.studies_schemas import (
     SimulatedAnomalyType,
     StudyDetailOut,
     StudyEcgAnnotationOut,
+    StudyEcgLevelChunkOut,
     StudyEcgLevelOut,
     StudyEcgManifestOut,
     StudyEcgObjectOut,
     StudyEcgOut,
     StudyEcgSegmentOut,
+    StudyEcgTimelineSegmentOut,
     StudyIdInput,
     StudyListInput,
     StudyListResponse,
@@ -315,7 +320,9 @@ def _report_placements(
 
 
 def _report_annotations(
-    reports: list[PatientReport], placements: dict[uuid.UUID, _ReportPlacement]
+    reports: list[PatientReport],
+    placements: dict[uuid.UUID, _ReportPlacement],
+    to_epoch_ms: Callable[[int], int],
 ) -> list[StudyEcgAnnotationOut]:
     annotations: list[StudyEcgAnnotationOut] = []
     for report in reports:
@@ -332,6 +339,8 @@ def _report_annotations(
                 # visor lo pinta como línea vertical, no como banda.
                 startOffsetMs=placement.offset_ms,
                 endOffsetMs=placement.offset_ms,
+                startEpochMs=to_epoch_ms(placement.offset_ms),
+                endEpochMs=to_epoch_ms(placement.offset_ms),
                 confidenceScore=None,
                 linkedAnnotationId=placement.linked_event_id,
                 description=_report_symptoms_text(report),
@@ -340,18 +349,34 @@ def _report_annotations(
     return annotations
 
 
+def _event_offset_map(study: Study, events: list[ECGEvent]) -> dict[uuid.UUID, tuple[int, int]]:
+    """Offsets de los hallazgos **dibujables**, indexados por id de evento.
+
+    Vive aparte de `_event_annotations` porque hay dos consumidores con
+    necesidades distintas: el manifest quiere las anotaciones armadas, y la
+    solapa de registros del paciente solo quiere saber dónde cayó cada hallazgo
+    para anclarle su respuesta. Que los dos salgan de acá es lo que garantiza que
+    la solapa y el gráfico nunca discrepen sobre dónde está una marca.
+    """
+    offsets: dict[uuid.UUID, tuple[int, int]] = {}
+    for event in events:
+        resolved = _event_offsets_ms(event, study)
+        if resolved is not None:
+            offsets[event.id] = resolved
+    return offsets
+
+
 def _event_annotations(
-    study: Study, events: list[ECGEvent]
+    study: Study, events: list[ECGEvent], to_epoch_ms: Callable[[int], int]
 ) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, tuple[int, int]]]:
     """Los hallazgos dibujables, con sus offsets indexados por id de evento."""
     annotations: list[StudyEcgAnnotationOut] = []
-    offsets_by_event: dict[uuid.UUID, tuple[int, int]] = {}
+    offsets_by_event = _event_offset_map(study, events)
     for event in events:
-        offsets = _event_offsets_ms(event, study)
+        offsets = offsets_by_event.get(event.id)
         if offsets is None:
             continue
         kind = _annotation_kind(event)
-        offsets_by_event[event.id] = offsets
         annotations.append(
             StudyEcgAnnotationOut(
                 id=event.id,
@@ -360,20 +385,56 @@ def _event_annotations(
                 severity=_ANNOTATION_SEVERITY[event.severity],
                 startOffsetMs=offsets[0],
                 endOffsetMs=offsets[1],
+                startEpochMs=to_epoch_ms(offsets[0]),
+                endEpochMs=to_epoch_ms(offsets[1]),
                 confidenceScore=event.confidence_score,
             )
         )
     return annotations, offsets_by_event
 
 
+def _wall_clock_resolver(
+    study: Study, segments: list[StudyTimelineSegment]
+) -> Callable[[int], int]:
+    """Devuelve `offsetMs (buffer empaquetado) -> epoch ms (hora real)`.
+
+    Los offsets de las anotaciones están sobre el buffer de muestras, que no deja
+    huecos. La hora de pared sí los tiene. La traducción es por tramo: se busca
+    el que contiene esa muestra y se cuenta desde su hora de inicio.
+
+    Sin tramos —estudio seedeado o legacy, o uno ingerido antes del backfill— se
+    cae al comportamiento anterior, que para una grabación sin cortes da lo
+    mismo.
+    """
+    started_ms = int(study.started_at.timestamp() * 1000)
+    if not segments:
+        return lambda offset_ms: started_ms + offset_ms
+
+    rate = study.sample_rate or 500
+
+    def resolve(offset_ms: int) -> int:
+        sample = offset_ms * rate / 1000
+        for segment in segments:
+            end = segment.start_sample_index + segment.sample_count
+            if sample < end or segment is segments[-1]:
+                within = max(sample - segment.start_sample_index, 0)
+                return int(segment.start_epoch_ms + within * 1000 / rate)
+        return started_ms + offset_ms
+
+    return resolve
+
+
 def _study_annotations(
-    study: Study, events: list[ECGEvent], reports: list[PatientReport]
+    study: Study,
+    events: list[ECGEvent],
+    reports: list[PatientReport],
+    to_epoch_ms: Callable[[int], int],
 ) -> list[StudyEcgAnnotationOut]:
     # Los hallazgos primero: los registros necesitan saber cuáles llegaron a la
     # señal para poder anclarse en el que contestaron.
-    annotations, event_offsets = _event_annotations(study, events)
+    annotations, event_offsets = _event_annotations(study, events, to_epoch_ms)
     annotations.extend(
-        _report_annotations(reports, _report_placements(study, reports, event_offsets))
+        _report_annotations(reports, _report_placements(study, reports, event_offsets), to_epoch_ms)
     )
     annotations.sort(key=lambda item: (item.startOffsetMs, item.endOffsetMs, str(item.id)))
     return annotations
@@ -476,12 +537,18 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
     expires_at = datetime.now(UTC) + timedelta(seconds=settings.s3_presign_expire_seconds)
     levels = [
         StudyEcgLevelOut(
-            url=_build_presigned_ecg_url(str(level["key"])),
-            expiresAt=expires_at,
-            byteLength=int(level["byteLength"]),
-            sha256=str(level["sha256"]),
             samplesPerBucket=int(level["samplesPerBucket"]),
             pointCount=int(level["pointCount"]),
+            chunks=[
+                StudyEcgLevelChunkOut(
+                    url=_build_presigned_ecg_url(str(chunk["key"])),
+                    expiresAt=expires_at,
+                    byteLength=int(chunk["byteLength"]),
+                    sha256=str(chunk["sha256"]),
+                    pointCount=int(chunk["pointCount"]),
+                )
+                for chunk in level.get("chunks", [])
+            ],
         )
         for level in study.ecg_pyramid_levels
     ]
@@ -506,10 +573,26 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         if study.ecg_s3_key is not None
         else None
     )
+    timeline_segments = await repo.list_timeline_segments(db, study.id)
+    to_epoch_ms = _wall_clock_resolver(study, timeline_segments)
+    timeline = [
+        StudyEcgTimelineSegmentOut(
+            ordinal=segment.ordinal,
+            startSampleIndex=segment.start_sample_index,
+            sampleCount=segment.sample_count,
+            startEpochMs=segment.start_epoch_ms,
+            endEpochMs=segment.end_epoch_ms,
+            bootId=segment.boot_id,
+            anchorSource=segment.anchor_source.value,
+            anchorUncertaintyMs=segment.anchor_uncertainty_ms,
+        )
+        for segment in timeline_segments
+    ]
     annotations = _study_annotations(
         study,
         await repo.list_ecg_events(db, study.id),
         await patient_app_repo.list_reports_for_study(db, study.id),
+        to_epoch_ms,
     )
     if input_data.actor_id is not None:
         await auth_repo.log_audit_event(
@@ -530,6 +613,7 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         raw=raw,
         levels=levels,
         segments=segments,
+        timeline=timeline,
         annotations=annotations,
     )
 
@@ -570,8 +654,58 @@ async def _sync_patient_status(db: AsyncSession, patient: Patient, closed_as: St
     )
 
 
+async def compact_study_pyramid(db: AsyncSession, study_id: uuid.UUID) -> None:
+    """Funde los chunks de cada nivel de un estudio ya cerrado.
+
+    Durante la ingesta cada lote anexa su propio chunk a cada nivel, que es lo
+    que mantiene el trabajo por lote constante. El precio es la cantidad de
+    objetos: 24 h subiendo cada 10 minutos dejan ~144 chunks por nivel, y el
+    visor tendría que pedir 144 URLs para pintar la vista general. Un estudio
+    cerrado ya no crece, así que es el momento exacto para pagar la fusión.
+
+    Corre **después** del cierre y fuera de su transacción, no adentro. Fundir
+    seis niveles de 144 chunks son ~900 GET a S3 con `boto3` sincrónico: adentro
+    del request bloqueaban el event loop entero con la fila del estudio tomada,
+    que es exactamente la forma de trabajo que este cambio vino a sacar de la
+    ruta caliente. El `to_thread` saca el bloqueo del loop; correr después del
+    commit saca el lock del camino del médico, que ya tiene su respuesta.
+
+    Si falla, el cierre no se ve afectado: ya está commiteado, y los chunks
+    siguen siendo una representación válida que el visor sabe leer. Solo quedan
+    más objetos de los necesarios.
+    """
+    from app.modules.ingest import ingest_repository as ingest_repo
+    from app.modules.ingest.processing import compact_pyramid
+
+    try:
+        study = await ingest_repo.get_study_for_update(db, study_id)
+        if study is None or not study.ecg_pyramid_levels:
+            await db.rollback()
+            return
+        study.ecg_pyramid_levels = await asyncio.to_thread(compact_pyramid, study, force=True)
+        await db.commit()
+    except Exception:  # noqa: BLE001 — ver docstring: no puede afectar al cierre
+        await db.rollback()
+        logger.exception("study_pyramid_compaction_failed", study_id=str(study_id))
+
+
+async def compact_study_pyramid_task(study_id: uuid.UUID) -> None:
+    """Entrypoint del `BackgroundTasks`: abre su propia sesión.
+
+    Mismo patrón que `process_batch_task` — la sesión del request ya está
+    cerrada cuando esto corre.
+    """
+    from app.db.session import async_session_factory
+
+    async with async_session_factory() as session:
+        await compact_study_pyramid(session, study_id)
+
+
 async def _transition(
-    input_data: StudyIdInput, db: AsyncSession, target: StudyStatus
+    input_data: StudyIdInput,
+    db: AsyncSession,
+    target: StudyStatus,
+    background: BackgroundTasks | None = None,
 ) -> StudyDetailOut:
     row = await repo.get_for_update(db, input_data.study_id, input_data.doctor_id)
     if row is None:
@@ -594,6 +728,8 @@ async def _transition(
         metadata={"target_study_id": str(study.id), "patient_id": str(patient.id)},
     )
     await db.commit()
+    if background is not None:
+        background.add_task(compact_study_pyramid_task, input_data.study_id)
 
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:  # pragma: no cover - la fila se acaba de commitear
@@ -601,12 +737,16 @@ async def _transition(
     return _study_detail_out(*result)
 
 
-async def complete_study(input_data: StudyIdInput, db: AsyncSession) -> StudyDetailOut:
-    return await _transition(input_data, db, StudyStatus.COMPLETED)
+async def complete_study(
+    input_data: StudyIdInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> StudyDetailOut:
+    return await _transition(input_data, db, StudyStatus.COMPLETED, background)
 
 
-async def cancel_study(input_data: StudyIdInput, db: AsyncSession) -> StudyDetailOut:
-    return await _transition(input_data, db, StudyStatus.CANCELLED)
+async def cancel_study(
+    input_data: StudyIdInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> StudyDetailOut:
+    return await _transition(input_data, db, StudyStatus.CANCELLED, background)
 
 
 #: Cómo se llama cada hallazgo simulado en la alerta que ve el médico y el
@@ -824,7 +964,7 @@ async def list_study_patient_reports(
     # Los mismos offsets que el manifest: si la solapa dijera "visible" y el
     # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún
     # lado. La ubicación de un registro se decide en un solo lugar.
-    _, event_offsets = _event_annotations(study, await repo.list_ecg_events(db, study.id))
+    event_offsets = _event_offset_map(study, await repo.list_ecg_events(db, study.id))
     placements = _report_placements(study, reports, event_offsets)
 
     items: list[StudyPatientReportOut] = []

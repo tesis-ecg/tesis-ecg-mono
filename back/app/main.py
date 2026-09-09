@@ -6,12 +6,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
+from asyncpg.exceptions import LockNotAvailableError
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 
@@ -61,6 +62,9 @@ app.add_middleware(
         "X-Device-Uptime-Ms",
         "X-Firmware-Version",
         "X-Battery-Pct",
+        "X-Bridge-Epoch-Ms",
+        "X-Time-Sync-Source",
+        "X-Time-Sync-Uncertainty-Ms",
     ],
 )
 
@@ -175,6 +179,48 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "code": "VALIDATION",
             "message": "Los datos enviados no son válidos.",
             "fields": fields,
+            "requestId": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(DBAPIError)
+async def database_contention_handler(request: Request, exc: DBAPIError) -> Response:
+    """La contención de lock es una espera, no una falla del servidor.
+
+    Dos escrituras sobre la misma fila de `study` —una ingesta y el procesamiento
+    del lote anterior— se serializan con `FOR UPDATE`. La que pierde espera hasta
+    el `lock_timeout` y Postgres la aborta. Hasta acá eso caía en el handler
+    genérico y salía como `500 INTERNAL_ERROR`: el equipo lo leía como "el
+    backend está roto" cuando en realidad solo había que reintentar. Es
+    exactamente lo que reportó Biomédica el 8/9/2026.
+
+    Un `503` con `Retry-After` dice lo que pasa de verdad. El cursor no se movió,
+    así que reintentar el mismo lote es seguro — la ingesta es idempotente por
+    `seq` y esa es justamente la propiedad que hace que no se pierda señal.
+
+    Solo `LockNotAvailableError` (SQLSTATE 55P03), que es lo que levanta el
+    `lock_timeout`. El `statement_timeout` levanta `QueryCanceledError` (57014) y
+    ese NO es contención: es una consulta que de verdad tardó 15 s. Taparlo con
+    "reintentá en unos segundos" escondería una regresión del trabajo cuadrático
+    que este cambio vino a sacar, y dejaría al equipo reintentando contra algo
+    que no se va a arreglar solo. Ese cae al handler genérico y sale como 500,
+    que es lo que hay que ver.
+    """
+    if not isinstance(getattr(exc, "orig", None), LockNotAvailableError):
+        return await unhandled_exception_handler(request, exc)
+    await logger.awarning(
+        "database_contention",
+        request_id=getattr(request.state, "request_id", None),
+        route=request.url.path,
+    )
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "5"},
+        content={
+            "code": "SERVICE_BUSY",
+            "message": "El estudio está siendo actualizado. Reintentar en unos segundos.",
+            "fields": None,
             "requestId": getattr(request.state, "request_id", None),
         },
     )

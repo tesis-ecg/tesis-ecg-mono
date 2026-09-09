@@ -109,7 +109,14 @@ class FakeIngest {
 
 function freshDevice(): DeviceRuntime {
   return {
-    clock: { bootId: 0, nextSeq: 0, t0Ms: 0, uptimeMs: 3_600_000, batteryPct: 96 },
+    clock: {
+      bootId: 0,
+      nextSeq: 0,
+      t0Ms: 0,
+      uptimeMs: 3_600_000,
+      bootEpochMs: 1_757_000_000_000,
+      batteryPct: 96,
+    },
     sd: { pending: [], overflowed: 0 },
   }
 }

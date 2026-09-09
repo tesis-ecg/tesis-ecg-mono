@@ -57,6 +57,7 @@ async def get_study(
 @router.post("/{study_id}/complete", response_model=StudyDetailOut)
 async def complete_study(
     study_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyDetailOut:
@@ -72,12 +73,14 @@ async def complete_study(
             actor_id=scope.user.id,
         ),
         db,
+        background,
     )
 
 
 @router.post("/{study_id}/cancel", response_model=StudyDetailOut)
 async def cancel_study(
     study_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyDetailOut:
@@ -89,6 +92,7 @@ async def cancel_study(
             actor_id=scope.user.id,
         ),
         db,
+        background,
     )
 
 
