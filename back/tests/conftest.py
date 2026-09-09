@@ -157,6 +157,8 @@ _PURGE_STATEMENTS = (
     "DELETE FROM ecg_event WHERE batch_id IN (SELECT b.id FROM ecg_batch b"
     " JOIN device d ON d.id = b.device_id WHERE d.doctor_id = ANY(:ids))",
     "DELETE FROM ecg_batch WHERE device_id IN (SELECT id FROM device WHERE doctor_id = ANY(:ids))",
+    "DELETE FROM study_timeline_segment WHERE study_id IN (SELECT s.id FROM study s"
+    " JOIN patient p ON p.id = s.patient_id WHERE p.doctor_id = ANY(:ids))",
     "DELETE FROM study WHERE patient_id IN (SELECT id FROM patient WHERE doctor_id = ANY(:ids))",
     "DELETE FROM device WHERE doctor_id = ANY(:ids)",
     "DELETE FROM patient WHERE doctor_id = ANY(:ids)",

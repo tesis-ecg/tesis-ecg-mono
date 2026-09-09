@@ -88,6 +88,12 @@ class Study(TimestampMixin, Base):
     #: alineados a la grilla del ESTUDIO y no a la de cada batch — sin esto, 24
     #: batches acumulan hasta 384 muestras (0,77 s) de deriva en el eje X.
     ecg_envelope_carry: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    #: Mismo mecanismo de carry que el de arriba, pero **por nivel grueso** de la
+    #: pirámide: `{"64": hex, "256": hex, ...}` con los pares min/max de la
+    #: envolvente base que todavía no completaron un bucket de ese nivel. Sin
+    #: esto, escribir los niveles por chunks dejaría un bucket corto por lote y
+    #: los niveles gruesos se despegarían de la grilla del estudio.
+    ecg_level_carry: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict, nullable=False)
     #: Cursor del ACK go-back-N: la última `seq` confirmada de forma contigua.
     last_ingested_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: `bootId` de esa última trama. Un cambio de bootId invalida la comparación

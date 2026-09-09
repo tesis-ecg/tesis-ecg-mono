@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.alert import Alert
@@ -9,6 +9,7 @@ from app.db.models.device import Device
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_timeline_segment import StudyTimelineSegment
 
 
 async def get_device_by_serial(db: AsyncSession, serial: str) -> Device | None:
@@ -143,3 +144,103 @@ async def get_recent_alert(
         .limit(1)
     )
     return result.scalars().first()
+
+
+# --------------------------------------------------------------------------- #
+# Línea de tiempo de pared
+# --------------------------------------------------------------------------- #
+
+
+async def get_last_timeline_segment(
+    db: AsyncSession, study_id: uuid.UUID
+) -> StudyTimelineSegment | None:
+    """El tramo abierto más reciente del estudio, o `None` si todavía no hay.
+
+    Se ordena por `ordinal` y no por hora: el ordinal es el orden en que se
+    archivaron los tramos, que es lo que hay que continuar. La hora puede
+    retroceder entre tramos si un ancla estaba mal, y ordenar por ella dejaría
+    el cursor apuntando al tramo equivocado.
+    """
+    result = await db.execute(
+        select(StudyTimelineSegment)
+        .where(
+            StudyTimelineSegment.study_id == study_id,
+            StudyTimelineSegment.deleted_at.is_(None),
+        )
+        .order_by(desc(StudyTimelineSegment.ordinal))
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_timeline_segments(
+    db: AsyncSession, study_id: uuid.UUID
+) -> list[StudyTimelineSegment]:
+    """Todos los tramos del estudio, en orden de grabación."""
+    result = await db.execute(
+        select(StudyTimelineSegment)
+        .where(
+            StudyTimelineSegment.study_id == study_id,
+            StudyTimelineSegment.deleted_at.is_(None),
+        )
+        .order_by(StudyTimelineSegment.ordinal)
+    )
+    return list(result.scalars().all())
+
+
+async def add_timeline_segment(
+    db: AsyncSession, segment: StudyTimelineSegment
+) -> StudyTimelineSegment:
+    db.add(segment)
+    await db.flush()
+    return segment
+
+
+async def list_boot_anchors(
+    db: AsyncSession, study_id: uuid.UUID, boot_id: int | None, since_seq: int | None
+) -> list[ECGBatch]:
+    """Lotes del mismo arranque que traen un ancla del puente, para el ajuste.
+
+    Solo los que tienen `bridge_epoch_ms`: un ancla derivada de nuestra hora de
+    recepción arrastra la latencia del pedido, y mezclarla con las buenas
+    metería ese ruido dentro de la pendiente. Con menos de tres anclas buenas no
+    se ajusta nada y se usa la última.
+    """
+    query = select(ECGBatch).where(
+        ECGBatch.study_id == study_id,
+        ECGBatch.boot_id == boot_id,
+        ECGBatch.bridge_epoch_ms.is_not(None),
+        # Un ancla es la pareja (uptime, epoch): sin el uptime no hay punto que
+        # poner en la recta. Dejar entrar la fila y leer el uptime como 0 metería
+        # un `(0, epoch)` entre anclas que están a horas de uptime, y un solo
+        # punto así domina los mínimos cuadrados y clava la pendiente en la cota.
+        ECGBatch.device_uptime_ms.is_not(None),
+    )
+    if since_seq is not None:
+        query = query.where(ECGBatch.first_seq >= since_seq)
+    result = await db.execute(query.order_by(ECGBatch.first_seq))
+    return list(result.scalars().all())
+
+
+async def has_archived_seq_range(
+    db: AsyncSession, study_id: uuid.UUID, first_seq: int, last_seq: int
+) -> bool:
+    """¿Hay un lote archivado que cubra este rango de `seq` en este estudio?
+
+    Es lo que distingue una retransmisión legítima de un `seq` que rebobinó.
+    Cuando un lote llega entero por debajo del cursor bajo otro `bootId`, los dos
+    casos son idénticos mirando solo los números (`INTEGRACION.md` §11.6) — la
+    diferencia es que la retransmisión ya está archivada y el rebobinado no. Sin
+    este chequeo, el rebobinado se confirmaba como duplicado y el equipo borraba
+    de su flash señal que nunca llegó a existir de nuestro lado.
+    """
+    result = await db.execute(
+        select(ECGBatch.id)
+        .where(
+            ECGBatch.study_id == study_id,
+            ECGBatch.first_seq <= first_seq,
+            ECGBatch.last_seq >= last_seq,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None

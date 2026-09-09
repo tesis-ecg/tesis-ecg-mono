@@ -15,6 +15,7 @@
  * detalle del estudio sin que la señal cambie en cada recarga.
  */
 import type { ECGSignal } from './types'
+import { uniformTimeline } from './api/ecgApi'
 
 /**
  * PRNG xfnv1a + sfc32 — determinístico, suficientemente uniforme para señal
@@ -149,6 +150,7 @@ export function mockEcgSignal(
     durationMs: durationSec * 1000,
     samples,
     startTimestamp,
+    ...uniformTimeline(samples.length, samples.length, sampleRate, startTimestamp),
     annotations: [
       {
         id: 'mock-low',

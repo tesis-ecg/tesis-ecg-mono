@@ -41,7 +41,7 @@ async def test_an_ingested_study_exposes_segments_and_no_raw(
 
     assert response.status_code == 200, response.text
     manifest = response.json()
-    assert manifest["formatVersion"] == 2
+    assert manifest["formatVersion"] == 3
     assert manifest["raw"] is None
     assert manifest["segments"], "un estudio ingestado tiene que traer segmentos"
     assert manifest["levels"], "y niveles de pirámide para el visor"
@@ -143,12 +143,20 @@ async def test_a_legacy_seeded_study_still_returns_raw(
         "severity": "low",
         "startOffsetMs": 1250,
         "endOffsetMs": 1750,
+        # Sin tramos de línea de tiempo —este estudio es seedeado, no ingerido—
+        # la hora absoluta es el inicio del estudio más el offset. Es lo correcto
+        # justamente porque un estudio seedeado no tiene huecos.
+        "startEpochMs": manifest["annotations"][0]["startEpochMs"],
+        "endEpochMs": manifest["annotations"][0]["endEpochMs"],
         "confidenceScore": None,
         # Solo los registros del paciente llenan estos dos: un hallazgo no
         # responde a nada ni trae texto propio.
         "linkedAnnotationId": None,
         "description": None,
     }
+    started_ms = manifest["startTimestamp"]
+    assert manifest["annotations"][0]["startEpochMs"] == started_ms + 1250
+    assert manifest["annotations"][0]["endEpochMs"] == started_ms + 1750
 
 
 async def test_manifest_normalizes_orders_and_clips_ingested_events(
@@ -257,13 +265,14 @@ async def test_every_url_is_presigned_with_an_expiry(
     as_user(await make_user(UserRole.ADMIN))
     manifest = await _manifest(client, study_id)
 
-    urls = [item["url"] for item in manifest["levels"] + manifest["segments"]]
+    level_chunks = [chunk for level in manifest["levels"] for chunk in level["chunks"]]
+    urls = [item["url"] for item in level_chunks + manifest["segments"]]
     assert urls
     for url in urls:
         params = parse_qs(urlparse(url).query)
         assert "X-Amz-Signature" in params
         assert int(params["X-Amz-Expires"][0]) <= 3600
-    for item in manifest["levels"] + manifest["segments"]:
+    for item in level_chunks + manifest["segments"]:
         assert item["expiresAt"]
 
 

@@ -57,7 +57,7 @@ describe('getStudyEcg', () => {
         sampleCount: 1000,
         sampleRate: 500,
         durationMs: 3 * 60 * 60 * 1000,
-        levels: [object({ samplesPerBucket: 256, pointCount: 4 })],
+        levels: [level({ samplesPerBucket: 256, pointCount: 4 })],
       }),
     })
     globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
@@ -95,7 +95,7 @@ describe('getStudyEcg', () => {
     vi.spyOn(api, 'get').mockResolvedValue({
       data: manifest({
         sampleCount: 4,
-        levels: [object({ samplesPerBucket: 16, pointCount: 4 })],
+        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
         annotations: [
           {
             id: 'event-1',
@@ -155,6 +155,17 @@ describe('getStudyEcg', () => {
   })
 })
 
+/** Un nivel de la pirámide, que desde el manifest v3 llega en chunks. */
+function level(overrides: Record<string, unknown> = {}) {
+  const { samplesPerBucket = 16, pointCount = 4, ...rest } = overrides
+  return {
+    samplesPerBucket,
+    pointCount,
+    encoding: 'minmax-float32-le',
+    chunks: [object({ pointCount, ...rest })],
+  }
+}
+
 function object(overrides: Record<string, unknown> = {}) {
   return {
     url: 'level',
@@ -167,7 +178,7 @@ function object(overrides: Record<string, unknown> = {}) {
 
 function manifest(overrides: Record<string, unknown> = {}) {
   return {
-    formatVersion: 2,
+    formatVersion: 3,
     encoding: 'float32-le',
     sampleRate: 500,
     sampleCount: 1000,
@@ -197,3 +208,201 @@ function installDecoderWorker() {
   }
   globalThis.Worker = DecoderWorker as unknown as typeof Worker
 }
+
+describe('línea de tiempo de pared', () => {
+  const originalFetch = globalThis.fetch
+  const originalWorker = globalThis.Worker
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    globalThis.fetch = originalFetch
+    globalThis.Worker = originalWorker
+  })
+
+  it('el eje refleja el hueco en vez de pegar los bordes', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    const hourMs = 3_600_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        sampleRate: 500,
+        startTimestamp: start,
+        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        // El chaleco grabó dos muestras, estuvo una hora apagado y grabó dos más.
+        timeline: [
+          {
+            ordinal: 0,
+            startSampleIndex: 0,
+            sampleCount: 2,
+            startEpochMs: start,
+            endEpochMs: start + 4,
+            bootId: 1,
+            anchorSource: 'ntp',
+            anchorUncertaintyMs: 50,
+          },
+          {
+            ordinal: 1,
+            startSampleIndex: 2,
+            sampleCount: 2,
+            startEpochMs: start + hourMs,
+            endEpochMs: start + hourMs + 4,
+            bootId: 2,
+            anchorSource: 'ntp',
+            anchorUncertaintyMs: 50,
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    // El eje va de la primera muestra al final de la última: 8 ms grabados más
+    // los 3.599.996 ms de silencio entre el fin del primer tramo y el inicio del
+    // segundo. Antes esto daba 8 — el hueco no ocupaba nada y toda la señal
+    // posterior quedaba fechada una hora antes de cuando se midió.
+    expect(signal.durationMs).toBe(hourMs + 4)
+    expect(signal.timeline).toHaveLength(2)
+    // La primera muestra después del corte lleva su hora real, no la continuación.
+    expect(signal.timestampsMs[2]).toBe(start + hourMs)
+    // Y la traza se corta ahí, para no unir dos instantes que nunca fueron contiguos.
+    expect(signal.gapIndices).toEqual([2])
+  })
+
+  it('dos tramos cuyas anclas se pisan no mandan el eje para atrás', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        sampleRate: 500,
+        startTimestamp: start,
+        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        timeline: [
+          {
+            ordinal: 0,
+            startSampleIndex: 0,
+            sampleCount: 2,
+            startEpochMs: start,
+            endEpochMs: start + 4,
+            bootId: 1,
+            anchorSource: 'server_receive',
+            anchorUncertaintyMs: 7000,
+          },
+          {
+            // Mismo instante real, otra ancla: con `server_receive` la hora se
+            // deriva de la recepción del backend y arrastra la latencia del
+            // pedido, así que dos tramos contiguos pueden discrepar en segundos
+            // y el segundo arrancar ANTES de que termine el primero.
+            ordinal: 1,
+            startSampleIndex: 2,
+            sampleCount: 2,
+            startEpochMs: start - 5_000,
+            endEpochMs: start - 5_000 + 4,
+            bootId: 2,
+            anchorSource: 'server_receive',
+            anchorUncertaintyMs: 7000,
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    // uPlot hace búsqueda binaria sobre el eje X: un solo punto fuera de orden
+    // le rompe el cursor y el dibujo.
+    for (let i = 1; i < signal.timestampsMs.length; i++) {
+      expect(signal.timestampsMs[i]).toBeGreaterThanOrEqual(signal.timestampsMs[i - 1])
+    }
+  })
+
+  it('la duración alcanza para llegar al último punto del eje', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        sampleRate: 500,
+        startTimestamp: start,
+        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        timeline: [
+          {
+            ordinal: 0,
+            startSampleIndex: 0,
+            sampleCount: 4,
+            startEpochMs: start,
+            // Un tramo que en hora de pared dura MÁS que sus muestras: adentro
+            // de las tramas faltaron milisegundos de señal (`internal_gap_ms`).
+            // El recuento de muestras no los tiene y la hora de pared sí.
+            endEpochMs: start + 60_000,
+            bootId: 1,
+            anchorSource: 'ntp',
+            anchorUncertaintyMs: 50,
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    // El visor clampea el scroll a `durationMs`. Si se queda corto respecto del
+    // eje que dibuja, el final del estudio queda fuera de alcance.
+    const lastSec =
+      (signal.timestampsMs[signal.timestampsMs.length - 1] - signal.startTimestamp) / 1000
+    expect(signal.durationMs / 1000).toBeGreaterThanOrEqual(lastSec)
+  })
+
+  it('un estudio sin tramos conserva el eje uniforme de siempre', async () => {
+    installDecoderWorker()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 1000,
+        sampleRate: 500,
+        levels: [level({ samplesPerBucket: 256, pointCount: 4 })],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.gapIndices).toEqual([])
+    expect(signal.timeline).toEqual([])
+    expect(signal.durationMs).toBe(2000)
+  })
+
+  it('prefiere la hora absoluta que resuelve el backend para las anotaciones', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        startTimestamp: start,
+        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        annotations: [
+          {
+            id: 'event-1',
+            kind: 'afib',
+            category: 'clinical',
+            severity: 'high',
+            startOffsetMs: 1000,
+            endOffsetMs: 1500,
+            // El backend ya resolvió esto contra la línea de tiempo: cae después
+            // de un hueco, así que no es `startTimestamp + offset`.
+            startEpochMs: start + 3_601_000,
+            endEpochMs: start + 3_601_500,
+            confidenceScore: null,
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.annotations[0].startMs).toBe(start + 3_601_000)
+    expect(signal.annotations[0].endMs).toBe(start + 3_601_500)
+  })
+})

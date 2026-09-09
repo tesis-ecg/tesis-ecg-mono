@@ -9,6 +9,12 @@ from tests.frame_builder import Sample, encode_samples, synth_samples
 INGEST_URL = "/ingest/ecg-frames"
 
 
+#: Sentinela para pedir explícitamente que NO viaje la cabecera de hora, sin
+#: confundirlo con "mandá el default". `None` ya significa otra cosa en los
+#: parámetros opcionales de este helper.
+OMIT = object()
+
+
 def device_headers(
     device: Device,
     api_key: str,
@@ -16,6 +22,9 @@ def device_headers(
     uptime_ms: int = 3_600_000,
     firmware: str | None = "1.4.2",
     battery: int | None = 87,
+    bridge_epoch_ms: int | object | None = OMIT,
+    sync_source: str | None = "ntp",
+    sync_uncertainty_ms: int | None = 45,
 ) -> dict[str, str]:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -23,6 +32,12 @@ def device_headers(
         "X-Device-Uptime-Ms": str(uptime_ms),
         "Content-Type": "application/octet-stream",
     }
+    if bridge_epoch_ms is not OMIT and bridge_epoch_ms is not None:
+        headers["X-Bridge-Epoch-Ms"] = str(bridge_epoch_ms)
+        if sync_source is not None:
+            headers["X-Time-Sync-Source"] = sync_source
+        if sync_uncertainty_ms is not None:
+            headers["X-Time-Sync-Uncertainty-Ms"] = str(sync_uncertainty_ms)
     if firmware is not None:
         headers["X-Firmware-Version"] = firmware
     if battery is not None:
@@ -79,6 +94,7 @@ async def post_frames(
 
 __all__ = [
     "INGEST_URL",
+    "OMIT",
     "STEP_MS",
     "Sample",
     "build_frames",

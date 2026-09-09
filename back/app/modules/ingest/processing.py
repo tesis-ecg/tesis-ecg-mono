@@ -15,16 +15,20 @@ los niveles gruesos son reducciones min/max de una envolvente base con
 bucket=16 — no hay que volver a decodificar nada para rehacerlos.
 """
 
+import asyncio
 import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 import structlog
+from asyncpg.exceptions import LockNotAvailableError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.s3 import get_object, list_keys, put_object
+from app.core.s3 import get_object, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
@@ -43,6 +47,7 @@ from app.ml.decompression import (
     iter_frames,
 )
 from app.modules.ingest import ingest_repository as repo
+from app.modules.ingest import timeline
 from app.modules.patient_app.notifications_service import (
     anomaly_message,
     notify_patient_task,
@@ -54,6 +59,11 @@ logger = structlog.get_logger(__name__)
 #: distinguir un estudio seedeado de uno ingestado.
 PYRAMID_BUCKETS = (16, 64, 256, 1024, 4096, 16384)
 BASE_BUCKET = PYRAMID_BUCKETS[0]
+
+#: Chunks por nivel antes de fundirlos en un objeto único. 24 acota los GET que
+#: hace el visor sin volver la compactación tan frecuente que reintroduzca el
+#: costo cuadrático que estamos sacando.
+LEVEL_COMPACTION_THRESHOLD = 24
 
 #: El firmware entrega µV (int32, DC-acoplado); el visor grafica mV.
 UV_PER_MV = 1000.0
@@ -72,7 +82,25 @@ def envelope_prefix(study_id: uuid.UUID) -> str:
 
 
 def level_key(study_id: uuid.UUID, bucket: int) -> str:
+    """Nivel compactado: un objeto único con todo el nivel."""
     return f"studies/{study_id}/ecg.minmax.{bucket}.f32"
+
+
+def level_chunk_key(study_id: uuid.UUID, bucket: int, first_seq: int) -> str:
+    """Tramo de un nivel aportado por UN lote.
+
+    Los niveles se escriben por chunks y no como un objeto que se reescribe
+    entero en cada lote. Reescribirlo era el origen de los `500` que reportó
+    Biomédica: `rebuild_pyramid` leía de S3 **todas** las envolventes ya
+    archivadas del estudio en cada lote (lote 1 leía un objeto, el lote 30 leía
+    treinta) mientras tenía tomada la fila del estudio, y el POST siguiente
+    moría esperando ese lock a los 15 s del `statement_timeout`.
+    """
+    return f"studies/{study_id}/levels/{bucket}/{first_seq:012d}.f32"
+
+
+def level_chunk_prefix(study_id: uuid.UUID, bucket: int) -> str:
+    return f"studies/{study_id}/levels/{bucket}/"
 
 
 # --------------------------------------------------------------------------- #
@@ -146,7 +174,29 @@ def reduce_envelope(base: np.ndarray, factor: int) -> np.ndarray:
     return np.concatenate(chunks).astype("<f4")
 
 
-def _object_meta(key: str, payload: bytes, **extra: object) -> dict[str, object]:
+def reduce_envelope_exact(base: np.ndarray, factor: int) -> tuple[np.ndarray, np.ndarray]:
+    """Como `reduce_envelope`, pero **sin cola parcial**: `(reducida, resto)`.
+
+    La diferencia importa para los niveles por chunks. `reduce_envelope` cierra
+    la cola en un bucket incompleto, que está bien cuando se reduce el estudio
+    entero de una vez; hacerlo por lote produciría un bucket corto por lote y los
+    niveles gruesos dejarían de estar alineados a la grilla del estudio. El resto
+    vuelve como carry y lo antepone el lote siguiente — es exactamente lo que ya
+    hace `build_envelope` con el bucket base.
+    """
+    pairs = base.size // 2
+    complete = (pairs // factor) * factor
+    if complete == 0:
+        return np.empty(0, dtype="<f4"), base
+    mins = base[0 : complete * 2 : 2].reshape(-1, factor).min(axis=1)
+    maxs = base[1 : complete * 2 : 2].reshape(-1, factor).max(axis=1)
+    merged = np.empty(mins.size * 2, dtype="<f4")
+    merged[0::2] = mins
+    merged[1::2] = maxs
+    return merged.astype("<f4"), base[complete * 2 :]
+
+
+def _object_meta(key: str, payload: bytes, **extra: object) -> dict[str, Any]:
     return {
         "key": key,
         "byteLength": len(payload),
@@ -155,35 +205,110 @@ def _object_meta(key: str, payload: bytes, **extra: object) -> dict[str, object]
     }
 
 
-def rebuild_pyramid(study: Study) -> list[dict[str, object]]:
-    """Rehace los niveles gruesos leyendo las envolventes, no la señal.
+def _chunk_order(study: Study, bucket: int, key: str) -> tuple[int, str]:
+    """Posición de un chunk dentro de su nivel.
 
-    Para 24 h son ~21 MB de envolventes contra ~173 MB de señal, y evita volver
-    a decodificar tramas que ya se decodificaron una vez.
+    El objeto compactado va primero: contiene todo lo anterior a los chunks que
+    se le anexaron después. El resto ordena por su clave, que lleva la `seq` con
+    ceros a la izquierda para que ordenar por texto ordene por tiempo.
     """
-    parts = [get_object(key) for key in list_keys(envelope_prefix(study.id))]
-    if not parts:
-        return []
-    base = np.frombuffer(b"".join(parts), dtype="<f4")
-    total_samples = study.samples_count
+    return (0, "") if key == level_key(study.id, bucket) else (1, key)
 
-    levels: list[dict[str, object]] = []
+
+def _decode_carry(raw: str | None) -> np.ndarray:
+    if not raw:
+        return np.empty(0, dtype="<f4")
+    return np.frombuffer(bytes.fromhex(str(raw)), dtype="<f4")
+
+
+def append_level_chunks(
+    study: Study, base_envelope: np.ndarray, first_seq: int
+) -> list[dict[str, Any]]:
+    """Anexa a cada nivel lo que aporta ESTE lote. Trabajo O(lote), no O(estudio).
+
+    Todos los buckets de la pirámide son múltiplos de 16, así que un nivel de
+    bucket `B` es la envolvente base reducida por `B/16`. Reducir solo la parte
+    del lote que completa buckets, y arrastrar el resto como carry, da byte a
+    byte lo mismo que reducir el estudio entero de una vez — min y max son
+    asociativos — pero sin volver a leer nada de lo ya archivado.
+
+    El nivel base (bucket 16) no escribe objeto propio: sus chunks **son** las
+    envolventes que ya escribe el caller.
+    """
+    levels: list[dict[str, Any]] = list(study.ecg_pyramid_levels or [])
+    by_bucket = {int(level["samplesPerBucket"]): level for level in levels}
+    carry_state: dict[str, str] = dict(study.ecg_level_carry or {})
+
     for bucket in PYRAMID_BUCKETS:
-        envelope = base if bucket == BASE_BUCKET else reduce_envelope(base, bucket // BASE_BUCKET)
-        if envelope.size == 0 or envelope.size >= total_samples:
-            continue  # un nivel que no comprime no vale el objeto en S3
-        payload = envelope.tobytes()
-        key = level_key(study.id, bucket)
-        put_object(key, payload)
-        levels.append(
-            _object_meta(
-                key,
-                payload,
-                samplesPerBucket=bucket,
-                pointCount=int(envelope.size),
-            )
-        )
-    return levels
+        if bucket == BASE_BUCKET:
+            chunk = base_envelope
+            key = envelope_key(study.id, first_seq)
+        else:
+            factor = bucket // BASE_BUCKET
+            combined = np.concatenate([_decode_carry(carry_state.get(str(bucket))), base_envelope])
+            chunk, remainder = reduce_envelope_exact(combined, factor)
+            carry_state[str(bucket)] = remainder.tobytes().hex() if remainder.size else ""
+            key = level_chunk_key(study.id, bucket, first_seq)
+
+        if chunk.size == 0:
+            continue
+        payload = chunk.tobytes()
+        if bucket != BASE_BUCKET:
+            put_object(key, payload)
+
+        level = by_bucket.get(bucket)
+        if level is None:
+            level = {"samplesPerBucket": bucket, "pointCount": 0, "chunks": []}
+            by_bucket[bucket] = level
+            levels.append(level)
+        chunks = [c for c in level.get("chunks", []) if c.get("key") != key]
+        chunks.append(_object_meta(key, payload, pointCount=int(chunk.size)))
+        # Ordenados y no en orden de llegada: el cliente concatena los chunks tal
+        # como vienen, así que el orden ES la señal. Un lote reprocesado entra por
+        # la deduplicación de arriba y se re-anexaría al final, dejando su tramo
+        # fuera de lugar dentro del nivel. Es lo mismo que ya hace `ecg_segments`
+        # con `startSampleIndex`.
+        chunks.sort(key=lambda item: _chunk_order(study, bucket, str(item["key"])))
+        level["chunks"] = chunks
+        level["pointCount"] = sum(int(c["pointCount"]) for c in chunks)
+
+    study.ecg_level_carry = carry_state
+    # Un nivel que no comprime no vale los objetos que ocupa en S3.
+    return [level for level in levels if int(level["pointCount"]) < max(study.samples_count, 1)]
+
+
+def compact_level(study: Study, level: dict[str, Any]) -> dict[str, Any]:
+    """Funde los chunks de un nivel en un objeto único.
+
+    Los chunks acotan el trabajo por lote, pero acumulan objetos: un estudio de
+    24 h que sube cada 10 minutos deja ~144 chunks por nivel, y el visor tendría
+    que hacer 144 GET para pintar la vista general. Compactar es O(estudio), pero
+    ocurre pocas veces —al cruzar el umbral y al cerrar el estudio— en vez de una
+    vez por lote, que es justamente lo que rompía.
+    """
+    bucket = int(level["samplesPerBucket"])
+    chunks = list(level.get("chunks", []))
+    if len(chunks) <= 1:
+        return level
+    payload = b"".join(get_object(str(chunk["key"])) for chunk in chunks)
+    key = level_key(study.id, bucket)
+    put_object(key, payload)
+    merged = _object_meta(key, payload, pointCount=len(payload) // 4)
+    return {
+        "samplesPerBucket": bucket,
+        "pointCount": len(payload) // 4,
+        "chunks": [merged],
+    }
+
+
+def compact_pyramid(study: Study, *, force: bool = False) -> list[dict[str, Any]]:
+    """Compacta los niveles cuyo recuento de chunks cruzó el umbral."""
+    return [
+        compact_level(study, level)
+        if force or len(level.get("chunks", [])) >= LEVEL_COMPACTION_THRESHOLD
+        else level
+        for level in (study.ecg_pyramid_levels or [])
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -390,6 +515,43 @@ async def _persist_events(
 # --------------------------------------------------------------------------- #
 
 
+async def _place_on_timeline(
+    db: AsyncSession,
+    study: Study,
+    batch: ECGBatch,
+    decoded: _DecodedBatch,
+    start_sample_index: int,
+) -> None:
+    """Abre o extiende el tramo al que pertenece este lote.
+
+    `start_sample_index` es la posición del lote dentro del buffer empaquetado
+    del estudio, que es lo que después permite traducir índice de muestra a hora
+    de pared y al revés.
+    """
+    first = decoded.frames[0].info
+    last = decoded.frames[-1].info
+    timing = timeline.batch_timing(batch, first.t0_ms, last.t0_ms, last.duration_ms)
+
+    current = await repo.get_last_timeline_segment(db, study.id)
+    if current is None or timeline.starts_new_segment(current, batch, timing):
+        ordinal = 0 if current is None else current.ordinal + 1
+        await repo.add_timeline_segment(
+            db,
+            timeline.open_segment(
+                study, batch, timing, ordinal, start_sample_index, decoded.n_samples
+            ),
+        )
+        return
+
+    # `list_boot_anchors` ya filtra las filas sin ancla completa, así que las dos
+    # columnas están; el `or 0` es solo para el tipo.
+    anchors = [
+        (int(row.device_uptime_ms or 0), int(row.bridge_epoch_ms or 0))
+        for row in await repo.list_boot_anchors(db, study.id, batch.boot_id, current.first_seq)
+    ]
+    timeline.extend_segment(current, batch, timing, decoded.n_samples, anchors)
+
+
 async def _process_one_batch(
     db: AsyncSession, study: Study, batch: ECGBatch
 ) -> tuple[int, int, Pushable | None]:
@@ -431,7 +593,14 @@ async def _process_one_batch(
     if envelope.size:
         put_object(envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
     study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
-    study.ecg_pyramid_levels = rebuild_pyramid(study)
+    # Antes acá se llamaba `rebuild_pyramid`, que releía de S3 TODAS las
+    # envolventes del estudio en cada lote. Es la causa de los `500` del informe
+    # de Biomédica: crecía con el estudio y corría con la fila bloqueada.
+    study.ecg_pyramid_levels = append_level_chunks(study, envelope, batch.first_seq or 0)
+    study.ecg_pyramid_levels = compact_pyramid(study)
+
+    # --- Línea de tiempo de pared ------------------------------------------ #
+    await _place_on_timeline(db, study, batch, decoded, start_sample_index)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
     # perdió la carrera contra complete/cancel no puede reabrir ni reescribir el
@@ -464,6 +633,40 @@ async def _process_one_batch(
     return decoded.n_samples, created, pushable
 
 
+#: Intentos de tomar la fila del estudio antes de dejar el lote para más tarde.
+#: El `lock_timeout` de 3 s existe para que un REQUEST falle rápido: el equipo lee
+#: un 503 y reintenta. Acá no hay nadie esperando una respuesta, así que rendirse
+#: al primer intento sería peor — el lote quedaría marcado `FAILED`, y un lote
+#: `FAILED` solo se vuelve a mirar cuando llega otro lote del mismo estudio. Si el
+#: chaleco ya terminó de subir, esa señal se queda archivada en S3 y sin procesar.
+LOCK_ATTEMPTS = 4
+LOCK_RETRY_SECONDS = 2.0
+
+
+async def _lock_study(db: AsyncSession, study_id: uuid.UUID) -> Study | None:
+    """Toma la fila del estudio, reintentando mientras esté tomada.
+
+    La contención acá es esperada y transitoria: la ingesta del lote siguiente
+    tiene la fila mientras confirma su ACK. No es una falla del lote.
+    """
+    for attempt in range(1, LOCK_ATTEMPTS + 1):
+        try:
+            return await repo.get_study_for_update(db, study_id)
+        except DBAPIError as error:
+            if not isinstance(getattr(error, "orig", None), LockNotAvailableError):
+                raise
+            await db.rollback()
+            if attempt == LOCK_ATTEMPTS:
+                raise
+            await logger.awarning(
+                "process_batch_lock_retry",
+                study_id=str(study_id),
+                attempt=attempt,
+            )
+            await asyncio.sleep(LOCK_RETRY_SECONDS)
+    return None  # pragma: no cover - el bucle sale por return o por raise
+
+
 async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
     """Drena en orden todos los lotes pendientes del estudio solicitado.
 
@@ -484,7 +687,7 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
 
     failed_batch_id = batch_id
     try:
-        study = await repo.get_study_for_update(db, requested.study_id)
+        study = await _lock_study(db, requested.study_id)
         if study is None:
             raise RuntimeError("el estudio del lote no existe")
 
@@ -516,18 +719,38 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
                 patient_id,
                 anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
             )
-    except Exception as error:  # noqa: BLE001 — el estado del lote tiene que reflejarlo
+    except DBAPIError as error:
+        if not isinstance(getattr(error, "orig", None), LockNotAvailableError):
+            await _mark_failed(db, batch_id, failed_batch_id, error)
+            return
+        # No se pudo tomar la fila ni después de los reintentos. El lote NO es
+        # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
+        # pendiente para que lo drene la próxima pasada — marcarlo fallido sería
+        # declarar rota una señal que está entera.
         await db.rollback()
-        failed = await repo.get_batch(db, failed_batch_id)
-        if failed is not None:
-            failed.processing_status = ProcessingStatus.FAILED
-            failed.processing_error = str(error)[:1024]
-            await db.commit()
-        await logger.aexception(
-            "process_batch_failed",
+        await logger.awarning(
+            "process_batch_contended",
             requested_batch_id=str(batch_id),
-            failed_batch_id=str(failed_batch_id),
+            pending_batch_id=str(failed_batch_id),
         )
+    except Exception as error:  # noqa: BLE001 — el estado del lote tiene que reflejarlo
+        await _mark_failed(db, batch_id, failed_batch_id, error)
+
+
+async def _mark_failed(
+    db: AsyncSession, batch_id: uuid.UUID, failed_batch_id: uuid.UUID, error: Exception
+) -> None:
+    await db.rollback()
+    failed = await repo.get_batch(db, failed_batch_id)
+    if failed is not None:
+        failed.processing_status = ProcessingStatus.FAILED
+        failed.processing_error = str(error)[:1024]
+        await db.commit()
+    await logger.aexception(
+        "process_batch_failed",
+        requested_batch_id=str(batch_id),
+        failed_batch_id=str(failed_batch_id),
+    )
 
 
 async def process_batch_task(batch_id: uuid.UUID) -> None:

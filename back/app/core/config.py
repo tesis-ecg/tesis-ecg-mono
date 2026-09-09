@@ -67,6 +67,21 @@ class Settings(BaseSettings):
     # estuvo más tiempo sin conexión tiene que trocear el envío — que es lo que
     # hace igual, porque la flash de a bordo aguanta ~9,9 h.
     ingest_max_batch_bytes: int = Field(default=8 * 1024 * 1024, ge=256, le=64 * 1024 * 1024)
+    #: Exigir las cabeceras de sincronización horaria del puente WiFi
+    #: (`X-Bridge-Epoch-Ms` y compañía, ver `docs/integracion-ingesta-con-horario.md`).
+    #: El contrato dice obligatorias, pero arranca apagado a propósito: el
+    #: firmware que hoy está en campo todavía no las manda y prenderlo antes de
+    #: que salga su versión lo dejaría sin poder subir señal. Se prende cuando
+    #: Biomédica confirma el despliegue del puente.
+    ingest_require_time_sync: bool = False
+    #: Cuánto puede alejarse `X-Bridge-Epoch-Ms` de nuestra hora antes de que el
+    #: ancla se considere basura. Cubre la deriva razonable de un puente que
+    #: propaga una sincronización vieja, y descarta el epoch 0 de un SNTP roto.
+    ingest_time_sync_max_skew_seconds: int = Field(default=6 * 3600, ge=60, le=7 * 86_400)
+    #: Salto de hora de pared entre dos tramas consecutivas que abre un tramo
+    #: nuevo en la línea de tiempo. Por debajo de esto es jitter del reloj del
+    #: equipo; por encima, el chaleco no estuvo grabando.
+    ingest_timeline_gap_tolerance_ms: int = Field(default=2_000, ge=100, le=600_000)
 
     # Dashboard / watchdog
     dashboard_stale_hours: int = 10

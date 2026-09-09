@@ -49,7 +49,26 @@ export interface DeviceClock {
   nextSeq: number
   t0Ms: number
   uptimeMs: number
+  /**
+   * Instante UTC en que el `millis()` simulado valía cero, fijo durante todo el
+   * arranque. Es lo que hace que el epoch que manda el puente simulado y el
+   * `uptimeMs` que lo acompaña describan **el mismo instante**, que es la única
+   * regla que el backend no puede verificar por su cuenta
+   * (`docs/integracion-ingesta-con-horario.md` §3).
+   *
+   * Mandar `Date.now()` en su lugar parecía equivalente y no lo es: el reloj del
+   * chaleco simulado corre acelerado —`uptimeMs` avanza `batchMinutes` por lote,
+   * o sea media hora por segundo real— así que `Date.now() − uptimeMs` retrocedía
+   * media hora en cada envío y el backend veía el arranque del equipo moverse
+   * hacia atrás. La línea de tiempo salía partida en un tramo por lote.
+   */
+  bootEpochMs: number
   batteryPct: number
+}
+
+/** El epoch que leería el puente WiFi en este instante del reloj simulado. */
+export function bridgeEpochMs(clock: DeviceClock): number {
+  return clock.bootEpochMs + clock.uptimeMs
 }
 
 /** Una trama en la SD: grabada, todavía sin confirmar. */
@@ -80,13 +99,15 @@ export interface DeviceRuntime {
 export type ClockRegistry = Map<string, DeviceRuntime>
 
 export function initialClock(config: VestConfig): DeviceClock {
+  const uptimeMs = config.batchMinutes * 60_000
   return {
     bootId: 0,
     nextSeq: 0,
     t0Ms: 0,
-    // Arranca con horas de encendido para que el ancla temporal del backend sea
-    // `recepción − uptime`, como en el equipo real.
-    uptimeMs: config.batchMinutes * 60_000,
+    // Arranca con horas de encendido, como un equipo real que ya venía prendido.
+    uptimeMs,
+    // De modo que el primer envío quede fechado ahora mismo.
+    bootEpochMs: Date.now() - uptimeMs,
     batteryPct: 96,
   }
 }
@@ -138,6 +159,9 @@ export function reboot(device: DeviceRuntime): number {
   device.clock.bootId = (device.clock.bootId + 1) % BOOTID_MODULO
   device.clock.t0Ms = 0
   device.clock.uptimeMs = 0
+  // Arranque nuevo, ancla nueva: es exactamente lo que hace el equipo real, y lo
+  // que le dice al backend que abra un tramo con su propia hora.
+  device.clock.bootEpochMs = Date.now()
   device.sd.pending = []
   device.sd.overflowed = 0
   return lost

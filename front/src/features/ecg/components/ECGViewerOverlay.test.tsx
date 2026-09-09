@@ -133,6 +133,10 @@ function signal(): ECGSignal {
     durationMs: 60_000,
     samples: new Float32Array(60),
     startTimestamp,
+    // Una grabación sin cortes: un solo tramo y ningún hueco que dibujar.
+    timestampsMs: Float64Array.from({ length: 60 }, (_, i) => startTimestamp + i * 1000),
+    gapIndices: [],
+    timeline: [],
     annotations: [
       {
         id: 'event-1',

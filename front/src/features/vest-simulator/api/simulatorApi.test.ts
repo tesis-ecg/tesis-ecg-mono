@@ -18,6 +18,7 @@ describe('subida al endpoint de ingesta', () => {
     serial: 'HOL-1',
     apiKey: 'k',
     uptimeMs: 1000,
+    bridgeEpochMs: 1_757_000_000_000,
     firmwareVersion: '1.0.0',
     batteryPct: 90,
   }
@@ -149,6 +150,7 @@ describe('canal corto del chaleco', () => {
     serial: 'HOL-1',
     apiKey: 'k',
     uptimeMs: 1000,
+    bridgeEpochMs: 1_757_000_000_000,
     firmwareVersion: '1.0.0',
     batteryPct: 90,
   }

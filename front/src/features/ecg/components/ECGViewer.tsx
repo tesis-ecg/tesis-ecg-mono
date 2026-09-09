@@ -29,7 +29,7 @@ import type {
   ECGViewerProps,
   ECGViewportChange,
 } from '../types'
-import { formatTimestampMs, formatTimestampShort } from '../utils/formatEcgTimestamp'
+import { formatWallClock, formatWallClockShort } from '../utils/formatEcgTimestamp'
 
 /**
  * Lee los tokens CSS del ECG desde `document.documentElement`. uPlot pinta sobre
@@ -145,6 +145,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // Eje X precalculado en segundos desde el inicio. Memoizado por largo y
   // sample rate para evitar reallocar 900k floats en cada render.
   const xs = useMemo(() => buildXAxis(signal), [signal])
+  const ys = useMemo(() => buildYSeries(signal), [signal])
   const annotationDrawOrder = useMemo(
     () => [...signal.annotations].sort(compareAnnotationsForPainting),
     [signal.annotations],
@@ -238,7 +239,12 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           stroke: tokens.fg,
           ticks: { stroke: tokens.grid, width: 1 },
           grid: { stroke: tokens.grid, width: 1 },
-          values: (_self, splits) => splits.map((v) => formatTimestampShort(v * 1000)),
+          // Hora de pared real, no tiempo transcurrido: es lo que el médico
+          // necesita para cruzar un hallazgo con lo que el paciente estaba
+          // haciendo. `v` es segundos desde el inicio del eje, que arranca en
+          // `startTimestamp`.
+          values: (_self, splits) =>
+            splits.map((v) => formatWallClockShort(startTimestamp + v * 1000)),
           size: 30,
         },
         {
@@ -252,7 +258,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       series: [
         {
           label: 'Tiempo',
-          value: (_self, v) => (v == null ? '—' : formatTimestampMs(v * 1000)),
+          value: (_self, v) => (v == null ? '—' : formatWallClock(startTimestamp + v * 1000)),
         },
         {
           label: 'ECG',
@@ -299,10 +305,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       },
     }
 
-    const data: uPlot.AlignedData = [
-      xs as unknown as number[],
-      signal.samples as unknown as number[],
-    ]
+    const data: uPlot.AlignedData = [xs as unknown as number[], ys as unknown as number[]]
 
     const u = new uPlot(opts, data, container)
     uplotRef.current = u
@@ -471,6 +474,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     signal,
     height,
     xs,
+    ys,
     annotationDrawOrder,
     annotationLinks,
     durationSec,
@@ -576,12 +580,46 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   )
 })
 
+/**
+ * Eje X en segundos desde el inicio del estudio, derivado de la hora real de
+ * cada punto.
+ *
+ * Antes se repartía `durationMs` uniformemente entre los puntos. Eso es correcto
+ * solo si la grabación no tiene cortes: en cuanto el chaleco deja de grabar un
+ * rato, el buffer de muestras pega los dos bordes y el eje uniforme corre la
+ * hora de todo lo que viene después del hueco.
+ */
 function buildXAxis(signal: ECGSignal): Float64Array {
   const n = signal.samples.length
   const xs = new Float64Array(n)
+  if (signal.timestampsMs.length === n) {
+    for (let i = 0; i < n; i++) xs[i] = (signal.timestampsMs[i] - signal.startTimestamp) / 1000
+    return xs
+  }
   const dt = n > 0 ? signal.durationMs / 1000 / n : 0
   for (let i = 0; i < n; i++) xs[i] = i * dt
   return xs
+}
+
+/**
+ * Serie Y con un corte en cada hueco.
+ *
+ * uPlot corta la traza en un `null` cuando `spanGaps` es falso, que ya está
+ * puesto. Sin este corte, los dos bordes de un hueco quedarían unidos por una
+ * recta larga: una línea que el chaleco nunca midió, dibujada con la misma
+ * tinta que la señal real.
+ *
+ * Camino rápido cuando no hay huecos: se pasa el `Float32Array` tal cual y no se
+ * copia nada, que es lo que hace viable dibujar cientos de miles de puntos.
+ */
+function buildYSeries(signal: ECGSignal): Float32Array | (number | null)[] {
+  if (signal.gapIndices.length === 0) return signal.samples
+  const gaps = new Set(signal.gapIndices)
+  const ys: (number | null)[] = new Array(signal.samples.length)
+  for (let i = 0; i < signal.samples.length; i++) {
+    ys[i] = gaps.has(i) ? null : signal.samples[i]
+  }
+  return ys
 }
 
 /**
