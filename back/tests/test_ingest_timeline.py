@@ -81,11 +81,17 @@ async def test_the_bridge_epoch_beats_our_reception_time(
 
 
 async def test_without_the_headers_the_old_anchor_still_works(
-    client, s3, db, make_patient, make_device
+    client, s3, db, make_patient, make_device, monkeypatch
 ) -> None:
-    """El firmware de campo sigue subiendo mientras el modo estricto está apagado."""
+    """El camino viejo sigue vivo para poder apagar el modo estricto.
+
+    Hoy sale prendido, pero el interruptor existe justamente para volver atrás
+    sin desplegar si el puente de Biomédica queda sin hora, así que el ancla
+    derivada de nuestra recepción tiene que seguir funcionando.
+    """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
+    monkeypatch.setattr(settings, "ingest_require_time_sync", False)
 
     body = await _ingest(client, db, device, api_key, build_frames(900), bridge_epoch_ms=OMIT)
 
@@ -100,6 +106,7 @@ async def test_the_headers_are_required_when_strict_mode_is_on(
 ) -> None:
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
+    # Explícito aunque hoy sea el default: lo que se prueba es el modo estricto.
     monkeypatch.setattr(settings, "ingest_require_time_sync", True)
 
     response = await post_frames(client, device, api_key, build_frames(900), bridge_epoch_ms=OMIT)
@@ -481,14 +488,13 @@ def test_the_latency_of_a_request_does_not_split_a_continuous_recording(
 ) -> None:
     """El ancla vieja lleva la latencia del pedido adentro; el hueco no.
 
-    Mientras `ingest_require_time_sync` está apagado —que es como sale a
-    producción— el ancla es `recepción − uptime`, así que cada lote trae adentro
-    la latencia de SU pedido: 5,1 s de mediana y picos de 22,8 s según el informe
-    de Biomédica del 8/9/2026. Comparar el arranque de un lote contra el final
-    del anterior comparaba esas dos latencias y no la grabación, así que un pico
-    partía en dos una corrida perfectamente continua — y como el pico se va tan
-    rápido como vino, el tramo siguiente arrancaba ANTES de que terminara el
-    anterior, con el eje del visor yendo para atrás.
+    Con `ingest_require_time_sync` apagado el ancla es `recepción − uptime`, así
+    que cada lote trae adentro la latencia de SU pedido: 5,1 s de mediana y picos
+    de 22,8 s según el informe de Biomédica del 8/9/2026. Comparar el arranque de
+    un lote contra el final del anterior comparaba esas dos latencias y no la
+    grabación, así que un pico partía en dos una corrida perfectamente continua
+    — y como el pico se va tan rápido como vino, el tramo siguiente arrancaba
+    ANTES de que terminara el anterior, con el eje del visor yendo para atrás.
 
     Con el mismo `bootId` y `t0Ms` monótono el hueco se mide en el reloj del
     equipo, que las dos puntas de la resta comparten.

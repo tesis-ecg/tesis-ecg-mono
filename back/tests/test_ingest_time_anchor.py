@@ -5,37 +5,46 @@ desde el arranque, y la conversión a UTC es responsabilidad del backend
 (`INTEGRACION.md` §5). Tres cosas rompen el ancla y las tres se prueban acá.
 """
 
-from datetime import UTC, datetime
-
 from sqlalchemy import select
 
 from app.db.models.ecg_batch import ECGBatch
 from app.db.models.study import Study
 from app.modules.ingest.processing import process_batch
-from tests.ingest_helpers import build_frames, post_frames
+from tests.ingest_helpers import build_frames, now_ms, post_frames
 
 
 async def _batches(db) -> list[ECGBatch]:
     return list((await db.scalars(select(ECGBatch).order_by(ECGBatch.created_at))).all())
 
 
-async def test_anchor_is_reception_time_minus_uptime(
+async def test_anchor_is_the_bridge_epoch_minus_uptime(
     client, s3, db, make_patient, make_device
 ) -> None:
+    """El arranque del equipo sale de la pareja que manda el puente.
+
+    El epoch y el uptime describen el mismo instante, así que su resta da el
+    momento en que el equipo se prendió sin que la latencia del pedido entre en
+    la cuenta.
+    """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     uptime_ms = 5_400_000
+    bridge_epoch_ms = now_ms()
 
-    before = int(datetime.now(UTC).timestamp() * 1000)
     body = (
-        await post_frames(client, device, api_key, build_frames(900), uptime_ms=uptime_ms)
+        await post_frames(
+            client,
+            device,
+            api_key,
+            build_frames(900),
+            uptime_ms=uptime_ms,
+            bridge_epoch_ms=bridge_epoch_ms,
+        )
     ).json()
-    after = int(datetime.now(UTC).timestamp() * 1000)
 
     batch = await db.get(ECGBatch, body["batchId"])
     assert batch is not None
-    assert batch.epoch_anchor_ms is not None
-    assert before - uptime_ms <= batch.epoch_anchor_ms <= after - uptime_ms
+    assert batch.epoch_anchor_ms == bridge_epoch_ms - uptime_ms
 
 
 async def test_raw_uptime_and_boot_id_are_persisted_next_to_the_derived_time(
