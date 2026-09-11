@@ -1,5 +1,6 @@
 """Helpers compartidos por los tests de ingesta."""
 
+from datetime import UTC, datetime
 from typing import Any
 
 from app.db.models.device import Device
@@ -15,6 +16,10 @@ INGEST_URL = "/ingest/ecg-frames"
 OMIT = object()
 
 
+def now_ms() -> int:
+    return int(datetime.now(UTC).timestamp() * 1000)
+
+
 def device_headers(
     device: Device,
     api_key: str,
@@ -22,17 +27,28 @@ def device_headers(
     uptime_ms: int = 3_600_000,
     firmware: str | None = "1.4.2",
     battery: int | None = 87,
-    bridge_epoch_ms: int | object | None = OMIT,
+    bridge_epoch_ms: int | object | None = None,
     sync_source: str | None = "ntp",
     sync_uncertainty_ms: int | None = 45,
 ) -> dict[str, str]:
+    """Cabeceras de un equipo de campo, con hora sincronizada.
+
+    El puente de Biomédica manda las tres cabeceras de hora desde que
+    `ingest_require_time_sync` está prendido, así que ese es el default acá: sin
+    ellas el backend contesta `422 DEVICE_TIME_SYNC_REQUIRED` y no se probaría
+    nada de lo que viene después. `bridge_epoch_ms=None` usa la hora actual, que
+    es lo que manda un puente recién sincronizado; `OMIT` corta las tres para
+    los tests que ejercitan el camino viejo.
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-Device-Serial": device.serial_number,
         "X-Device-Uptime-Ms": str(uptime_ms),
         "Content-Type": "application/octet-stream",
     }
-    if bridge_epoch_ms is not OMIT and bridge_epoch_ms is not None:
+    if bridge_epoch_ms is None:
+        bridge_epoch_ms = now_ms()
+    if bridge_epoch_ms is not OMIT:
         headers["X-Bridge-Epoch-Ms"] = str(bridge_epoch_ms)
         if sync_source is not None:
             headers["X-Time-Sync-Source"] = sync_source
@@ -100,5 +116,6 @@ __all__ = [
     "build_frames",
     "build_frames_with_flag_span",
     "device_headers",
+    "now_ms",
     "post_frames",
 ]
