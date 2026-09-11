@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     #: firmware que hoy está en campo todavía no las manda y prenderlo antes de
     #: que salga su versión lo dejaría sin poder subir señal. Se prende cuando
     #: Biomédica confirma el despliegue del puente.
-    ingest_require_time_sync: bool = False
+    ingest_require_time_sync: bool = True
     #: Cuánto puede alejarse `X-Bridge-Epoch-Ms` de nuestra hora antes de que el
     #: ancla se considere basura. Cubre la deriva razonable de un puente que
     #: propaga una sincronización vieja, y descarta el epoch 0 de un SNTP roto.
