@@ -513,10 +513,13 @@ export interface StudyDetailOut {
   "id": string
   "patientId": string
   "patientName": string
+  "deviceId": string
   "startedAt": string
   "endedAt": string | null
   "durationMs": number
   "deviceSerial": string
+  "canAccessDevice": boolean
+  "lastDataReceivedAt": string | null
   "status": StudyStatus
   "doctorId": string | null
   "doctorName": string | null

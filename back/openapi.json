@@ -2950,6 +2950,15 @@
       },
       "StudyDetailOut": {
         "properties": {
+          "canAccessDevice": {
+            "title": "Canaccessdevice",
+            "type": "boolean"
+          },
+          "deviceId": {
+            "format": "uuid",
+            "title": "Deviceid",
+            "type": "string"
+          },
           "deviceSerial": {
             "title": "Deviceserial",
             "type": "string"
@@ -2998,6 +3007,18 @@
             "title": "Id",
             "type": "string"
           },
+          "lastDataReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastdatareceivedat"
+          },
           "patientId": {
             "format": "uuid",
             "title": "Patientid",
@@ -3020,10 +3041,13 @@
           "id",
           "patientId",
           "patientName",
+          "deviceId",
           "startedAt",
           "endedAt",
           "durationMs",
           "deviceSerial",
+          "canAccessDevice",
+          "lastDataReceivedAt",
           "status",
           "doctorId",
           "doctorName"

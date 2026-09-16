@@ -105,16 +105,24 @@ def _patient_study_out(study: Study) -> PatientStudyOut:
 
 
 def _study_detail_out(
-    study: Study, patient: Patient, device: Device, doctor_name: str | None
+    study: Study,
+    patient: Patient,
+    device: Device,
+    doctor_name: str | None,
+    last_data_received_at: datetime | None,
+    requesting_doctor_id: uuid.UUID | None,
 ) -> StudyDetailOut:
     return StudyDetailOut(
         id=study.id,
         patientId=patient.id,
         patientName=f"{patient.first_name} {patient.last_name}".strip(),
+        deviceId=device.id,
         startedAt=study.started_at,
         endedAt=study.ended_at,
         durationMs=_duration_ms(study),
         deviceSerial=device.serial_number,
+        canAccessDevice=(requesting_doctor_id is None or device.doctor_id == requesting_doctor_id),
+        lastDataReceivedAt=last_data_received_at,
         status=study.status,
         doctorId=patient.doctor_id,
         doctorName=doctor_name,
@@ -451,8 +459,15 @@ async def list_studies(input_data: StudyListInput, db: AsyncSession) -> StudyLis
     )
     return StudyListResponse(
         items=[
-            _study_detail_out(study, patient, device, doctor_name)
-            for study, patient, device, doctor_name in rows
+            _study_detail_out(
+                study,
+                patient,
+                device,
+                doctor_name,
+                last_data_received_at,
+                input_data.doctor_id,
+            )
+            for study, patient, device, doctor_name, last_data_received_at in rows
         ],
         total=total,
         limit=input_data.limit,
@@ -479,15 +494,22 @@ async def get_study(input_data: StudyIdInput, db: AsyncSession) -> StudyDetailOu
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, patient, device, doctor_name = result
-    return _study_detail_out(study, patient, device, doctor_name)
+    study, patient, device, doctor_name, last_data_received_at = result
+    return _study_detail_out(
+        study,
+        patient,
+        device,
+        doctor_name,
+        last_data_received_at,
+        input_data.doctor_id,
+    )
 
 
 async def get_study_ecg(input_data: StudyIdInput, db: AsyncSession) -> StudyEcgOut:
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, _, _, _ = result
+    study, _, _, _, _ = result
     if study.ecg_s3_key is None:
         raise HTTPException(
             status_code=404,
@@ -525,7 +547,7 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, _, _, _ = result
+    study, _, _, _, _ = result
     # Un estudio ingestado no tiene `ecg_s3_key`: su señal vive en segmentos. Lo
     # que define "hay ECG" es que exista alguna de las dos formas.
     if study.ecg_s3_key is None and not study.ecg_segments:
@@ -734,7 +756,7 @@ async def _transition(
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:  # pragma: no cover - la fila se acaba de commitear
         raise _not_found()
-    return _study_detail_out(*result)
+    return _study_detail_out(*result, input_data.doctor_id)
 
 
 async def complete_study(
@@ -803,7 +825,7 @@ async def simulate_anomaly(
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, patient, _, _ = result
+    study, patient, _, _, _ = result
 
     batch = await repo.get_latest_batch(db, study.id)
     # `ecg_event.batch_id` es NOT NULL: un hallazgo sin lote detrás no se puede
@@ -959,7 +981,7 @@ async def list_study_patient_reports(
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, _, _, _ = result
+    study, _, _, _, _ = result
     reports = await patient_app_repo.list_reports_for_study(db, study.id)
     # Los mismos offsets que el manifest: si la solapa dijera "visible" y el
     # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún

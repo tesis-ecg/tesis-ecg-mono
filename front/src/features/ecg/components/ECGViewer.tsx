@@ -125,6 +125,9 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   const [labelWidths, setLabelWidths] = useState<ReadonlyMap<string, number>>(() => new Map())
   const selectedAnnotationIdRef = useRef<string | null>(selectedAnnotationId)
   const onAnnotationSelectRef = useRef(onAnnotationSelect)
+  // Sobrevive a la recreación de uPlot cuando llega una señal nueva por
+  // polling. Es absoluto porque la duración crece y el eje puede tener huecos.
+  const preservedViewportRef = useRef<ECGViewportChange | null>(initialViewport ?? null)
   // El último viewport notificado (en segundos), para no disparar el callback
   // con valores idénticos durante interacciones continuas.
   const lastViewportRef = useRef<{ min: number; max: number } | null>(null)
@@ -287,13 +290,14 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             if (scaleKey !== 'x') return
             const { min, max } = u.scales.x
             if (min == null || max == null) return
-            const last = lastViewportRef.current
-            if (last && last.min === min && last.max === max) return
-            lastViewportRef.current = { min, max }
             const nextViewport = {
               startMs: startTimestamp + min * 1000,
               endMs: startTimestamp + max * 1000,
             }
+            preservedViewportRef.current = nextViewport
+            const last = lastViewportRef.current
+            if (last && last.min === min && last.max === max) return
+            lastViewportRef.current = { min, max }
             setOverlayViewport((current) =>
               current?.startMs === nextViewport.startMs && current.endMs === nextViewport.endMs
                 ? current
@@ -310,12 +314,13 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     const u = new uPlot(opts, data, container)
     uplotRef.current = u
 
-    // Viewport inicial: `initialViewport` gana si está; si no, últimos
-    // `initialWindowSec` segundos. Si la señal es más corta que la ventana
-    // pedida, mostramos el rango completo.
-    if (initialViewport) {
-      const startSec = Math.max(0, (initialViewport.startMs - signal.startTimestamp) / 1000)
-      const endSec = Math.min(durationSec, (initialViewport.endMs - signal.startTimestamp) / 1000)
+    // La primera instancia usa `initialViewport`; las recreaciones por polling
+    // restauran el último rango observado. Si la señal es más corta que el
+    // rango pedido, se recorta de forma segura.
+    const viewportToRestore = preservedViewportRef.current
+    if (viewportToRestore) {
+      const startSec = Math.max(0, (viewportToRestore.startMs - signal.startTimestamp) / 1000)
+      const endSec = Math.min(durationSec, (viewportToRestore.endMs - signal.startTimestamp) / 1000)
       if (endSec > startSec) {
         u.setScale('x', { min: startSec, max: endSec })
       } else {
@@ -470,17 +475,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       uplotRef.current = null
       lastViewportRef.current = null
     }
-  }, [
-    signal,
-    height,
-    xs,
-    ys,
-    annotationDrawOrder,
-    annotationLinks,
-    durationSec,
-    initialWindowSec,
-    initialViewport,
-  ])
+  }, [signal, height, xs, ys, annotationDrawOrder, annotationLinks, durationSec, initialWindowSec])
 
   // API imperativa — convierte timestamps absolutos a segundos desde el inicio.
   useImperativeHandle(

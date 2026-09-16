@@ -86,6 +86,33 @@ describe('ECGMinimap annotations', () => {
       expect(marker.getAttribute('style')).toContain(`--ecg-alert-${severity}-marker-bg`)
     }
   })
+
+  it('conserva el ancho lógico de un viewport más angosto que el selector visual', () => {
+    const onViewportChange = vi.fn()
+    const longSignal = signal()
+    longSignal.durationMs = 1_000_000
+    render(
+      <ECGMinimap
+        signal={longSignal}
+        viewport={{
+          startMs: longSignal.startTimestamp,
+          endMs: longSignal.startTimestamp + 1_000,
+        }}
+        onViewportChange={onViewportChange}
+      />,
+    )
+
+    const minimap = screen.getByLabelText('Navegación general del ECG')
+    minimap.getBoundingClientRect = () =>
+      ({ left: 0, right: 1_000, top: 0, bottom: 64, width: 1_000, height: 64 }) as DOMRect
+    Object.defineProperty(minimap, 'setPointerCapture', { value: vi.fn() })
+
+    fireEvent.pointerDown(minimap, { clientX: 500, pointerId: 1 })
+
+    expect(onViewportChange).toHaveBeenCalledOnce()
+    const next = onViewportChange.mock.calls[0][0]
+    expect(next.endMs - next.startMs).toBe(1_000)
+  })
 })
 
 function severityLabel(severity: ECGAnnotationSeverity): string {
