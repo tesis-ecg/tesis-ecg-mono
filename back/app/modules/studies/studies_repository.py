@@ -1,7 +1,9 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import Select, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.selectable import ScalarSelect
 
 from app.db.models.device import Device
 from app.db.models.doctor import Doctor
@@ -12,13 +14,24 @@ from app.db.models.study import Study, StudyStatus
 from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User
 
+StudyDetailRow = tuple[Study, Patient, Device, str | None, datetime | None]
+
+
+def _last_data_received_at() -> ScalarSelect[datetime]:
+    return (
+        select(func.max(ECGBatch.received_at))
+        .where(ECGBatch.study_id == Study.id, ECGBatch.deleted_at.is_(None))
+        .correlate(Study)
+        .scalar_subquery()
+    )
+
 
 def _apply_study_filters(
-    statement: Select[tuple[Study, Patient, Device, str | None]] | Select[tuple[int]],
+    statement: Select[StudyDetailRow] | Select[tuple[int]],
     doctor_id: uuid.UUID | None,
     q: str | None,
     statuses: list[StudyStatus] | None,
-) -> Select[tuple[Study, Patient, Device, str | None]] | Select[tuple[int]]:
+) -> Select[StudyDetailRow] | Select[tuple[int]]:
     statement = statement.where(
         Study.deleted_at.is_(None),
         Patient.deleted_at.is_(None),
@@ -48,7 +61,7 @@ async def list_studies(
     statuses: list[StudyStatus] | None,
     limit: int,
     offset: int,
-) -> tuple[list[tuple[Study, Patient, Device, str | None]], int]:
+) -> tuple[list[StudyDetailRow], int]:
     doctor_name = (
         select(User.full_name)
         .join(Doctor, Doctor.user_id == User.id)
@@ -62,7 +75,13 @@ async def list_studies(
         .scalar_subquery()
     )
     statement = _apply_study_filters(
-        select(Study, Patient, Device, doctor_name.label("doctor_name"))
+        select(
+            Study,
+            Patient,
+            Device,
+            doctor_name.label("doctor_name"),
+            _last_data_received_at().label("last_data_received_at"),
+        )
         .join(Patient, Study.patient_id == Patient.id)
         .join(Device, Study.device_id == Device.id),
         doctor_id,
@@ -82,7 +101,10 @@ async def list_studies(
 
     result = await db.execute(statement.limit(limit).offset(offset))
     total = await db.scalar(count_statement)
-    rows = [(study, patient, device, name) for study, patient, device, name in result.all()]
+    rows = [
+        (study, patient, device, name, last_data)
+        for study, patient, device, name, last_data in result.all()
+    ]
     return rows, total or 0
 
 
@@ -117,7 +139,7 @@ async def list_for_patient(
 
 async def get_detail(
     db: AsyncSession, study_id: uuid.UUID, doctor_id: uuid.UUID | None
-) -> tuple[Study, Patient, Device, str | None] | None:
+) -> StudyDetailRow | None:
     doctor_name = (
         select(User.full_name)
         .join(Doctor, Doctor.user_id == User.id)
@@ -131,7 +153,13 @@ async def get_detail(
         .scalar_subquery()
     )
     statement = (
-        select(Study, Patient, Device, doctor_name.label("doctor_name"))
+        select(
+            Study,
+            Patient,
+            Device,
+            doctor_name.label("doctor_name"),
+            _last_data_received_at().label("last_data_received_at"),
+        )
         .join(Patient, Study.patient_id == Patient.id)
         .join(Device, Study.device_id == Device.id)
         .where(
@@ -147,8 +175,8 @@ async def get_detail(
     row = result.one_or_none()
     if row is None:
         return None
-    study, patient, device, name = row
-    return study, patient, device, name
+    study, patient, device, name, last_data = row
+    return study, patient, device, name, last_data
 
 
 async def list_ecg_events(db: AsyncSession, study_id: uuid.UUID) -> list[ECGEvent]:

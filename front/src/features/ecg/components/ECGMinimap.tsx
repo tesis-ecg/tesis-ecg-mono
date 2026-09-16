@@ -132,13 +132,15 @@ export function ECGMinimap({
           Math.min(100, ((viewport.startMs - signal.startTimestamp) / 1000 / durationSec) * 100),
         )
       : 0
+  // El selector necesita un ancho visual mínimo para seguir siendo visible,
+  // pero la navegación debe conservar el ancho real. Antes se usaba 0,5 %
+  // también para los cálculos y arrastrar un zoom fino lo ensanchaba.
   const viewportWidthPct =
     viewport != null
-      ? Math.max(
-          0.5,
-          Math.min(100, ((viewport.endMs - viewport.startMs) / 1000 / durationSec) * 100),
-        )
+      ? Math.max(0, Math.min(100, ((viewport.endMs - viewport.startMs) / 1000 / durationSec) * 100))
       : 100
+  const selectorWidthPct = Math.max(0.5, viewportWidthPct)
+  const selectorLeftPct = Math.max(0, Math.min(100 - selectorWidthPct, viewportLeftPct))
 
   // Drag handler para mover la ventana visible.
   const dragRef = useRef<{ pointerId: number; startX: number; startLeftPct: number } | null>(null)
@@ -150,7 +152,7 @@ export function ECGMinimap({
     const clickXPct = ((e.clientX - rect.left) / rect.width) * 100
     // Si el click cae fuera de la ventana, centrar la ventana en el click.
     const clickedInsideWindow =
-      clickXPct >= viewportLeftPct && clickXPct <= viewportLeftPct + viewportWidthPct
+      clickXPct >= selectorLeftPct && clickXPct <= selectorLeftPct + selectorWidthPct
     const startLeftPct = clickedInsideWindow
       ? viewportLeftPct
       : Math.max(0, Math.min(100 - viewportWidthPct, clickXPct - viewportWidthPct / 2))
@@ -258,6 +260,7 @@ export function ECGMinimap({
 
       <div
         ref={containerRef}
+        aria-label="Navegación general del ECG"
         className={cn(
           'relative w-full select-none overflow-hidden rounded-md border border-border bg-card',
           'cursor-pointer',
@@ -289,8 +292,8 @@ export function ECGMinimap({
         <div
           className="pointer-events-none absolute top-0 bottom-0 border-2"
           style={{
-            left: `${viewportLeftPct}%`,
-            width: `${viewportWidthPct}%`,
+            left: `${selectorLeftPct}%`,
+            width: `${selectorWidthPct}%`,
             borderColor: 'var(--ecg-selector)',
             backgroundColor: 'var(--ecg-selector-bg)',
           }}

@@ -31,10 +31,18 @@ class StudyDetailOut(CamelModel):
     id: uuid.UUID
     patientId: uuid.UUID
     patientName: str
+    deviceId: uuid.UUID
     startedAt: datetime
     endedAt: datetime | None
     durationMs: int
     deviceSerial: str
+    #: Indica si quien consulta todavía puede abrir el detalle y la telemetría
+    #: actual del Holter. Un estudio histórico sigue siendo visible aunque el
+    #: equipo haya sido transferido a otro médico.
+    canAccessDevice: bool
+    #: Último lote ECG recibido para este estudio. No usa el cache global del
+    #: paciente, que podría pertenecer a un estudio posterior.
+    lastDataReceivedAt: datetime | None
     status: StudyStatus
     doctorId: uuid.UUID | None
     doctorName: str | None

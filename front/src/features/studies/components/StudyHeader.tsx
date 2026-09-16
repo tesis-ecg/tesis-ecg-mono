@@ -1,10 +1,10 @@
-import { Calendar, CheckCircle2, Clock, HeartPulse, XCircle } from 'lucide-react'
+import { Calendar, CheckCircle2, Clock, HeartPulse, Radio, XCircle } from 'lucide-react'
 import { useState } from 'react'
 
 import { KebabMenu, type KebabMenuAction } from '@/components/KebabMenu'
 import { Badge } from '@/components/ui/badge'
 import { Card } from '@/components/ui/card'
-import { formatDateTime, formatDurationMs } from '@/lib/time'
+import { formatDateTime, formatDurationMs, formatRelativeTime } from '@/lib/time'
 
 import { CloseStudyDialog } from './CloseStudyDialog'
 import type { PatientStudySessionStatus, Study } from '../types'
@@ -76,7 +76,7 @@ export function StudyHeader({ study }: StudyHeaderProps) {
         />
       )}
 
-      <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Metadata icon={Calendar} label="Inicio" value={formatDateTime(study.startedAt)} />
         <Metadata
           icon={Calendar}
@@ -85,6 +85,16 @@ export function StudyHeader({ study }: StudyHeaderProps) {
         />
         <Metadata icon={Clock} label="Duración" value={formatDurationMs(study.durationMs)} />
         <Metadata icon={HeartPulse} label="Dispositivo" value={study.deviceSerial} />
+        <Metadata
+          icon={Radio}
+          label="Último dato recibido"
+          value={
+            study.lastDataReceivedAt
+              ? formatDateTime(study.lastDataReceivedAt)
+              : 'Sin datos recibidos'
+          }
+          hint={study.lastDataReceivedAt ? formatRelativeTime(study.lastDataReceivedAt) : undefined}
+        />
       </dl>
     </Card>
   )
@@ -94,9 +104,10 @@ interface MetadataProps {
   icon: typeof Calendar
   label: string
   value: string
+  hint?: string
 }
 
-function Metadata({ icon: Icon, label, value }: MetadataProps) {
+function Metadata({ icon: Icon, label, value, hint }: MetadataProps) {
   return (
     <div className="flex items-start gap-2">
       <div className="mt-0.5 flex size-8 items-center justify-center rounded-md bg-primary-50 text-primary-500">
@@ -105,6 +116,7 @@ function Metadata({ icon: Icon, label, value }: MetadataProps) {
       <div className="flex flex-col">
         <dt className="text-body3 text-gray-600">{label}</dt>
         <dd className="text-body1 font-medium text-gray-900">{value}</dd>
+        {hint && <dd className="text-helper text-gray-500">{hint}</dd>}
       </div>
     </div>
   )

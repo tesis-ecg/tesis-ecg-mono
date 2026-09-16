@@ -131,6 +131,23 @@ describe('ECGFindingsPanel', () => {
     const card = container.querySelector('[data-annotation-card]')
     expect(card?.className).toContain('border-primary-300')
   })
+
+  it('mantiene fija la cabecera y limita el scroll a la lista', () => {
+    const { container } = render(
+      <ECGFindingsPanel
+        annotations={[annotation({})]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={() => undefined}
+        className="h-full"
+      />,
+    )
+
+    const panel = container.querySelector('[aria-label="Hallazgos ECG"]')
+    expect(panel?.className).toContain('h-full')
+    expect(panel?.querySelector('.overflow-y-auto')).not.toBeNull()
+    expect(panel?.querySelector('h2')?.closest('.overflow-y-auto')).toBeNull()
+  })
 })
 
 function annotation(overrides: Partial<ECGAnnotation>): ECGAnnotation {

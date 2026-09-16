@@ -13,10 +13,15 @@ export interface Study {
   id: string
   patientId: string
   patientName: string
+  deviceId: string
   startedAt: string
   endedAt: string | null
   durationMs: number
   deviceSerial: string
+  /** Si el usuario actual todavía puede consultar el estado en vivo del Holter. */
+  canAccessDevice: boolean
+  /** Último lote ECG recibido para este estudio, no para el paciente global. */
+  lastDataReceivedAt: string | null
   status: PatientStudySessionStatus
   /**
    * Médico dueño del paciente del estudio. Solo lo devuelve el backend en la
