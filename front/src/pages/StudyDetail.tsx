@@ -12,9 +12,12 @@ import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
 import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
+import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
+import { ECGPrintableReport } from '@/features/ecg/components/ECGPrintableReport'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
+import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 import { PatientReportsTable } from '@/features/studies/components/PatientReportsTable'
 import { StudyBreadcrumb } from '@/features/studies/components/StudyBreadcrumb'
@@ -45,7 +48,11 @@ export function StudyDetail() {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
+  const [printOpen, setPrintOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+  // La calibración vive acá y no adentro del visor: la comparten el gráfico de
+  // la solapa, el de pantalla completa y el informe imprimible.
+  const scale = usePaperScale()
   const [tab, setTab] = useState<'senal' | 'registros' | 'dispositivo'>('senal')
 
   // 404 → estado dedicado.
@@ -116,7 +123,10 @@ export function StudyDetail() {
     if (!viewport || !ecgQ.data) return
     const span = viewport.endMs - viewport.startMs
     const center = (viewport.startMs + viewport.endMs) / 2
-    const fullSpan = (ecgQ.data.samples.length / ecgQ.data.sampleRate) * 1000
+    // `durationMs` y no `samples.length / sampleRate`: el visor clampea contra el
+    // primero, y con huecos en la grabación los dos números difieren — el botón
+    // se quedaba corto y no llegaba al final del estudio.
+    const fullSpan = ecgQ.data.durationMs
     const newSpan = Math.min(fullSpan, span * 2)
     viewerRef.current?.zoomToRange(center - newSpan / 2, center + newSpan / 2)
   }
@@ -128,6 +138,10 @@ export function StudyDetail() {
   }
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
+  }
+  const handleResetScale = () => {
+    viewerRef.current?.resetScale()
+    scale.setOnScale(true)
   }
   const handleAnnotationSelect = (annotation: ECGAnnotation) => {
     if (!ecgQ.data) return
@@ -236,6 +250,15 @@ export function StudyDetail() {
                       onFullscreen={handleFullscreen}
                     />
                   </div>
+                  <ECGPaperControls
+                    paperSpeed={scale.paperSpeed}
+                    amplitude={scale.amplitude}
+                    onPaperSpeedChange={scale.setPaperSpeed}
+                    onAmplitudeChange={scale.setAmplitude}
+                    onScale={scale.onScale}
+                    onResetScale={handleResetScale}
+                    onPrint={() => setPrintOpen(true)}
+                  />
                   <ECGMinimap
                     signal={ecgQ.data}
                     viewport={viewport}
@@ -247,7 +270,10 @@ export function StudyDetail() {
                     ref={viewerRef}
                     signal={ecgQ.data}
                     height={400}
+                    paperSpeed={scale.paperSpeed}
+                    amplitude={scale.amplitude}
                     onViewportChange={setViewport}
+                    onScaleMatchChange={scale.setOnScale}
                     selectedAnnotationId={selectedAnnotationId}
                     onAnnotationSelect={handleAnnotationSelect}
                   />
@@ -308,15 +334,31 @@ export function StudyDetail() {
       </Tabs>
 
       {ecgQ.data && (
-        <ECGFullscreenDialog
-          signal={ecgQ.data}
-          initialViewport={viewport}
-          open={fullscreenOpen}
-          onOpenChange={setFullscreenOpen}
-          onClose={handleFullscreenClose}
-          selectedAnnotationId={selectedAnnotationId}
-          onAnnotationSelect={setSelectedAnnotationId}
-        />
+        <>
+          <ECGFullscreenDialog
+            signal={ecgQ.data}
+            initialViewport={viewport}
+            open={fullscreenOpen}
+            onOpenChange={setFullscreenOpen}
+            onClose={handleFullscreenClose}
+            paperSpeed={scale.paperSpeed}
+            amplitude={scale.amplitude}
+            onPaperSpeedChange={scale.setPaperSpeed}
+            onAmplitudeChange={scale.setAmplitude}
+            selectedAnnotationId={selectedAnnotationId}
+            onAnnotationSelect={setSelectedAnnotationId}
+          />
+          <ECGPrintableReport
+            open={printOpen}
+            onOpenChange={setPrintOpen}
+            signal={ecgQ.data}
+            viewport={viewport}
+            paperSpeed={scale.paperSpeed}
+            amplitude={scale.amplitude}
+            patientName={study.patientName}
+            studyStartedAt={study.startedAt}
+          />
+        </>
       )}
     </div>
   )

@@ -65,6 +65,13 @@ app.add_middleware(
         "X-Bridge-Epoch-Ms",
         "X-Time-Sync-Source",
         "X-Time-Sync-Uncertainty-Ms",
+        # Diagnóstico del paquete de STATUS (`INTEGRACION.md` §11.1). El equipo
+        # real no pasa por CORS —no es un navegador—, pero el simulador de
+        # chaleco del dashboard sí, y sin esto los perdería en el preflight.
+        "X-Device-Lead-Flags",
+        "X-Device-Loss-Flags",
+        "X-Device-Status-Flags",
+        "X-Device-Backlog-Seconds",
     ],
 )
 

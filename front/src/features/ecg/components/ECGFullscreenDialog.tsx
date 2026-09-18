@@ -9,9 +9,11 @@ import {
 } from '@/components/ui/dialog'
 
 import { focusViewerOnAnnotation } from '../annotationMeta'
+import type { Amplitude, PaperSpeed } from '../paperScale'
 import type { ECGAnnotation, ECGSignal, ECGViewerHandle, ECGViewportChange } from '../types'
 import { ECGFindingsPanel } from './ECGFindingsPanel'
 import { ECGMinimap } from './ECGMinimap'
+import { ECGPaperControls } from './ECGPaperControls'
 import { ECGViewer } from './ECGViewer'
 import { ECGZoomControls } from './ECGZoomControls'
 
@@ -33,6 +35,11 @@ interface ECGFullscreenDialogProps {
    * para que el viewer chico recupere la posición del viewer grande.
    */
   onClose?: (lastViewport: ECGViewportChange | null) => void
+  /** Calibración compartida con el visor principal y el informe. */
+  paperSpeed: PaperSpeed
+  amplitude: Amplitude
+  onPaperSpeedChange: (value: PaperSpeed) => void
+  onAmplitudeChange: (value: Amplitude) => void
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotationId: string) => void
 }
@@ -56,6 +63,10 @@ export function ECGFullscreenDialog({
   open,
   onOpenChange,
   onClose,
+  paperSpeed,
+  amplitude,
+  onPaperSpeedChange,
+  onAmplitudeChange,
   selectedAnnotationId = null,
   onAnnotationSelect,
 }: ECGFullscreenDialogProps) {
@@ -94,6 +105,10 @@ export function ECGFullscreenDialog({
             }}
             onMinimize={closeDialog}
             initialSelectedAnnotationId={selectedAnnotationId}
+            paperSpeed={paperSpeed}
+            amplitude={amplitude}
+            onPaperSpeedChange={onPaperSpeedChange}
+            onAmplitudeChange={onAmplitudeChange}
             onAnnotationSelect={onAnnotationSelect}
           />
         )}
@@ -108,6 +123,10 @@ interface ECGFullscreenBodyProps {
   onViewportChange: (viewport: ECGViewportChange) => void
   onMinimize: () => void
   initialSelectedAnnotationId: string | null
+  paperSpeed: PaperSpeed
+  amplitude: Amplitude
+  onPaperSpeedChange: (value: PaperSpeed) => void
+  onAmplitudeChange: (value: Amplitude) => void
   onAnnotationSelect?: (annotationId: string) => void
 }
 
@@ -117,10 +136,17 @@ function ECGFullscreenBody({
   onViewportChange,
   onMinimize,
   initialSelectedAnnotationId,
+  paperSpeed,
+  amplitude,
+  onPaperSpeedChange,
+  onAmplitudeChange,
   onAnnotationSelect,
 }: ECGFullscreenBodyProps) {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const viewerSlotRef = useRef<HTMLDivElement | null>(null)
+  // La escala declarada viene del padre. Solo el estado de zoom libre queda
+  // local: depende del ancho y el viewport de esta instancia del visor.
+  const [onScale, setOnScale] = useState(true)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(initialViewport)
   const [viewerHeight, setViewerHeight] = useState(360)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(
@@ -167,6 +193,18 @@ function ECGFullscreenBody({
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
+  const handleResetScale = () => {
+    viewerRef.current?.resetScale()
+    setOnScale(true)
+  }
+  const handlePaperSpeedChange = (value: PaperSpeed) => {
+    onPaperSpeedChange(value)
+    setOnScale(true)
+  }
+  const handleAmplitudeChange = (value: Amplitude) => {
+    onAmplitudeChange(value)
+    setOnScale(true)
+  }
   const handleAnnotationSelect = (annotation: ECGAnnotation) => {
     focusViewerOnAnnotation(viewerRef.current, annotation)
     setSelectedAnnotationId(annotation.id)
@@ -190,6 +228,15 @@ function ECGFullscreenBody({
         />
       </DialogHeader>
 
+      <ECGPaperControls
+        paperSpeed={paperSpeed}
+        amplitude={amplitude}
+        onPaperSpeedChange={handlePaperSpeedChange}
+        onAmplitudeChange={handleAmplitudeChange}
+        onScale={onScale}
+        onResetScale={handleResetScale}
+      />
+
       <ECGMinimap
         signal={signal}
         viewport={viewport}
@@ -204,8 +251,11 @@ function ECGFullscreenBody({
             ref={viewerRef}
             signal={signal}
             height={viewerHeight}
+            paperSpeed={paperSpeed}
+            amplitude={amplitude}
             initialViewport={initialViewport ?? undefined}
             onViewportChange={handleViewportChange}
+            onScaleMatchChange={setOnScale}
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={handleAnnotationSelect}
           />

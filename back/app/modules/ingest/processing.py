@@ -46,6 +46,7 @@ from app.ml.decompression import (
     decode_frame,
     iter_frames,
 )
+from app.ml.status_flags import has_backlog_overflow, has_corrupt_frame
 from app.modules.ingest import ingest_repository as repo
 from app.modules.ingest import timeline
 from app.modules.patient_app.notifications_service import (
@@ -333,6 +334,10 @@ class DerivedEvent:
     start_sample: int
     length_samples: int
     alert_message: str | None = None
+    #: Campos extra del `metadata` del evento, para lo que no se deduce de las
+    #: muestras (por ejemplo la duración real de un hueco, que en el buffer
+    #: empaquetado ocupa cero).
+    extra_metadata: dict[str, Any] | None = None
 
 
 #: Umbral para no inundar la base con eventos de un electrodo que rebota. Medio
@@ -486,6 +491,7 @@ async def _persist_events(
                 "startSampleIndex": absolute,
                 "sampleCount": derived.length_samples,
                 "bootId": batch.boot_id,
+                **(derived.extra_metadata or {}),
             },
         )
         db.add(event)
@@ -510,6 +516,75 @@ async def _persist_events(
     return len(events), pushable
 
 
+def signal_loss_events(batch: ECGBatch, gap_ms: int) -> list[DerivedEvent]:
+    """Lo que el equipo perdió y no está en ninguna muestra.
+
+    Los eventos de `derive_events` salen de los flags por muestra, o sea de
+    señal que SÍ llegó. Éstos son lo contrario: registro que no existe en ningún
+    lado y que solo se conoce por el `seq` que falta y por los flags del paquete
+    de STATUS (`INTEGRACION.md` §4.6 y §11.1).
+
+    **Ocupan cero muestras**, y eso es deliberado. El buffer del estudio es
+    continuo por construcción: un hueco no mete muestras, abre un tramo nuevo en
+    la línea de tiempo. Con `sampleCount = 0` la anotación queda como una marca
+    en el punto exacto de la discontinuidad en vez de una banda que taparía
+    señal real (`studies_service._event_offsets_ms` deriva el final del rango de
+    ese campo). La duración de verdad viaja en `gapMs`.
+
+    Son idempotentes por construcción: todo sale de columnas del lote, así que
+    reprocesarlo da exactamente los mismos eventos.
+    """
+    events: list[DerivedEvent] = []
+
+    if batch.preceding_seq_gap_frames > 0:
+        # El bit 0 del STATUS es la confirmación del propio equipo de que pisó
+        # backlog sin confirmar. Sin él el hueco igual es real —las tramas no
+        # llegaron— pero la causa queda inferida.
+        confirmed = has_backlog_overflow(batch.device_status_flags)
+        events.append(
+            DerivedEvent(
+                kind="backlog_overflow",
+                event_type=ECGEventType.OTHER,
+                severity=ECGEventSeverity.HIGH,
+                start_sample=0,
+                length_samples=0,
+                alert_message=(
+                    "Se perdió señal del paciente: el equipo estuvo sin conexión más tiempo "
+                    "del que aguanta su memoria y sobreescribió lo que no había podido subir. "
+                    f"Faltan {_human_duration(gap_ms)} de registro."
+                ),
+                extra_metadata={
+                    "gapFrames": batch.preceding_seq_gap_frames,
+                    "gapMs": gap_ms,
+                    "cause": "device_confirmed" if confirmed else "inferred",
+                },
+            )
+        )
+
+    if has_corrupt_frame(batch.device_status_flags):
+        events.append(
+            DerivedEvent(
+                kind="corrupt_frame",
+                event_type=ECGEventType.OTHER,
+                severity=ECGEventSeverity.MEDIUM,
+                start_sample=0,
+                length_samples=0,
+                extra_metadata={"cause": "device_confirmed"},
+            )
+        )
+
+    return events
+
+
+def _human_duration(ms: int) -> str:
+    """Duración en castellano, para un mensaje que lee un médico."""
+    minutes = max(ms, 0) // 60_000
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} h {rest:02d} min"
+
+
 # --------------------------------------------------------------------------- #
 # Orquestación
 # --------------------------------------------------------------------------- #
@@ -521,12 +596,16 @@ async def _place_on_timeline(
     batch: ECGBatch,
     decoded: _DecodedBatch,
     start_sample_index: int,
-) -> None:
+) -> int:
     """Abre o extiende el tramo al que pertenece este lote.
 
     `start_sample_index` es la posición del lote dentro del buffer empaquetado
     del estudio, que es lo que después permite traducir índice de muestra a hora
     de pared y al revés.
+
+    Devuelve **cuántos milisegundos de hueco** quedaron antes de este lote (0 si
+    se pegó al tramo anterior). Sale de acá y no de una función aparte porque es
+    el único punto del procesamiento que tiene el tramo previo a la vista.
     """
     first = decoded.frames[0].info
     last = decoded.frames[-1].info
@@ -535,13 +614,14 @@ async def _place_on_timeline(
     current = await repo.get_last_timeline_segment(db, study.id)
     if current is None or timeline.starts_new_segment(current, batch, timing):
         ordinal = 0 if current is None else current.ordinal + 1
+        gap_ms = timeline.gap_before_ms(current, batch, timing)
         await repo.add_timeline_segment(
             db,
             timeline.open_segment(
                 study, batch, timing, ordinal, start_sample_index, decoded.n_samples
             ),
         )
-        return
+        return gap_ms
 
     # `list_boot_anchors` ya filtra las filas sin ancla completa, así que las dos
     # columnas están; el `or 0` es solo para el tipo.
@@ -550,6 +630,7 @@ async def _place_on_timeline(
         for row in await repo.list_boot_anchors(db, study.id, batch.boot_id, current.first_seq)
     ]
     timeline.extend_segment(current, batch, timing, decoded.n_samples, anchors)
+    return 0
 
 
 async def _process_one_batch(
@@ -600,7 +681,7 @@ async def _process_one_batch(
     study.ecg_pyramid_levels = compact_pyramid(study)
 
     # --- Línea de tiempo de pared ------------------------------------------ #
-    await _place_on_timeline(db, study, batch, decoded, start_sample_index)
+    gap_ms = await _place_on_timeline(db, study, batch, decoded, start_sample_index)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
     # perdió la carrera contra complete/cancel no puede reabrir ni reescribir el
@@ -618,11 +699,13 @@ async def _process_one_batch(
     if any(frame.info.simulated for frame in decoded.frames):
         study.is_simulated = True
 
+    # Los huecos van primero: son lo que NO está, y leerlos antes que los
+    # hallazgos sobre la señal que sí llegó es el orden en que hay que mirarlos.
     created, pushable = await _persist_events(
         db,
         batch,
         study,
-        derive_events(decoded, sample_rate),
+        signal_loss_events(batch, gap_ms) + derive_events(decoded, sample_rate),
         start_sample_index,
         sample_rate,
     )

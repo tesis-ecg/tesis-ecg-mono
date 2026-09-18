@@ -30,6 +30,10 @@ def device_headers(
     bridge_epoch_ms: int | object | None = None,
     sync_source: str | None = "ntp",
     sync_uncertainty_ms: int | None = 45,
+    lead_flags: int | None = None,
+    loss_flags: int | None = None,
+    status_flags: int | None = None,
+    backlog_seconds: int | None = None,
 ) -> dict[str, str]:
     """Cabeceras de un equipo de campo, con hora sincronizada.
 
@@ -58,6 +62,17 @@ def device_headers(
         headers["X-Firmware-Version"] = firmware
     if battery is not None:
         headers["X-Battery-Pct"] = str(battery)
+    # Las cuatro de diagnóstico van solo cuando el test las pide: el firmware
+    # anterior a septiembre de 2026 no las manda, y ese camino tiene que seguir
+    # andando (`INTEGRACION.md` §11.1: "son aditivas y opcionales de leer").
+    for name, value in (
+        ("X-Device-Lead-Flags", lead_flags),
+        ("X-Device-Loss-Flags", loss_flags),
+        ("X-Device-Status-Flags", status_flags),
+        ("X-Device-Backlog-Seconds", backlog_seconds),
+    ):
+        if value is not None:
+            headers[name] = str(value)
     return headers
 
 

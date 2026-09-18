@@ -119,6 +119,12 @@
    * amarillo para contrastar con el navy del trace. */
   --ecg-trace: var(--color-primary-500);
   --ecg-grid: var(--color-gray-100);
+  /* Retícula del papel de ECG: 1 mm fino, 5 mm marcado. El rojo apagado es el
+     del papel térmico de cualquier electrocardiógrafo — se lee como grilla y no
+     compite con el trazado. Las dos opacidades importan: la fina tiene que
+     poder contarse sin tapar la señal. */
+  --ecg-grid-minor: rgba(214, 138, 128, 0.35);
+  --ecg-grid-major: rgba(197, 92, 78, 0.55);
   --ecg-bg: var(--color-white);
   --ecg-selector: #eab308;
   --ecg-selector-bg: rgba(234, 179, 8, 0.25);

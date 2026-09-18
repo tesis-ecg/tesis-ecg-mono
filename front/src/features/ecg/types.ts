@@ -85,23 +85,16 @@ export interface ECGViewerProps {
   /** Alto del viewer en píxeles. Default 400. */
   height?: number
   /**
-   * Velocidad de papel clínica en mm/s. Default 25 (estándar para diagnóstico
-   * de adultos). Usado para calcular el aspect ratio horizontal.
+   * Velocidad de barrido en mm/s. Default 25, el estándar de diagnóstico para
+   * adultos. **Decide cuántos segundos entran en el ancho disponible**, así que
+   * agrandar la ventana muestra más señal en vez de estirar la misma.
    */
   paperSpeed?: number
   /**
-   * Amplitud clínica en mm/mV. Default 10 (estándar). Usado para calcular el
-   * aspect ratio vertical.
+   * Ganancia en mm/mV. Default 10, el estándar. Fija el rango vertical: la misma
+   * onda mide lo mismo sin importar qué más haya en la ventana.
    */
   amplitude?: number
-  /**
-   * Ancho del viewport inicial en segundos. Default 10 s — convención clínica
-   * de tira de papel (25 mm/s × 25 cm ≈ 10 s). El viewer arranca mostrando los
-   * últimos `initialWindowSec` segundos de la señal.
-   *
-   * Si `initialViewport` también está provisto, este último tiene precedencia.
-   */
-  initialWindowSec?: number
   /**
    * Viewport inicial absoluto (timestamps en ms epoch). Si se pasa, sobreescribe
    * a `initialWindowSec`. Útil para sincronizar dos instancias del viewer (por
@@ -113,6 +106,15 @@ export interface ECGViewerProps {
    * a la API imperativa). Útil para sincronizar mini-mapa, panel lateral, etc.
    */
   onViewportChange?: (viewport: ECGViewportChange) => void
+  /**
+   * Avisa si el rango visible todavía corresponde a `paperSpeed`.
+   *
+   * El zoom libre (Ctrl + rueda, el mini-mapa) sirve para navegar, no para
+   * medir. Quien dibuje el rótulo de la escala necesita saber cuándo dejó de ser
+   * cierto: un cartel que diga "25 mm/s" sobre un trazado que no lo está es peor
+   * que no tener cartel.
+   */
+  onScaleMatchChange?: (matchesScale: boolean) => void
   /** Aviso resaltado en el gráfico y el panel de hallazgos. */
   selectedAnnotationId?: string | null
   /** Selección de una banda directamente sobre el canvas. */
@@ -134,6 +136,8 @@ export interface ECGViewerHandle {
   zoomToRange: (startMs: number, endMs: number) => void
   /** Vuelve al rango completo del estudio. */
   resetZoom: () => void
+  /** Vuelve a la escala clínica declarada, conservando dónde está mirando. */
+  resetScale: () => void
 }
 
 /**

@@ -45,6 +45,8 @@ const KIND_LABEL: Record<string, string> = {
   internal_gap: 'Hueco de datos',
   symptom_marker: 'Síntoma marcado por el paciente',
   patient_report: 'Registro del paciente',
+  backlog_overflow: 'Se perdió registro por desconexión',
+  corrupt_frame: 'Trama descartada por el equipo',
   other: 'Hallazgo',
 }
 

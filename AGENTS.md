@@ -21,9 +21,10 @@ Se está desarrollando un dispositivo wearable tipo Holter ECG integrado en un c
 ## Arquitectura del sistema
 
 - **Hardware**: Seeed XIAO **nRF52840** (Cortex-M4F + BLE, **sin WiFi**) + AFE TI **ADS1292R** (2 canales de 24 bits) para adquisición de ECG e impedancia
-- **Comunicación principal**: **WiFi del domicilio del paciente** — buffer local continuo + envío batch cada 1h directo al backend por HTTPS, standalone, sin app móvil ni módulo celular. Como el nRF52840 no tiene WiFi, la radio la aporta un **co-procesador ESP32-C3** por UART, encendido solo durante el ciclo de envío (~90 s/día)
+- **Comunicación principal**: **WiFi del domicilio del paciente** — buffer local continuo + envío batch **cada 10 min** directo al backend por HTTPS, standalone, sin app móvil ni módulo celular. Como el nRF52840 no tiene WiFi, la radio la aporta un **co-procesador ESP32-C3** por UART, encendido solo durante el ciclo de envío
 - **Provisioning**: SoftAP + portal cautivo servido por el co-procesador; se configura una vez, en la entrega
-- **Almacenamiento local**: flash SPI S25FL128L de **16 MB** (buffer actual: **9,94 h** de grabación). Una **microSD de 4-8 GB es requerimiento abierto** hacia Biomédica para cubrir ausencias largas del domicilio — todavía no existe en el hardware
+- **Almacenamiento local**: flash SPI S25FL128L de **16 MB**, organizada como log circular por slots de trama (**no** hay sistema de archivos ni espacio libre que consultar). La ventana sin conexión depende de cuánto comprima la señal, y eso depende de cómo quede puesto el chaleco: **5,1 h con el chaleco flojo, 7,1 con gel, 8,6 bien puesto** (medido sobre la placa, `../Holter-ECG-System/INTEGRACION.md` §9.1). **Se dimensiona contra las 5,1 h**: un paciente con el chaleco flojo durante 15 días es el caso normal, no el extremo. Las 9,94 h que figuraban acá son de PhysioNet y no valen para este equipo
+- **No hay microSD ni la va a haber.** Figuraba como requerimiento abierto hacia Biomédica; el firmware confirmó que esta arquitectura no la contempla (§11.5 punto 5). El equivalente real, y que el equipo sí mide, es cuánto backlog sin confirmar tiene
 - **Batería**: Li-Po 3,7 V **1800 mAh**, autonomía estimada **~10 días** (el canal WiFi se lleva solo ~4%)
 - **App móvil**: no forma parte del canal de datos. BLE (que el firmware ya implementa) queda para provisioning, verificación de colocación y una eventual app de acompañamiento del paciente
 - **Cloud**: FastAPI + PostgreSQL + S3
@@ -50,7 +51,7 @@ La arquitectura de comunicación está documentada en `info del proyecto/`:
 
 - **WiFi del domicilio como único canal de datos**: arquitectura standalone, sin app obligatoria, sin plan de datos. Ver `01-justificacion.md` y las cuentas completas en `09-comparativa-canales-de-transmision.md`
 - **No se cambia el MCU.** El firmware validado corre sobre nRF52840, que consume 2-3× menos que un ESP32 grabando de forma continua. Agregar un co-procesador WiFi de ~USD 2,60 conserva la autonomía (10,2 días) y el firmware; migrar a ESP32 la bajaría a ~4,8 días
-- **El buffer local es el seguro final**: nunca se borra nada que el backend no haya confirmado. Con la flash actual de 16 MB la ventana sin conexión es de **~10 h**, no de meses — de ahí la prioridad de la microSD
+- **El buffer local es el seguro final**: nunca se borra nada que el backend no haya confirmado. La ventana sin conexión es de **~5 h** en el caso normal, no de meses, así que el drenado del backlog no es un evento ocasional: es parte del sistema de grabación y tiene que ocurrir de forma sostenida durante 15 a 30 días
 - **El footprint del módulo SIM queda previsto en la PCB pero sin poblar**, para que una futura variante ambulatoria no exija rediseñar la arquitectura
 - **BLE no se apaga, se reubica**: el firmware ya tiene un servicio BLE completo (pairing con passkey, canales LIVE/BACKLOG/CONTROL/STATUS, backlog confirmado por ACK). No se usa como camino de datos crítico
 

@@ -225,7 +225,7 @@ async def list_boot_anchors(
 async def has_archived_seq_range(
     db: AsyncSession, study_id: uuid.UUID, first_seq: int, last_seq: int
 ) -> bool:
-    """¿Hay un lote archivado que cubra este rango de `seq` en este estudio?
+    """¿Está archivado, sin huecos, todo un rango de `seq` del estudio?
 
     Es lo que distingue una retransmisión legítima de un `seq` que rebobinó.
     Cuando un lote llega entero por debajo del cursor bajo otro `bootId`, los dos
@@ -234,13 +234,27 @@ async def has_archived_seq_range(
     este chequeo, el rebobinado se confirmaba como duplicado y el equipo borraba
     de su flash señal que nunca llegó a existir de nuestro lado.
     """
+    if last_seq < first_seq:
+        return True
+
     result = await db.execute(
-        select(ECGBatch.id)
+        select(ECGBatch.first_seq, ECGBatch.last_seq)
         .where(
             ECGBatch.study_id == study_id,
-            ECGBatch.first_seq <= first_seq,
-            ECGBatch.last_seq >= last_seq,
+            ECGBatch.first_seq.is_not(None),
+            ECGBatch.last_seq.is_not(None),
+            ECGBatch.last_seq >= first_seq,
+            ECGBatch.first_seq <= last_seq,
         )
-        .limit(1)
+        .order_by(ECGBatch.first_seq, ECGBatch.last_seq)
     )
-    return result.scalar_one_or_none() is not None
+    expected_seq = first_seq
+    for batch_first, batch_last in result.all():
+        if batch_first is None or batch_last is None:  # para el type checker
+            continue
+        if batch_first > expected_seq:
+            return False
+        expected_seq = max(expected_seq, batch_last + 1)
+        if expected_seq > last_seq:
+            return True
+    return False

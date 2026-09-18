@@ -678,4 +678,4 @@ export interface ValidationError {
   "ctx"?: Record<string, unknown>
 }
 
-export type VestStatusEvent = "signal_quality_bad" | "lead_off" | "signal_recovered"
+export type VestStatusEvent = "signal_quality_bad" | "lead_off" | "signal_recovered" | "alive"

@@ -27,10 +27,12 @@ from app.core.push import (
     PushMessage,
 )
 from app.db.models.alert import Alert, AlertSeverity
-from app.db.models.device import DeviceStatus
+from app.db.models.device import Device, DeviceStatus
 from app.db.models.push_token import PushToken
 from app.db.models.user import User
 from app.ml.decompression import FLAG_EVENT_MARKER
+from app.ml.status_flags import STATUS_FLAG_FLASH_NOT_READY
+from app.modules.ingest.ingest_service import DEVICE_FAULT_ALERT_KIND
 from app.modules.ingest.processing import process_batch
 from tests.ingest_helpers import build_frames_with_flag_span, device_headers, post_frames
 
@@ -648,3 +650,108 @@ def test_un_tipo_desconocido_no_deja_el_aviso_mudo() -> None:
     assert raro.title == sin_kind.title
     # Sin `kind` la clave no viaja: el formulario cae en su etiqueta genérica.
     assert "kind" not in sin_kind.data
+
+
+async def test_alive_es_un_latido_y_no_toca_la_colocacion(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+    sent_pushes: list[tuple[Any, PushMessage]],
+) -> None:
+    """El evento neutro que pidió Biomédica (`INTEGRACION.md` §11.5).
+
+    Cierra el modo de falla "equipo encendido e invisible": un equipo que
+    adquiere pero no graba —la flash no monta— no produce tramas, así que hasta
+    ahora no existía para el backend y no se distinguía de uno apagado.
+
+    Lo que **no** puede hacer es lo que importa. Los otros tres eventos afirman
+    algo sobre la señal: `signal_recovered` escribe `placement_ok = true`, que es
+    lo que la app del paciente dibuja como colocación correcta. Un latido con ese
+    valor le estaría afirmando al paciente que el chaleco está bien puesto cada
+    diez minutos sin que el firmware tenga con qué sostenerlo, y cualquier otro
+    lo dejaría en `False`, avisándole de un problema que nadie reportó.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    device_id = device.id
+
+    response = await _device_status(
+        client, device, api_key, event="alive", durationSeconds=0, batteryPct=64, sqi=3
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["notified"] is False
+    assert body["alertId"] is None
+    assert sent_pushes == []
+
+    refreshed = await db.get(Device, device_id)
+    assert refreshed is not None
+    # Telemetría sí: es exactamente para esto que existe el evento.
+    assert refreshed.last_seen_at is not None
+    assert refreshed.last_battery_pct == 64
+    assert refreshed.last_sqi == 3
+    # Colocación no: sigue en "nunca reportó".
+    assert refreshed.placement_ok is None
+    assert refreshed.placement_reported_at is None
+
+    alerts = (await db.execute(select(Alert).where(Alert.patient_id == patient.id))).scalars().all()
+    assert list(alerts) == []
+
+
+async def test_alive_no_pisa_una_colocacion_ya_reportada(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+    sent_pushes: list[tuple[Any, PushMessage]],
+) -> None:
+    """Un latido después de un aviso real no puede blanquear el episodio."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    device_id = device.id
+
+    await _device_status(client, device, api_key, event="lead_off", durationSeconds=300)
+    before = await db.get(Device, device_id)
+    assert before is not None
+    assert before.placement_ok is False
+    reported_at = before.placement_reported_at
+
+    await _device_status(client, device, api_key, event="alive", durationSeconds=0)
+
+    after = await db.get(Device, device_id)
+    assert after is not None
+    assert after.placement_ok is False
+    assert after.placement_reported_at == reported_at
+
+
+async def test_un_equipo_con_la_flash_rota_avisa_por_el_canal_corto(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+) -> None:
+    """El caso que justifica el evento neutro, de punta a punta.
+
+    Sin flash el equipo no produce una sola trama, así que no hay ningún POST de
+    ingesta donde ver el problema. El latido es el único camino por el que ese
+    equipo puede decir algo, y las cabeceras de diagnóstico viajan con él.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    payload = {"event": "alive", "durationSeconds": 0}
+    headers = device_headers(device, api_key, status_flags=STATUS_FLAG_FLASH_NOT_READY)
+    headers.pop("Content-Type")
+    response = await client.post("/ingest/device-status", json=payload, headers=headers)
+
+    assert response.status_code == 200, response.text
+    alert = (
+        await db.execute(
+            select(Alert).where(
+                Alert.patient_id == patient.id, Alert.kind == DEVICE_FAULT_ALERT_KIND
+            )
+        )
+    ).scalar_one()
+    assert alert.severity is AlertSeverity.CRITICAL

@@ -5,8 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
+import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
+import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
 import { mockEcgSignal } from '@/features/ecg/mocks'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 
@@ -28,6 +30,7 @@ export function DevEcgViewer() {
   const durationMs = (sampleCount / signal.sampleRate) * 1000
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
+  const scale = usePaperScale()
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
@@ -117,6 +120,18 @@ export function DevEcgViewer() {
             </Button>
           </div>
 
+          <ECGPaperControls
+            paperSpeed={scale.paperSpeed}
+            amplitude={scale.amplitude}
+            onPaperSpeedChange={scale.setPaperSpeed}
+            onAmplitudeChange={scale.setAmplitude}
+            onScale={scale.onScale}
+            onResetScale={() => {
+              viewerRef.current?.resetScale()
+              scale.setOnScale(true)
+            }}
+          />
+
           <ECGMinimap
             signal={signal}
             viewport={viewport}
@@ -129,7 +144,10 @@ export function DevEcgViewer() {
             ref={viewerRef}
             signal={signal}
             height={400}
+            paperSpeed={scale.paperSpeed}
+            amplitude={scale.amplitude}
             onViewportChange={setViewport}
+            onScaleMatchChange={scale.setOnScale}
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={handleAnnotationSelect}
           />
@@ -149,6 +167,10 @@ export function DevEcgViewer() {
         open={fullscreenOpen}
         onOpenChange={setFullscreenOpen}
         onClose={handleFullscreenClose}
+        paperSpeed={scale.paperSpeed}
+        amplitude={scale.amplitude}
+        onPaperSpeedChange={scale.setPaperSpeed}
+        onAmplitudeChange={scale.setAmplitude}
         selectedAnnotationId={selectedAnnotationId}
         onAnnotationSelect={setSelectedAnnotationId}
       />

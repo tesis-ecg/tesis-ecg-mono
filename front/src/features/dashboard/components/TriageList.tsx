@@ -23,6 +23,14 @@ const KIND_LABEL: Record<string, string> = {
   symptom_marker: 'Síntoma marcado por el paciente',
   other: 'Hallazgo',
   device_offline: 'Dispositivo sin transmitir',
+  vest_misplaced: 'Chaleco mal colocado',
+  lead_off: 'Electrodo desconectado',
+  internal_gap: 'Hueco de datos',
+  patient_report: 'Registro del paciente',
+  backlog_overflow: 'Se perdió registro por desconexión',
+  corrupt_frame: 'Trama descartada por el equipo',
+  device_fault: 'Falla del equipo',
+  study_seq_rewind: 'El equipo reinició su numeración',
 }
 
 interface TriageListProps {

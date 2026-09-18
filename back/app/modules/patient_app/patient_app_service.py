@@ -255,7 +255,7 @@ def _vest_placement(device: Device) -> str:
 def _device_state(patient: Patient, device: Device, study: Study | None) -> str:
     if device.last_seen_at is None:
         return "never_connected"
-    threshold = datetime.now(UTC) - timedelta(hours=settings.dashboard_stale_hours)
+    threshold = datetime.now(UTC) - timedelta(hours=settings.device_stale_hours)
     last_data = patient.last_data_received_at
     if last_data is not None and last_data < threshold:
         return "stale"

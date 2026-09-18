@@ -18,6 +18,7 @@ from app.ml.decompression import (
     FLAG_SQI_SHIFT,
     SQ_BAD,
 )
+from app.ml.status_flags import STATUS_FLAG_BACKLOG_OVERFLOW, STATUS_FLAG_CORRUPT_FRAME
 from app.modules.ingest.processing import derive_events, process_batch
 from tests.ingest_helpers import build_frames, build_frames_with_flag_span, post_frames
 
@@ -238,3 +239,114 @@ def test_every_symptom_press_is_its_own_event() -> None:
 
     assert len(events) == 2
     assert all(e.alert_message for e in events)
+
+
+# --------------------------------------------------------------------------- #
+# Pérdida de señal: lo que NO está en ninguna muestra
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_backlog_overflow_gap_becomes_an_event_and_an_alert(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El hueco de `INTEGRACION.md` §4.6, visible para el médico.
+
+    Aceptar el salto destraba la ingesta, pero aceptarlo en silencio sería peor
+    que el deadlock: el estudio quedaría con horas faltantes y nada que lo diga.
+    §9.1 lo pide explícito — "registro de cada overflow con su hora de pared: es
+    un hueco en el estudio y el médico tiene que verlo".
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    # El log circular dio la vuelta: faltan dos tramas y el bootId no cambió.
+    body = (
+        await post_frames(
+            client, device, api_key, frames[4:6], status_flags=STATUS_FLAG_BACKLOG_OVERFLOW
+        )
+    ).json()
+    await process_batch(db, body["batchId"])
+
+    overflows = [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"]
+    assert len(overflows) == 1
+    event = overflows[0]
+    assert event.severity is ECGEventSeverity.HIGH
+    assert event.event_metadata["gapFrames"] == 2
+    assert event.event_metadata["cause"] == "device_confirmed"
+    # Ocupa cero muestras: el buffer del estudio es continuo por construcción y
+    # una banda con ancho taparía señal real (ver `signal_loss_events`).
+    assert event.event_metadata["sampleCount"] == 0
+
+    alert = (await db.execute(select(Alert).where(Alert.event_id == event.id))).scalar_one()
+    assert "perdió señal" in alert.message
+
+
+async def test_a_gap_without_the_status_bit_is_recorded_as_inferred(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Sin el bit del equipo el hueco sigue siendo real; lo que falta es la causa."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    await _ingest(client, db, device, api_key, frames[4:6])
+
+    overflows = [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"]
+    assert len(overflows) == 1
+    assert overflows[0].event_metadata["cause"] == "inferred"
+
+
+async def test_reprocessing_does_not_duplicate_the_gap_event(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Todo sale de columnas del lote, así que reprocesar da lo mismo."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    body = (await post_frames(client, device, api_key, frames[4:6])).json()
+    await process_batch(db, body["batchId"])
+    await process_batch(db, body["batchId"])
+
+    overflows = [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"]
+    assert len(overflows) == 1
+
+
+async def test_a_contiguous_batch_produces_no_gap_event(
+    client, s3, db, make_patient, make_device
+) -> None:
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    await _ingest(client, db, device, api_key, frames[2:4])
+
+    assert [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"] == []
+
+
+async def test_a_crc_discard_reported_by_the_device_becomes_an_event(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Bit 3 del STATUS: el equipo descartó una trama por CRC.
+
+    Es un hueco real en el registro del que no queda rastro en las tramas que sí
+    llegaron, porque la que falta nunca se archivó.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    body = (
+        await post_frames(
+            client, device, api_key, build_frames(1500), status_flags=STATUS_FLAG_CORRUPT_FRAME
+        )
+    ).json()
+    await process_batch(db, body["batchId"])
+
+    corrupt = [e for e in await _events(db) if e.event_metadata["kind"] == "corrupt_frame"]
+    assert len(corrupt) == 1
+    assert corrupt[0].severity is ECGEventSeverity.MEDIUM

@@ -376,7 +376,7 @@
         "type": "object"
       },
       "DashboardFleetOut": {
-        "description": "Salud de la flota: cuántos chalecos asignados están transmitiendo.\n\n`transmitting` usa el mismo corte de `dashboard_stale_hours` que el watchdog,\nasí que los dos widgets no pueden contradecirse.",
+        "description": "Salud de la flota: cuántos chalecos asignados están transmitiendo.\n\n`transmitting` usa el mismo corte de `device_stale_hours` que el watchdog,\nasí que los dos widgets no pueden contradecirse.",
         "properties": {
           "assigned": {
             "title": "Assigned",
@@ -1593,7 +1593,7 @@
         "type": "object"
       },
       "MobileDeviceOut": {
-        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `dashboard_stale_hours` que no manda nada\n\n`vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo\npuede estar grabando y transmitiendo perfecto y no registrar nada igual\nporque no hace contacto con la piel. Son dos preguntas distintas y la\npantalla las dibuja en dos lugares distintos.",
+        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `device_stale_hours` que no manda nada\n\n`vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo\npuede estar grabando y transmitiendo perfecto y no registrar nada igual\nporque no hace contacto con la piel. Son dos preguntas distintas y la\npantalla las dibuja en dos lugares distintos.",
         "properties": {
           "batteryPercent": {
             "anyOf": [
@@ -3888,7 +3888,8 @@
         "enum": [
           "signal_quality_bad",
           "lead_off",
-          "signal_recovered"
+          "signal_recovered",
+          "alive"
         ],
         "title": "VestStatusEvent",
         "type": "string"
@@ -6194,6 +6195,70 @@
               ],
               "title": "X-Time-Sync-Uncertainty-Ms"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-device-lead-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Lead-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-loss-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Loss-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-status-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Status-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-backlog-seconds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Backlog-Seconds"
+            }
           }
         ],
         "requestBody": {
@@ -6367,6 +6432,70 @@
                 }
               ],
               "title": "X-Time-Sync-Uncertainty-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-lead-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Lead-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-loss-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Loss-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-status-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Status-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-backlog-seconds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Backlog-Seconds"
             }
           }
         ],
