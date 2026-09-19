@@ -13,7 +13,7 @@ import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
-import { ECGPrintableReport } from '@/features/ecg/components/ECGPrintableReport'
+import { ECGClinicalReportDialog } from '@/features/ecg/components/ECGClinicalReportDialog'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
@@ -47,6 +47,7 @@ export function StudyDetail() {
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
+  const [cursorMs, setCursorMs] = useState<number | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
   const [printOpen, setPrintOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
@@ -131,9 +132,16 @@ export function StudyDetail() {
     viewerRef.current?.zoomToRange(center - newSpan / 2, center + newSpan / 2)
   }
   const handleFullscreen = () => setFullscreenOpen(true)
-  const handleFullscreenClose = (lastViewport: ECGViewportChange | null) => {
+  const handleFullscreenClose = (
+    lastViewport: ECGViewportChange | null,
+    lastCursorMs: number | null,
+  ) => {
     if (lastViewport) {
-      viewerRef.current?.zoomToRange(lastViewport.startMs, lastViewport.endMs)
+      viewerRef.current?.restoreViewport(lastViewport)
+    }
+    if (lastCursorMs !== null) {
+      setCursorMs(lastCursorMs)
+      viewerRef.current?.setCursor(lastCursorMs)
     }
   }
   const handleMinimapChange = (next: ECGViewportChange) => {
@@ -273,6 +281,10 @@ export function StudyDetail() {
                     paperSpeed={scale.paperSpeed}
                     amplitude={scale.amplitude}
                     onViewportChange={setViewport}
+                    initialCursorMs={cursorMs ?? undefined}
+                    initialWindowSeconds={10 * 60}
+                    followLatest={isInProgress}
+                    onCursorChange={setCursorMs}
                     onScaleMatchChange={scale.setOnScale}
                     selectedAnnotationId={selectedAnnotationId}
                     onAnnotationSelect={handleAnnotationSelect}
@@ -338,6 +350,7 @@ export function StudyDetail() {
           <ECGFullscreenDialog
             signal={ecgQ.data}
             initialViewport={viewport}
+            initialCursorMs={cursorMs}
             open={fullscreenOpen}
             onOpenChange={setFullscreenOpen}
             onClose={handleFullscreenClose}
@@ -348,15 +361,18 @@ export function StudyDetail() {
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={setSelectedAnnotationId}
           />
-          <ECGPrintableReport
+          <ECGClinicalReportDialog
             open={printOpen}
             onOpenChange={setPrintOpen}
+            study={study}
+            patientId={study.patientId}
             signal={ecgQ.data}
-            viewport={viewport}
+            reports={reportsQ.data?.items ?? []}
+            reportsState={reportsQ.isError ? 'error' : reportsQ.isSuccess ? 'ready' : 'loading'}
+            reportsError={reportsQ.isError ? unwrapError(reportsQ.error) : null}
+            onRetryReports={() => void reportsQ.refetch()}
             paperSpeed={scale.paperSpeed}
             amplitude={scale.amplitude}
-            patientName={study.patientName}
-            studyStartedAt={study.startedAt}
           />
         </>
       )}

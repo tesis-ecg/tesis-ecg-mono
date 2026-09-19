@@ -3394,6 +3394,125 @@
         "title": "StudyEcgOut",
         "type": "object"
       },
+      "StudyEcgReportWindowOut": {
+        "properties": {
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "gapIndices": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Gapindices",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "samplesMv": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Samplesmv",
+            "type": "array"
+          },
+          "source": {
+            "default": "raw",
+            "enum": [
+              "raw",
+              "envelope"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
+          "timestampsMs": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Timestampsms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "startEpochMs",
+          "endEpochMs",
+          "timestampsMs",
+          "samplesMv",
+          "gapIndices"
+        ],
+        "title": "StudyEcgReportWindowOut",
+        "type": "object"
+      },
+      "StudyEcgReportWindowRequest": {
+        "description": "Ventana corta en hora de pared para una tira detallada del informe.",
+        "properties": {
+          "endEpochMs": {
+            "minimum": 0.0,
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "minimum": 0.0,
+            "title": "Startepochms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "startEpochMs",
+          "endEpochMs"
+        ],
+        "title": "StudyEcgReportWindowRequest",
+        "type": "object"
+      },
+      "StudyEcgReportWindowsRequest": {
+        "description": "El límite mantiene acotado el JSON y permite al cliente paginar lotes.",
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgReportWindowRequest"
+            },
+            "maxItems": 25,
+            "minItems": 1,
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows"
+        ],
+        "title": "StudyEcgReportWindowsRequest",
+        "type": "object"
+      },
+      "StudyEcgReportWindowsResponse": {
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgReportWindowOut"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows"
+        ],
+        "title": "StudyEcgReportWindowsResponse",
+        "type": "object"
+      },
       "StudyEcgSegmentOut": {
         "description": "Un tramo de señal decodificada, tal como llegó en un lote del chaleco.",
         "properties": {
@@ -8639,6 +8758,92 @@
           }
         },
         "summary": "Get Study Ecg Manifest",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/ecg/report-windows": {
+      "post": {
+        "description": "Muestras crudas de ventanas breves para el informe PDF.\n\nLa UI envía lotes chicos para no descargar el estudio entero ni convertir\nuna vista piramidal en una tira que parezca diagnóstica.",
+        "operationId": "get_study_ecg_report_windows_studies__study_id__ecg_report_windows_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudyEcgReportWindowsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyEcgReportWindowsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Study Ecg Report Windows",
         "tags": [
           "studies"
         ]

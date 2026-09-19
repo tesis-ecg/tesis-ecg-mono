@@ -16,8 +16,9 @@ vi.mock('../paperScale', async () => {
 
 vi.mock('uplot', () => {
   type Hook = (plot: MockUPlot, scaleKey: string) => void
+  type CursorHook = (plot: MockUPlot) => void
   interface MockOptions {
-    hooks?: { setScale?: Hook[] }
+    hooks?: { setScale?: Hook[]; setCursor?: CursorHook[] }
     scales?: { y?: { range?: (u: MockUPlot, min: number, max: number) => [number, number] } }
   }
 
@@ -28,6 +29,7 @@ vi.mock('uplot', () => {
       y: { min: null as number | null, max: null as number | null },
     }
     readonly options: MockOptions
+    readonly cursor = { left: -1, top: -1 }
     width = 500
 
     constructor(options: MockOptions, _data: unknown, container: HTMLElement) {
@@ -57,6 +59,11 @@ vi.mock('uplot', () => {
 
     setSize({ width }: { width: number }) {
       this.applyWidth(width)
+    }
+    setCursor(cursor: { left: number; top: number }) {
+      this.cursor.left = cursor.left
+      this.cursor.top = cursor.top
+      for (const hook of this.options.hooks?.setCursor ?? []) hook(this)
     }
     redraw() {}
     destroy() {
@@ -144,6 +151,64 @@ describe('ECGViewer — escala clínica', () => {
     render(<ECGViewer signal={signal()} paperSpeed={50} />)
     const { min, max } = plot().scales.x
     expect(max - min).toBeCloseTo(5, 6)
+  })
+
+  it('al abrir un estudio muestra sus últimos diez minutos y deja el cursor en la última muestra', () => {
+    const onCursorChange = vi.fn()
+    const startTimestamp = 1_700_000_000_000
+    render(
+      <ECGViewer
+        signal={signal(1_200)}
+        initialWindowSeconds={10 * 60}
+        onCursorChange={onCursorChange}
+      />,
+    )
+
+    expect(plot().scales.x).toEqual({ min: 600, max: 1_200 })
+    expect(onCursorChange).toHaveBeenLastCalledWith(startTimestamp + 1_199_000)
+  })
+
+  it('en un estudio corto el encuadre inicial conserva toda la señal', () => {
+    render(<ECGViewer signal={signal(30)} initialWindowSeconds={10 * 60} />)
+
+    expect(plot().scales.x).toEqual({ min: 0, max: 30 })
+  })
+
+  it('al restaurar un zoom libre conserva su densidad temporal entre tamaños', () => {
+    uPlotMock.widthAtConstruction = 1_000
+    const startTimestamp = 1_700_000_000_000
+    render(
+      <ECGViewer
+        signal={signal(120)}
+        initialViewport={{
+          startMs: startTimestamp + 20_000,
+          endMs: startTimestamp + 30_000,
+          millisecondsPerPixel: 20,
+          isClinicalScale: false,
+        }}
+      />,
+    )
+
+    // 20 ms/px × 1.000 px = 20 s, centrados sobre el rango previo de 10 s.
+    expect(plot().scales.x).toEqual({ min: 15, max: 35 })
+  })
+
+  it('al restaurar escala clínica muestra más tiempo sin cambiar los mm/s', () => {
+    uPlotMock.widthAtConstruction = 1_000
+    const startTimestamp = 1_700_000_000_000
+    render(
+      <ECGViewer
+        signal={signal(120)}
+        initialViewport={{
+          startMs: startTimestamp + 20_000,
+          endMs: startTimestamp + 30_000,
+          isClinicalScale: true,
+        }}
+      />,
+    )
+
+    // 1.000 px ÷ (25 mm/s × 2 px/mm) = 20 s desde el borde izquierdo previo.
+    expect(plot().scales.x).toEqual({ min: 20, max: 40 })
   })
 
   it('agrandar el contenedor muestra más señal, no la misma estirada', () => {

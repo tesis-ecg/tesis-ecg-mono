@@ -587,6 +587,30 @@ export interface StudyEcgOut {
   "expiresAt": string
 }
 
+export interface StudyEcgReportWindowOut {
+  "id": string
+  "startEpochMs": number
+  "endEpochMs": number
+  "timestampsMs": Array<number>
+  "samplesMv": Array<number>
+  "gapIndices": Array<number>
+  "source"?: "raw" | "envelope"
+}
+
+export interface StudyEcgReportWindowRequest {
+  "id": string
+  "startEpochMs": number
+  "endEpochMs": number
+}
+
+export interface StudyEcgReportWindowsRequest {
+  "windows": Array<StudyEcgReportWindowRequest>
+}
+
+export interface StudyEcgReportWindowsResponse {
+  "windows": Array<StudyEcgReportWindowOut>
+}
+
 export interface StudyEcgSegmentOut {
   "url": string
   "expiresAt": string

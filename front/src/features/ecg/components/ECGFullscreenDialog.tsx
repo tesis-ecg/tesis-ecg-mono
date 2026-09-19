@@ -28,13 +28,14 @@ interface ECGFullscreenDialogProps {
   signal: ECGSignal
   /** Viewport actual del viewer chico — la modal arranca mostrando lo mismo. */
   initialViewport: ECGViewportChange | null
+  initialCursorMs?: number | null
   open: boolean
   onOpenChange: (open: boolean) => void
   /**
    * Si está provisto, se invoca con el último viewport antes de cerrar — útil
    * para que el viewer chico recupere la posición del viewer grande.
    */
-  onClose?: (lastViewport: ECGViewportChange | null) => void
+  onClose?: (lastViewport: ECGViewportChange | null, lastCursorMs: number | null) => void
   /** Calibración compartida con el visor principal y el informe. */
   paperSpeed: PaperSpeed
   amplitude: Amplitude
@@ -60,6 +61,7 @@ interface ECGFullscreenDialogProps {
 export function ECGFullscreenDialog({
   signal,
   initialViewport,
+  initialCursorMs,
   open,
   onOpenChange,
   onClose,
@@ -74,15 +76,16 @@ export function ECGFullscreenDialog({
   // Sobrevive en una ref para que `onClose` lo pueda usar después de que el
   // body se desmontó.
   const closeViewportRef = useRef<ECGViewportChange | null>(initialViewport)
+  const closeCursorRef = useRef<number | null>(initialCursorMs ?? null)
 
   const closeDialog = () => {
-    onClose?.(closeViewportRef.current)
+    onClose?.(closeViewportRef.current, closeCursorRef.current)
     onOpenChange(false)
   }
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
-      onClose?.(closeViewportRef.current)
+      onClose?.(closeViewportRef.current, closeCursorRef.current)
     }
     onOpenChange(nextOpen)
   }
@@ -100,8 +103,12 @@ export function ECGFullscreenDialog({
           <ECGFullscreenBody
             signal={signal}
             initialViewport={initialViewport}
+            initialCursorMs={initialCursorMs ?? null}
             onViewportChange={(vp) => {
               closeViewportRef.current = vp
+            }}
+            onCursorChange={(cursorMs) => {
+              closeCursorRef.current = cursorMs
             }}
             onMinimize={closeDialog}
             initialSelectedAnnotationId={selectedAnnotationId}
@@ -120,7 +127,9 @@ export function ECGFullscreenDialog({
 interface ECGFullscreenBodyProps {
   signal: ECGSignal
   initialViewport: ECGViewportChange | null
+  initialCursorMs: number | null
   onViewportChange: (viewport: ECGViewportChange) => void
+  onCursorChange: (cursorMs: number) => void
   onMinimize: () => void
   initialSelectedAnnotationId: string | null
   paperSpeed: PaperSpeed
@@ -133,7 +142,9 @@ interface ECGFullscreenBodyProps {
 function ECGFullscreenBody({
   signal,
   initialViewport,
+  initialCursorMs,
   onViewportChange,
+  onCursorChange,
   onMinimize,
   initialSelectedAnnotationId,
   paperSpeed,
@@ -254,7 +265,9 @@ function ECGFullscreenBody({
             paperSpeed={paperSpeed}
             amplitude={amplitude}
             initialViewport={initialViewport ?? undefined}
+            initialCursorMs={initialCursorMs ?? undefined}
             onViewportChange={handleViewportChange}
+            onCursorChange={onCursorChange}
             onScaleMatchChange={setOnScale}
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={handleAnnotationSelect}

@@ -95,6 +95,18 @@ def get_object(key: str) -> bytes:
     return cast(bytes, response["Body"].read())
 
 
+def get_object_range(key: str, start_byte: int, end_byte: int) -> bytes:
+    """Lee un rango inclusivo de un objeto sin traer el ECG completo."""
+    if start_byte < 0 or end_byte < start_byte:
+        raise ValueError("Invalid S3 byte range")
+    response = get_s3_client().get_object(
+        Bucket=settings.s3_bucket_name,
+        Key=key,
+        Range=f"bytes={start_byte}-{end_byte}",
+    )
+    return cast(bytes, response["Body"].read())
+
+
 def delete_keys(keys: list[str]) -> None:
     client = get_s3_client()
     for start in range(0, len(keys), 1000):  # `delete_objects` acepta hasta 1000 por llamada

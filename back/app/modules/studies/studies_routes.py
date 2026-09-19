@@ -14,6 +14,8 @@ from app.modules.studies.studies_schemas import (
     StudyDetailOut,
     StudyEcgManifestOut,
     StudyEcgOut,
+    StudyEcgReportWindowsRequest,
+    StudyEcgReportWindowsResponse,
     StudyIdInput,
     StudyListInput,
     StudyListResponse,
@@ -157,6 +159,25 @@ async def get_study_ecg_manifest(
             study_id=study_id,
             actor_id=scope.user.id,
         ),
+        db,
+    )
+
+
+@router.post("/{study_id}/ecg/report-windows", response_model=StudyEcgReportWindowsResponse)
+async def get_study_ecg_report_windows(
+    study_id: uuid.UUID,
+    data: StudyEcgReportWindowsRequest,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyEcgReportWindowsResponse:
+    """Muestras crudas de ventanas breves para el informe PDF.
+
+    La UI envía lotes chicos para no descargar el estudio entero ni convertir
+    una vista piramidal en una tira que parezca diagnóstica.
+    """
+    return await service.get_study_ecg_report_windows(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id, actor_id=scope.user.id),
+        data,
         db,
     )
 

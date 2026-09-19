@@ -223,6 +223,36 @@ class StudyEcgManifestOut(CamelModel):
     annotations: list[StudyEcgAnnotationOut] = Field(default_factory=list)
 
 
+class StudyEcgReportWindowRequest(CamelModel):
+    """Ventana corta en hora de pared para una tira detallada del informe."""
+
+    id: str = Field(min_length=1, max_length=120)
+    startEpochMs: int = Field(ge=0)
+    endEpochMs: int = Field(ge=0)
+
+
+class StudyEcgReportWindowsRequest(CamelModel):
+    """El límite mantiene acotado el JSON y permite al cliente paginar lotes."""
+
+    windows: list[StudyEcgReportWindowRequest] = Field(min_length=1, max_length=25)
+
+
+class StudyEcgReportWindowOut(CamelModel):
+    id: str
+    startEpochMs: int
+    endEpochMs: int
+    timestampsMs: list[int]
+    samplesMv: list[float]
+    gapIndices: list[int]
+    #: `raw` hoy es el camino normal. Se deja explícito para que la UI nunca
+    #: presente una envolvente futura como si fuera la señal cruda.
+    source: Literal["raw", "envelope"] = "raw"
+
+
+class StudyEcgReportWindowsResponse(CamelModel):
+    windows: list[StudyEcgReportWindowOut]
+
+
 class SimulatedAnomalyType(enum.StrEnum):
     """Hallazgos que el disparador manual sabe fabricar.
 

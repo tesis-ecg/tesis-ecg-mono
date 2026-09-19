@@ -1,5 +1,6 @@
 import asyncio
 import math
+import struct
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -10,7 +11,12 @@ from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.s3 import build_presigned_url as _build_presigned_ecg_url
+from app.core.s3 import (
+    build_presigned_url as _build_presigned_ecg_url,
+)
+from app.core.s3 import (
+    get_object_range as _get_ecg_object_range,
+)
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.audit_event import AuditEventType
 from app.db.models.device import Device
@@ -39,6 +45,9 @@ from app.modules.studies.studies_schemas import (
     StudyEcgManifestOut,
     StudyEcgObjectOut,
     StudyEcgOut,
+    StudyEcgReportWindowOut,
+    StudyEcgReportWindowsRequest,
+    StudyEcgReportWindowsResponse,
     StudyEcgSegmentOut,
     StudyEcgTimelineSegmentOut,
     StudyIdInput,
@@ -638,6 +647,253 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         timeline=timeline,
         annotations=annotations,
     )
+
+
+def _window_sample_bounds(
+    segment: StudyTimelineSegment | None,
+    start_ms: int,
+    end_ms: int,
+    study: Study,
+) -> tuple[int, int] | None:
+    """Intersección de una ventana de pared con un tramo de muestras."""
+    if segment is None:
+        recording_end_ms = int(study.started_at.timestamp() * 1000) + round(_recorded_ms(study))
+        overlap_start = max(start_ms, int(study.started_at.timestamp() * 1000))
+        overlap_end = min(end_ms, recording_end_ms)
+        if overlap_end <= overlap_start:
+            return None
+        study_start_ms = int(study.started_at.timestamp() * 1000)
+        start_sample = round((overlap_start - study_start_ms) * study.sample_rate / 1000)
+        end_sample = round((overlap_end - study_start_ms) * study.sample_rate / 1000)
+        return max(0, start_sample), min(study.samples_count, max(start_sample + 1, end_sample))
+
+    overlap_start = max(start_ms, segment.start_epoch_ms)
+    overlap_end = min(end_ms, segment.end_epoch_ms)
+    if overlap_end <= overlap_start:
+        return None
+    wall_span = max(segment.end_epoch_ms - segment.start_epoch_ms, 1)
+    start_offset = round(
+        (overlap_start - segment.start_epoch_ms) * segment.sample_count / wall_span
+    )
+    end_offset = round((overlap_end - segment.start_epoch_ms) * segment.sample_count / wall_span)
+    start_sample = segment.start_sample_index + max(0, min(start_offset, segment.sample_count))
+    end_sample = segment.start_sample_index + max(0, min(end_offset, segment.sample_count))
+    return start_sample, max(start_sample + 1, end_sample)
+
+
+def _segment_timestamp_ms(
+    segment: StudyTimelineSegment | None, sample_index: int, study: Study
+) -> int:
+    if segment is None:
+        return int(study.started_at.timestamp() * 1000 + sample_index * 1000 / study.sample_rate)
+    within = sample_index - segment.start_sample_index
+    return round(
+        segment.start_epoch_ms
+        + within * (segment.end_epoch_ms - segment.start_epoch_ms) / max(segment.sample_count, 1)
+    )
+
+
+def _raw_objects_for_window(
+    study: Study, start_sample: int, end_sample: int
+) -> list[tuple[str, int, int]]:
+    """Devuelve (key, inicio global, fin global) de cada objeto que toca el rango."""
+    if study.ecg_segments:
+        objects: list[tuple[str, int, int]] = []
+        for item in study.ecg_segments:
+            object_start = int(item["startSampleIndex"])
+            object_end = object_start + int(item["sampleCount"])
+            if object_end > start_sample and object_start < end_sample:
+                objects.append((str(item["key"]), object_start, object_end))
+        return objects
+    if study.ecg_s3_key is not None:
+        return [(study.ecg_s3_key, 0, study.samples_count)]
+    return []
+
+
+def _read_raw_window(
+    study: Study,
+    timeline_segments: list[StudyTimelineSegment],
+    start_ms: int,
+    end_ms: int,
+) -> tuple[list[int], list[float], list[int]]:
+    """Lee exactamente las muestras de una ventana, respetando huecos de pared."""
+    timeline: list[StudyTimelineSegment | None] = (
+        list(timeline_segments) if timeline_segments else [None]
+    )
+    timestamps: list[int] = []
+    samples: list[float] = []
+    gap_indices: list[int] = []
+    previous_segment: StudyTimelineSegment | None = None
+
+    for timeline_segment in timeline:
+        bounds = _window_sample_bounds(timeline_segment, start_ms, end_ms, study)
+        if bounds is None:
+            continue
+        sample_start, sample_end = bounds
+        for key, object_start, object_end in _raw_objects_for_window(
+            study, sample_start, sample_end
+        ):
+            read_start = max(sample_start, object_start)
+            read_end = min(sample_end, object_end)
+            if read_end <= read_start:
+                continue
+            start_byte = (read_start - object_start) << 2
+            end_byte = ((read_end - object_start) << 2) - 1
+            payload = _get_ecg_object_range(key, start_byte, end_byte)
+            count = read_end - read_start
+            if len(payload) != count * 4:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "code": "ECG_CORRUPT",
+                        "message": "No se pudo leer una ventana del ECG.",
+                    },
+                )
+            if samples and timeline_segment is not previous_segment:
+                gap_indices.append(len(samples))
+            values = struct.unpack(f"<{count}f", payload)
+            samples.extend(values)
+            timestamps.extend(
+                _segment_timestamp_ms(timeline_segment, sample, study)
+                for sample in range(read_start, read_end)
+            )
+            previous_segment = timeline_segment
+    return timestamps, samples, gap_indices
+
+
+def _read_envelope_window(
+    study: Study,
+    timeline_segments: list[StudyTimelineSegment],
+    start_ms: int,
+    end_ms: int,
+) -> tuple[list[int], list[float], list[int]]:
+    """Fallback explícito a la envolvente más fina cuando ya no existe el crudo.
+
+    La pirámide guarda pares min/max float32 por bucket. No se los presenta como
+    señal diagnóstica: el contrato marca `source="envelope"`, pero permite que
+    el informe conserve contexto en estudios antiguos recuperados parcialmente.
+    """
+    available = [level for level in study.ecg_pyramid_levels if level.get("chunks")]
+    if not available:
+        return [], [], []
+    level = min(available, key=lambda item: int(item["samplesPerBucket"]))
+    bucket = int(level["samplesPerBucket"])
+    timeline: list[StudyTimelineSegment | None] = (
+        list(timeline_segments) if timeline_segments else [None]
+    )
+    bounds = [
+        bound
+        for segment in timeline
+        if (bound := _window_sample_bounds(segment, start_ms, end_ms, study)) is not None
+    ]
+    if not bounds:
+        return [], [], []
+    first_pair = min(bound[0] for bound in bounds) // bucket
+    last_pair = math.ceil(max(bound[1] for bound in bounds) / bucket)
+    timestamps: list[int] = []
+    samples: list[float] = []
+    gap_indices: list[int] = []
+    pair_cursor = 0
+    expected_gap_ms = bucket * 1000 / study.sample_rate * 1.5
+
+    for chunk in level["chunks"]:
+        pair_count = int(chunk["pointCount"]) // 2
+        chunk_first = pair_cursor
+        chunk_last = pair_cursor + pair_count
+        pair_cursor = chunk_last
+        read_first = max(first_pair, chunk_first)
+        read_last = min(last_pair, chunk_last)
+        if read_last <= read_first:
+            continue
+        byte_start = (read_first - chunk_first) * 8
+        byte_end = (read_last - chunk_first) * 8 - 1
+        payload = _get_ecg_object_range(str(chunk["key"]), byte_start, byte_end)
+        value_count = (read_last - read_first) * 2
+        if len(payload) != value_count * 4:
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "ECG_CORRUPT", "message": "No se pudo leer una ventana del ECG."},
+            )
+        values = struct.unpack(f"<{value_count}f", payload)
+        for offset in range(read_last - read_first):
+            sample_index = (read_first + offset) * bucket
+            timestamp = _segment_timestamp_ms(
+                next(
+                    (
+                        segment
+                        for segment in timeline_segments
+                        if segment.start_sample_index
+                        <= sample_index
+                        < segment.start_sample_index + segment.sample_count
+                    ),
+                    None,
+                ),
+                sample_index,
+                study,
+            )
+            if timestamps and timestamp - timestamps[-1] > expected_gap_ms:
+                gap_indices.append(len(samples))
+            timestamps.extend([timestamp, timestamp])
+            samples.extend(values[offset * 2 : offset * 2 + 2])
+    return timestamps, samples, gap_indices
+
+
+async def get_study_ecg_report_windows(
+    input_data: StudyIdInput,
+    data: StudyEcgReportWindowsRequest,
+    db: AsyncSession,
+) -> StudyEcgReportWindowsResponse:
+    result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
+    if result is None:
+        raise _not_found()
+    study, _, _, _, _ = result
+    has_raw = study.ecg_s3_key is not None or bool(study.ecg_segments)
+    if study.samples_count <= 0 or (not has_raw and not study.ecg_pyramid_levels):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ECG_NOT_FOUND", "message": "ECG no disponible para este estudio."},
+        )
+
+    for window in data.windows:
+        if (
+            window.endEpochMs <= window.startEpochMs
+            or window.endEpochMs - window.startEpochMs > 10_000
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "INVALID_WINDOW",
+                    "message": "Cada ventana debe durar entre 1 ms y 10 s.",
+                },
+            )
+
+    timeline = await repo.list_timeline_segments(db, study.id)
+    windows = []
+    for window in data.windows:
+        reader = _read_raw_window if has_raw else _read_envelope_window
+        timestamps, samples, gap_indices = await asyncio.to_thread(
+            reader, study, timeline, window.startEpochMs, window.endEpochMs
+        )
+        windows.append(
+            StudyEcgReportWindowOut(
+                id=window.id,
+                startEpochMs=window.startEpochMs,
+                endEpochMs=window.endEpochMs,
+                timestampsMs=timestamps,
+                samplesMv=samples,
+                gapIndices=gap_indices,
+                source="raw" if has_raw else "envelope",
+            )
+        )
+    if input_data.actor_id is not None:
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.ECG_ACCESSED,
+            user_id=input_data.actor_id,
+            metadata={"target_study_id": str(study.id), "protocol": "report-windows"},
+        )
+        await db.commit()
+    return StudyEcgReportWindowsResponse(windows=windows)
 
 
 # --- Ciclo de vida ---------------------------------------------------------- #
