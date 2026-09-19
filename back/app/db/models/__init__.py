@@ -9,6 +9,7 @@ from app.db.models.patient import Patient
 from app.db.models.patient_report import PatientReport
 from app.db.models.push_token import PushToken
 from app.db.models.study import Study
+from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment, TimeSyncSource
 from app.db.models.user import User
 
@@ -25,6 +26,8 @@ __all__ = [
     "AuditEvent",
     "AuthRateLimit",
     "Study",
+    "StudyClinicalReport",
+    "StudyClinicalReportDraft",
     "StudyTimelineSegment",
     "TimeSyncSource",
 ]

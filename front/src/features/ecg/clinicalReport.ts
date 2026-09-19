@@ -1,463 +1,355 @@
 import { jsPDF } from 'jspdf'
 
+import type { StudyClinicalReportFindingSummary } from '@/features/studies/types'
+
+import { annotationLabel } from './annotationMeta'
 import type { EcgReportWindow } from './api/ecgApi'
-import type { ECGAnnotation, ECGSignal } from './types'
 import type { ClinicalReportInput } from './clinicalReportTypes'
+import type { ECGAnnotation } from './types'
 
 const PAGE_WIDTH = 210
 const PAGE_HEIGHT = 297
 const MARGIN = 12
 const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2
 const INK = [18, 46, 92] as const
-const ECG_GRID_MINOR = [255, 231, 229] as const
-const ECG_GRID_MAJOR = [235, 169, 165] as const
+const GRID = [238, 198, 198] as const
 
 export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
-  const generatedAt = formatDate(input.generatedAt)
-  let y = 26
+  const { snapshot } = input
+  let y = 27
 
-  const runningHeader = () => {
+  const header = () => {
     doc.setFillColor(...INK)
     doc.roundedRect(MARGIN, 8, CONTENT_WIDTH, 11, 1.5, 1.5, 'F')
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10)
     doc.setTextColor(255)
     doc.text('HOLTER ECG · INFORME CLÍNICO', MARGIN + 4, 15)
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(8)
-    doc.text(input.patient.fullName, PAGE_WIDTH - MARGIN - 4, 15, { align: 'right' })
+    doc.text(input.documentStatus === 'final' ? 'FINAL' : 'BORRADOR', PAGE_WIDTH - MARGIN - 4, 15, {
+      align: 'right',
+    })
     doc.setTextColor(0)
-    y = 26
+    y = 27
   }
-
-  const page = () => {
+  const nextPage = () => {
     doc.addPage()
-    runningHeader()
+    header()
+  }
+  const ensure = (height: number) => {
+    if (y + height > PAGE_HEIGHT - 14) nextPage()
   }
   const title = (value: string) => {
+    ensure(12)
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(15)
+    doc.setTextColor(...INK)
     doc.text(value, MARGIN, y)
-    y += 8
-    doc.setFont('helvetica', 'normal')
+    doc.setTextColor(0)
+    y += 9
   }
-  const row = (label: string, value: string) => {
-    const labelWidth = 43
-    const lines = doc.splitTextToSize(value || '—', CONTENT_WIDTH - labelWidth - 3)
-    const rowHeight = Math.max(6, lines.length * 4.3 + 2)
-    if (y + rowHeight > PAGE_HEIGHT - MARGIN) page()
-    doc.setFillColor(247, 249, 252)
-    doc.roundedRect(MARGIN, y - 3.7, CONTENT_WIDTH, rowHeight, 0.8, 0.8, 'F')
+  const heading = (value: string) => {
+    ensure(12)
+    doc.setFillColor(...INK)
+    doc.roundedRect(MARGIN, y - 4.5, CONTENT_WIDTH, 7, 1, 1, 'F')
     doc.setFont('helvetica', 'bold')
-    doc.setFontSize(9)
+    doc.setFontSize(10.5)
+    doc.setTextColor(255)
+    doc.text(value, MARGIN + 3, y)
+    doc.setTextColor(0)
+    doc.setFont('helvetica', 'normal')
+    y += 8
+  }
+  const row = (label: string, value: string | null | undefined) => {
+    const lines = doc.splitTextToSize(value || '—', CONTENT_WIDTH - 48)
+    const height = Math.max(6, lines.length * 4.2 + 2)
+    ensure(height + 1)
+    doc.setFillColor(247, 249, 252)
+    doc.roundedRect(MARGIN, y - 3.8, CONTENT_WIDTH, height, 0.8, 0.8, 'F')
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(8.5)
     doc.setTextColor(...INK)
     doc.text(label, MARGIN + 2, y)
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(0)
-    doc.text(lines, MARGIN + labelWidth, y)
-    y += rowHeight + 1
-  }
-  const heading = (value: string) => {
-    if (y + 12 > PAGE_HEIGHT - MARGIN) page()
-    doc.setFillColor(...INK)
-    doc.roundedRect(MARGIN, y - 4.3, CONTENT_WIDTH, 7, 1, 1, 'F')
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(11)
-    doc.setTextColor(255)
-    doc.text(value, MARGIN + 3, y)
-    doc.setTextColor(0)
-    y += 8
-    doc.setFont('helvetica', 'normal')
+    doc.text(lines, MARGIN + 46, y)
+    y += height + 1
   }
 
-  runningHeader()
-  title('Informe de estudio ECG')
-  row('Generado', generatedAt)
-  row('Paciente', input.patient.fullName)
-  row('DNI', input.patient.dni)
+  header()
+  title('Informe de monitoreo electrocardiográfico ambulatorio')
+  row(
+    'Estado / versión',
+    `${input.documentStatus === 'final' ? 'FINAL' : 'BORRADOR'} · v${snapshot.version}`,
+  )
+  row('Generado', formatDate(input.generatedAt))
+  row('Estudio', snapshot.study.id)
+  row('Paciente', snapshot.patient.fullName)
+  row('DNI', snapshot.patient.dni)
   row(
     'Nacimiento / edad',
-    `${formatCalendarDate(input.patient.birthDate)} / ${age(input.patient.birthDate)} años`,
+    snapshot.patient.birthDate
+      ? `${formatCalendarDate(snapshot.patient.birthDate)} / ${age(snapshot.patient.birthDate)} años`
+      : '—',
   )
-  row('Sexo', input.patient.sex)
-  row('Estudio', input.study.id)
-  row('Estado', studyStatus(input.study.status))
-  row('Inicio', formatDate(input.study.startedAt))
+  row('Sexo', snapshot.patient.sex)
+  row('Inicio', formatDate(snapshot.study.startedAt))
+  row('Fin', snapshot.study.endedAt ? formatDate(snapshot.study.endedAt) : 'Estudio en curso')
   row(
-    'Fin',
-    input.study.endedAt ? formatDate(input.study.endedAt) : `En curso - corte ${generatedAt}`,
+    'Duración / dispositivo',
+    `${formatDuration(snapshot.study.durationMs)} · ${snapshot.study.deviceSerial}`,
   )
-  row('Duración del estudio', formatDuration(input.study.durationMs))
-  row('Holter', input.study.deviceSerial)
+  row(
+    'Médico responsable',
+    [snapshot.responsibleDoctor.fullName, snapshot.responsibleDoctor.specialty]
+      .filter(Boolean)
+      .join(' · '),
+  )
+  row('Matrícula', snapshot.responsibleDoctor.licenseNumber)
 
-  heading('Adquisición y calidad técnica')
-  const recordedMs =
-    ((input.signal.metadata?.sampleCount ?? input.signal.samples.length) * 1000) /
-    input.signal.sampleRate
-  const wallMs = input.signal.durationMs
-  const interruptionMs = Math.max(0, wallMs - recordedMs)
-  const coverage = wallMs > 0 ? Math.min(100, (recordedMs / wallMs) * 100) : 0
-  row('Frecuencia de muestreo', `${input.signal.sampleRate} Hz`)
-  row(
-    'Muestras originales',
-    String(input.signal.metadata?.sampleCount ?? input.signal.samples.length),
-  )
-  row('Tiempo grabado', formatDuration(recordedMs))
-  row('Lapso de pared', formatDuration(wallMs))
-  row('Interrupciones estimadas', formatDuration(interruptionMs))
-  row('Cobertura', `${coverage.toFixed(1)} %`)
-  row(
-    'Segmentos / cortes',
-    `${input.signal.timeline.length || 1} / ${Math.max(0, input.signal.timeline.length - 1)}`,
-  )
-  row(
-    'Último dato recibido',
-    input.study.lastDataReceivedAt ? formatDate(input.study.lastDataReceivedAt) : '—',
-  )
-  row('Sincronización', synchronizationText(input.signal))
-  row(
-    'Formato',
-    `${input.signal.metadata?.encoding ?? 'float32-le'}${input.signal.metadata?.isSimulated ? ' - señal simulada' : ''}`,
-  )
-  row(
-    'Overview',
-    input.signal.metadata?.overviewSamplesPerBucket
-      ? `envolvente cada ${input.signal.metadata.overviewSamplesPerBucket} muestras`
-      : 'señal cruda',
-  )
+  heading('Contexto clínico')
+  row('Indicación', snapshot.clinicalContext.indication)
+  row('Medicación', snapshot.clinicalContext.medications)
+  row('Profesional derivante', snapshot.clinicalContext.referringProfessional)
+  row('Técnico responsable', snapshot.clinicalContext.technician)
+  row('Observaciones clínicas', snapshot.clinicalContext.clinicalObservations)
 
-  heading('Hallazgos automáticos')
-  const automatedFindings = automaticAnnotations(input.signal.annotations)
-  row('Resumen', findingsSummary(automatedFindings))
-  row('Aviso clínico', 'Los hallazgos son automáticos y requieren validación médica.')
-  for (const annotation of automatedFindings) {
+  heading('Calidad de adquisición')
+  row(
+    'Tiempo grabado / lapso',
+    `${formatDuration(snapshot.quality.recordedMs)} / ${formatDuration(snapshot.quality.wallClockMs)}`,
+  )
+  row(
+    'Cobertura / interrupciones',
+    `${snapshot.quality.coveragePercent.toFixed(1)} % / ${formatDuration(snapshot.quality.interruptionMs)}`,
+  )
+  row('Segmentos / cortes', `${snapshot.quality.segments} / ${snapshot.quality.cuts}`)
+  row(
+    'Sincronización',
+    `${snapshot.quality.synchronizationSources.join(', ') || 'No disponible'} · incertidumbre máxima ${snapshot.quality.maxSynchronizationUncertaintyMs} ms`,
+  )
+  row(
+    'Última recepción',
+    snapshot.quality.lastDataReceivedAt ? formatDate(snapshot.quality.lastDataReceivedAt) : null,
+  )
+  row('Eventos técnicos y de calidad', summaryText(snapshot.technicalEvents, true))
+
+  heading('Hallazgos registrados')
+  row('Resumen', summaryText(snapshot.findings, false))
+  row(
+    'Alcance',
+    'Hallazgos registrados por los analizadores disponibles. La ausencia de eventos registrados no excluye arritmias ni reemplaza la revisión médica.',
+  )
+  row('Registros del paciente', patientReportsText(snapshot.patientReports))
+
+  heading('Conclusión')
+  row('Interpretación final', snapshot.clinicalContext.conclusion)
+  if (input.documentStatus === 'final') {
     row(
-      `${annotationLabel(annotation)} (${annotation.severity})`,
-      `${formatDate(annotation.startMs)}${annotation.endMs > annotation.startMs ? ` - ${formatDuration(annotation.endMs - annotation.startMs)}` : ''}${annotation.confidenceScore !== null ? ` - confianza ${(annotation.confidenceScore * 100).toFixed(0)} %` : ''}${annotation.description ? ` - ${annotation.description}` : ''}`,
+      'Trazabilidad',
+      `${input.generatedBy?.fullName ?? 'Usuario autenticado'} · ${roleLabel(input.generatedBy?.role)} · ${formatDate(input.generatedAt)}`,
     )
+  } else {
+    row('Trazabilidad', 'Documento de trabajo no finalizado.')
   }
 
-  heading('Reportes del paciente')
-  if (input.reports.length === 0) row('Reportes', 'Sin registros del paciente.')
-  for (const report of input.reports) {
-    const symptoms =
-      [...report.symptomLabels, report.symptomsOther].filter(Boolean).join(' · ') || '—'
+  const merged = mergeWindowPieces(input.detailWindows)
+  for (const plan of input.windowPlans) {
+    const window = merged.get(plan.id)
+    if (!window) continue
+    nextPage()
+    title(`Trazado · ${annotationLabel(plan.kind)}`)
     row(
-      formatDate(report.occurredAt),
-      `Síntomas: ${symptoms}. Actividad: ${report.activityOther || report.activityLabel || '—'}. Nota: ${report.notes || '—'}. ${report.alertKind ? `Relacionado con: ${report.alertKind}.` : ''}${report.visibleInChart ? '' : ' Aún sin señal debajo.'}`,
+      'Clasificación',
+      `${categoryLabel(plan.category)} · severidad ${severityLabel(plan.severity)}`,
     )
-  }
-
-  const sectionMs = input.sectionMinutes * 60_000
-  for (
-    let sectionStart = input.signal.startTimestamp;
-    sectionStart < input.signal.startTimestamp + input.signal.durationMs;
-    sectionStart += sectionMs
-  ) {
-    if (y + 58 > PAGE_HEIGHT - MARGIN) page()
-    drawOverview(
-      doc,
-      input.signal,
-      sectionStart,
-      Math.min(sectionStart + sectionMs, input.signal.startTimestamp + input.signal.durationMs),
-      input.sectionMinutes,
-      y,
+    row('Fecha / hora', formatDate(plan.findingStartEpochMs))
+    row('Duración total', formatDuration(plan.findingDurationMs))
+    row('Bloque', `${plan.blockIndex} de ${plan.blockCount}`)
+    row(
+      'Confianza',
+      plan.confidenceScore === null
+        ? 'No informada'
+        : `${Math.round(plan.confidenceScore * 100)} %`,
     )
-    y += 64
-  }
-
-  for (const detail of input.detailWindows) {
-    page()
-    drawDetail(doc, detail, input.paperSpeed, input.amplitude, y)
+    row(
+      'Síntomas / detalle relacionado',
+      [...plan.relatedSymptoms, plan.description].filter(Boolean).join(' · '),
+    )
+    drawTrace(doc, window, y)
   }
 
   const pages = doc.getNumberOfPages()
   for (let pageNumber = 1; pageNumber <= pages; pageNumber++) {
     doc.setPage(pageNumber)
+    if (input.documentStatus === 'draft') drawDraftMark(doc)
     doc.setDrawColor(180)
     doc.line(MARGIN, PAGE_HEIGHT - 9, PAGE_WIDTH - MARGIN, PAGE_HEIGHT - 9)
-    doc.setFontSize(8)
+    doc.setFontSize(7.5)
     doc.setTextColor(90)
     doc.text(
-      `Informe ECG · ${input.patient.fullName} · Página ${pageNumber} de ${pages}`,
+      `Informe Holter · ${snapshot.patient.fullName} · Página ${pageNumber} de ${pages}`,
       MARGIN,
       PAGE_HEIGHT - 5,
     )
-    doc.setTextColor(0)
   }
   return doc.output('arraybuffer')
 }
 
-function drawOverview(
-  doc: jsPDF,
-  signal: ECGSignal,
-  startMs: number,
-  endMs: number,
-  minutes: number,
-  top: number,
-) {
-  const axisWidth = 15
-  const plotLeft = MARGIN + axisWidth
-  const plotWidth = CONTENT_WIDTH - axisWidth
-  const plotTop = top + 6
-  const plotHeight = 42
-  doc.setFontSize(8)
-  doc.setFont('helvetica', 'bold')
-  doc.setTextColor(...INK)
-  doc.text('ECG — overview temporal comprimido', MARGIN, top)
-  doc.setFont('helvetica', 'normal')
-  doc.setTextColor(0)
-  doc.setFontSize(8)
-  doc.text(
-    `${formatDate(startMs)} - ${formatDate(endMs)} · ${minutes} min · no apto para medir intervalos`,
-    PAGE_WIDTH - MARGIN,
-    top,
-    { align: 'right' },
-  )
-  let min = Infinity
-  let max = -Infinity
-  for (let i = 0; i < signal.samples.length; i++) {
-    if (signal.timestampsMs[i] < startMs || signal.timestampsMs[i] > endMs) continue
-    const value = signal.samples[i]
-    if (Number.isFinite(value)) {
-      min = Math.min(min, value)
-      max = Math.max(max, value)
-    }
-  }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return
-  const span = Math.max(max - min, 0.2)
-  const center = (max + min) / 2
-  min = center - span / 2
-  max = center + span / 2
-  drawOverviewGrid(doc, plotLeft, plotTop, plotWidth, plotHeight, startMs, endMs, min, max)
-  let previous: [number, number] | null = null
-  const gaps = new Set(signal.gapIndices)
-  doc.setDrawColor(...INK)
-  doc.setLineWidth(0.25)
-  for (let i = 0; i < signal.samples.length; i++) {
-    const timestamp = signal.timestampsMs[i]
-    if (timestamp < startMs || timestamp > endMs || gaps.has(i)) {
-      previous = null
-      continue
-    }
-    const value = signal.samples[i]
-    if (!Number.isFinite(value)) {
-      previous = null
-      continue
-    }
-    const point: [number, number] = [
-      plotLeft + ((timestamp - startMs) / (endMs - startMs)) * plotWidth,
-      plotTop + plotHeight - ((value - min) / span) * plotHeight,
-    ]
-    if (previous) doc.line(previous[0], previous[1], point[0], point[1])
-    previous = point
-  }
-  doc.setLineWidth(0.2)
-}
-
-function drawDetail(
-  doc: jsPDF,
-  detail: EcgReportWindow,
-  paperSpeed: number,
-  amplitude: number,
-  contentTop: number,
-) {
-  const axisWidth = 15
-  const plotLeft = MARGIN + axisWidth
-  const plotWidth = CONTENT_WIDTH - axisWidth
-  const plotHeight = 40
-  doc.setFontSize(11)
-  doc.setFont('helvetica', 'bold')
-  doc.setTextColor(...INK)
-  doc.text(
-    `Tira detallada · ${formatDate(detail.startEpochMs)} · fuente: ${detail.source}`,
-    MARGIN,
-    contentTop,
-  )
-  doc.setFont('helvetica', 'normal')
-  doc.setTextColor(0)
-  const secondsPerLine = Math.max(1, Math.floor(plotWidth / paperSpeed))
-  const lineMs = secondsPerLine * 1000
-  const center = median(detail.samplesMv)
-  for (
-    let lineStart = detail.startEpochMs, row = 0;
-    lineStart < detail.endEpochMs;
-    lineStart += lineMs, row++
-  ) {
-    const top = contentTop + 12 + row * 54
-    let previous: [number, number] | null = null
-    const lineEnd = Math.min(lineStart + lineMs, detail.endEpochMs)
-    drawClinicalGrid(
-      doc,
-      plotLeft,
-      top,
-      plotWidth,
-      plotHeight,
-      lineStart,
-      lineEnd,
-      center,
-      paperSpeed,
-      amplitude,
-    )
-    drawCalibrationPulse(doc, MARGIN + 1, top + plotHeight / 2, amplitude)
-    doc.setDrawColor(...INK)
-    doc.setLineWidth(0.3)
-    const gaps = new Set(detail.gapIndices)
-    for (let i = 0; i < detail.samplesMv.length; i++) {
-      const timestamp = detail.timestampsMs[i]
-      if (timestamp < lineStart || timestamp > lineEnd || gaps.has(i)) {
-        previous = null
-        continue
-      }
-      const point: [number, number] = [
-        plotLeft + ((timestamp - lineStart) / 1000) * paperSpeed,
-        top + plotHeight / 2 - (detail.samplesMv[i] - center) * amplitude,
-      ]
-      if (previous) doc.line(previous[0], previous[1], point[0], point[1])
-      previous = point
-    }
-    doc.setFontSize(8)
-    doc.text(`${formatDate(lineStart)} · ${paperSpeed} mm/s · ${amplitude} mm/mV`, MARGIN, top - 3)
-    doc.setLineWidth(0.2)
-  }
-}
-
-function drawCalibrationPulse(doc: jsPDF, left: number, baseline: number, amplitude: number) {
-  const width = 5
-  const height = amplitude
-  doc.setDrawColor(...INK)
-  doc.setLineWidth(0.3)
-  doc.line(left, baseline, left + 1, baseline)
-  doc.line(left + 1, baseline, left + 1, baseline - height)
-  doc.line(left + 1, baseline - height, left + width - 1, baseline - height)
-  doc.line(left + width - 1, baseline - height, left + width - 1, baseline)
-  doc.line(left + width - 1, baseline, left + width, baseline)
-  doc.setFontSize(6)
-  doc.text('1 mV', left, baseline + 4)
-}
-
-function drawOverviewGrid(
-  doc: jsPDF,
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-  startMs: number,
-  endMs: number,
-  min: number,
-  max: number,
-) {
+function drawTrace(doc: jsPDF, detail: EcgReportWindow, top: number) {
+  const left = MARGIN + 15
+  const width = CONTENT_WIDTH - 15
+  const height = 88
+  const finite = detail.samplesMv.filter(Number.isFinite)
+  const low = finite.length ? Math.min(...finite) : -1
+  const high = finite.length ? Math.max(...finite) : 1
+  const span = Math.max(0.2, high - low)
+  const center = (high + low) / 2
+  const min = center - span * 0.6
+  const max = center + span * 0.6
   doc.setFillColor(255, 253, 253)
   doc.rect(left, top, width, height, 'F')
-  doc.setDrawColor(...ECG_GRID_MINOR)
-  for (let fraction = 0; fraction <= 1; fraction += 0.125) {
-    const x = left + width * fraction
-    doc.line(x, top, x, top + height)
+  doc.setDrawColor(...GRID)
+  doc.setLineWidth(0.1)
+  for (let fraction = 0; fraction <= 1.001; fraction += 0.1) {
+    doc.line(left + width * fraction, top, left + width * fraction, top + height)
+    doc.line(left, top + height * fraction, left + width, top + height * fraction)
   }
-  for (let fraction = 0; fraction <= 1; fraction += 0.25) {
-    const y = top + height * fraction
-    doc.line(left, y, left + width, y)
+  const envelope = minMaxEnvelope(detail, Math.max(2, Math.round(width * 4)))
+  doc.setDrawColor(...INK)
+  doc.setLineWidth(0.25)
+  for (const point of envelope) {
+    const x =
+      left +
+      ((point.timestamp - detail.startEpochMs) /
+        Math.max(1, detail.endEpochMs - detail.startEpochMs)) *
+        width
+    const y1 = top + height - ((point.min - min) / (max - min)) * height
+    const y2 = top + height - ((point.max - min) / (max - min)) * height
+    doc.line(x, clamp(y1, top, top + height), x, clamp(y2, top, top + height))
   }
-  doc.setDrawColor(...ECG_GRID_MAJOR)
+  doc.setDrawColor(120)
   doc.rect(left, top, width, height)
   doc.setFontSize(6.5)
-  doc.setTextColor(100)
-  for (const fraction of [0, 0.5, 1]) {
-    const timestamp = startMs + (endMs - startMs) * fraction
+  doc.setTextColor(90)
+  for (const fraction of [0, 0.25, 0.5, 0.75, 1]) {
+    const timestamp = detail.startEpochMs + (detail.endEpochMs - detail.startEpochMs) * fraction
     doc.text(formatAxisTime(timestamp), left + width * fraction, top + height + 4, {
       align: fraction === 0 ? 'left' : fraction === 1 ? 'right' : 'center',
     })
-    const value = max - (max - min) * fraction
-    doc.text(`${value.toFixed(2)} mV`, left - 2, top + height * fraction + 1, { align: 'right' })
   }
-  doc.text('Tiempo', left + width / 2, top + height + 7, { align: 'center' })
-  doc.text('mV', left - 8, top - 2, { align: 'right' })
-  doc.setTextColor(0)
-}
-
-function drawClinicalGrid(
-  doc: jsPDF,
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-  lineStart: number,
-  lineEnd: number,
-  center: number,
-  paperSpeed: number,
-  amplitude: number,
-) {
-  doc.setFillColor(255, 253, 253)
-  doc.rect(left, top, width, height, 'F')
-  doc.setLineWidth(0.08)
-  doc.setDrawColor(...ECG_GRID_MINOR)
-  for (let x = left; x <= left + width + 0.01; x += 1) doc.line(x, top, x, top + height)
-  for (let y = top; y <= top + height + 0.01; y += 1) doc.line(left, y, left + width, y)
-  doc.setLineWidth(0.15)
-  doc.setDrawColor(...ECG_GRID_MAJOR)
-  for (let x = left; x <= left + width + 0.01; x += 5) doc.line(x, top, x, top + height)
-  for (let y = top; y <= top + height + 0.01; y += 5) doc.line(left, y, left + width, y)
-  doc.rect(left, top, width, height)
-  doc.setFontSize(6.5)
-  doc.setTextColor(100)
-  const secondsPerMajorGrid = 5 / paperSpeed
-  for (let seconds = 0; seconds <= (lineEnd - lineStart) / 1000 + 0.001; seconds += 1) {
-    doc.text(`+${seconds.toFixed(0)} s`, left + seconds * paperSpeed, top + height + 4, {
-      align: seconds === 0 ? 'left' : 'center',
-    })
-  }
-  for (let y = top; y <= top + height + 0.01; y += 10) {
-    const value = center + (top + height / 2 - y) / amplitude
-    doc.text(`${value.toFixed(1)}`, left - 2, y + 1, { align: 'right' })
-  }
+  doc.text(`${max.toFixed(2)} mV`, left - 2, top + 2, { align: 'right' })
+  doc.text(`${min.toFixed(2)} mV`, left - 2, top + height, { align: 'right' })
   doc.text(
-    `Tiempo (${secondsPerMajorGrid.toFixed(2)} s/cuadro grande)`,
-    left + width / 2,
-    top + height + 7,
-    {
-      align: 'center',
-    },
+    `Eje temporal real · amplitud en mV · ${detail.gapIndices.length} hueco${detail.gapIndices.length === 1 ? '' : 's'}`,
+    left,
+    top + height + 8,
   )
-  doc.text('mV', left - 8, top - 2, { align: 'right' })
   doc.setTextColor(0)
 }
 
-function median(values: number[]): number {
-  if (values.length === 0) return 0
-  const ordered = [...values].filter(Number.isFinite).sort((a, b) => a - b)
-  return ordered[Math.floor(ordered.length / 2)] ?? 0
+function minMaxEnvelope(detail: EcgReportWindow, buckets: number) {
+  const duration = Math.max(1, detail.endEpochMs - detail.startEpochMs)
+  const mins = new Float64Array(buckets).fill(Infinity)
+  const maxs = new Float64Array(buckets).fill(-Infinity)
+  for (let index = 0; index < detail.timestampsMs.length; index++) {
+    const timestamp = detail.timestampsMs[index]
+    const value = detail.samplesMv[index]
+    if (!Number.isFinite(timestamp) || !Number.isFinite(value)) continue
+    const bucket = Math.min(
+      buckets - 1,
+      Math.max(0, Math.floor(((timestamp - detail.startEpochMs) / duration) * buckets)),
+    )
+    mins[bucket] = Math.min(mins[bucket], value)
+    maxs[bucket] = Math.max(maxs[bucket], value)
+  }
+  return Array.from({ length: buckets }, (_, bucket) => ({
+    timestamp: detail.startEpochMs + (duration * (bucket + 0.5)) / buckets,
+    min: mins[bucket],
+    max: maxs[bucket],
+  })).filter((point) => Number.isFinite(point.min) && Number.isFinite(point.max))
 }
 
-function findingsSummary(annotations: ECGAnnotation[]): string {
-  if (annotations.length === 0) return 'Sin hallazgos automáticos.'
-  const counts = new Map<string, number>()
-  for (const item of annotations) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1)
-  return [...counts.entries()].map(([kind, count]) => `${kind}: ${count}`).join(' · ')
+function mergeWindowPieces(windows: EcgReportWindow[]): Map<string, EcgReportWindow> {
+  const grouped = new Map<string, EcgReportWindow[]>()
+  for (const window of windows) grouped.set(window.id, [...(grouped.get(window.id) ?? []), window])
+  return new Map(
+    [...grouped.entries()].map(([id, pieces]) => {
+      const ordered = pieces.sort((a, b) => a.startEpochMs - b.startEpochMs)
+      const samplesMv: number[] = []
+      const timestampsMs: number[] = []
+      const gapIndices: number[] = []
+      for (const piece of ordered) {
+        const offset = samplesMv.length
+        samplesMv.push(...piece.samplesMv)
+        timestampsMs.push(...piece.timestampsMs)
+        gapIndices.push(...piece.gapIndices.map((index) => offset + index))
+        if (offset > 0) gapIndices.push(offset)
+      }
+      return [
+        id,
+        {
+          id,
+          startEpochMs: ordered[0].startEpochMs,
+          endEpochMs: ordered.at(-1)!.endEpochMs,
+          samplesMv,
+          timestampsMs,
+          gapIndices,
+          source: ordered.some((piece) => piece.source === 'envelope') ? 'envelope' : 'raw',
+        },
+      ]
+    }),
+  )
+}
+
+function drawDraftMark(doc: jsPDF) {
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(42)
+  doc.setTextColor(235, 238, 243)
+  doc.text('BORRADOR', PAGE_WIDTH / 2, PAGE_HEIGHT / 2, { align: 'center', angle: 35 })
+  doc.setTextColor(0)
+}
+
+function summaryText(items: StudyClinicalReportFindingSummary[], technical: boolean): string {
+  if (items.length === 0) {
+    return technical
+      ? 'No se registraron eventos técnicos o de calidad.'
+      : 'No se registraron hallazgos con los analizadores disponibles.'
+  }
+  return items
+    .map(
+      (item) =>
+        `${annotationLabel(item.kind)}: ${item.count}; severidad ${item.severities.join('/')}; duración total ${formatDuration(item.totalDurationMs)}; episodio más largo ${formatDuration(item.longestDurationMs)}${technical ? '' : `; con síntomas relacionados ${item.symptomaticCount}`}`,
+    )
+    .join(' · ')
+}
+
+function patientReportsText(reports: ClinicalReportInput['snapshot']['patientReports']): string {
+  if (reports.length === 0) return 'Sin registros sintomáticos informados por el paciente.'
+  return reports
+    .map((report) => {
+      const symptoms = [...report.symptoms, report.symptomsOther].filter(Boolean).join(', ') || '—'
+      return `${formatDate(report.occurredAt)}: ${symptoms}; actividad ${report.activityOther || report.activity || '—'}${report.notes ? `; ${report.notes}` : ''}`
+    })
+    .join(' · ')
 }
 
 export function automaticAnnotations(annotations: ECGAnnotation[]): ECGAnnotation[] {
-  return annotations.filter((annotation) => annotation.category !== 'patient_marker')
+  return annotations.filter(
+    (item) => item.category === 'clinical' && item.linkedAnnotationId === null,
+  )
 }
 
-function synchronizationText(signal: ECGSignal): string {
-  if (signal.timeline.length === 0) return 'No disponible para estudio legacy.'
-  const sources = [...new Set(signal.timeline.map((item) => item.anchorSource))].join(', ')
-  const uncertainty = Math.max(...signal.timeline.map((item) => item.anchorUncertaintyMs ?? 0))
-  return `${sources}; incertidumbre máxima ${uncertainty} ms`
+function roleLabel(role: string | undefined): string {
+  return role === 'admin' ? 'Administrador' : role === 'medico' ? 'Médico' : role || '—'
 }
 
-function annotationLabel(annotation: ECGAnnotation): string {
-  return annotation.kind.replaceAll('_', ' ')
+function categoryLabel(category: 'clinical' | 'patient_marker'): string {
+  return category === 'clinical' ? 'Hallazgo clínico' : 'Registro sintomático'
 }
 
-function studyStatus(status: ClinicalReportInput['study']['status']): string {
-  return {
-    in_progress: 'En curso',
-    completed: 'Completado',
-    cancelled: 'Cancelado',
-    scheduled: 'Programado',
-  }[status]
+function severityLabel(severity: string): string {
+  return { low: 'baja', medium: 'media', high: 'alta', critical: 'crítica' }[severity] ?? severity
 }
 
 function formatDate(value: string | number): string {
@@ -476,13 +368,13 @@ function formatAxisTime(value: number): string {
 
 function formatCalendarDate(value: string): string {
   const [year, month, day] = value.split('-').map(Number)
-  if (!year || !month || !day) return value
   return new Intl.DateTimeFormat('es-AR', { dateStyle: 'short' }).format(
     new Date(year, month - 1, day),
   )
 }
 
 function formatDuration(ms: number): string {
+  if (ms > 0 && ms < 1000) return `${Math.round(ms)} ms`
   const seconds = Math.max(0, Math.round(ms / 1000))
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -497,7 +389,12 @@ function age(birthDate: string): number {
   if (
     now.getMonth() < birth.getMonth() ||
     (now.getMonth() === birth.getMonth() && now.getDate() < birth.getDate())
-  )
+  ) {
     value--
+  }
   return Math.max(0, value)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }

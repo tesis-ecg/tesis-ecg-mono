@@ -2948,6 +2948,511 @@
         "title": "SimulatedAnomalyType",
         "type": "string"
       },
+      "StudyClinicalReportDraftOut": {
+        "properties": {
+          "clinicalObservations": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinicalobservations"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "indication": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indication"
+          },
+          "medications": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medications"
+          },
+          "referringProfessional": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referringprofessional"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "studyId": {
+            "format": "uuid",
+            "title": "Studyid",
+            "type": "string"
+          },
+          "technician": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technician"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby"
+          },
+          "updatedByName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedbyname"
+          },
+          "updatedByRole": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedbyrole"
+          }
+        },
+        "required": [
+          "studyId",
+          "revision",
+          "indication",
+          "medications",
+          "referringProfessional",
+          "technician",
+          "clinicalObservations",
+          "conclusion",
+          "updatedAt",
+          "updatedBy",
+          "updatedByName",
+          "updatedByRole"
+        ],
+        "title": "StudyClinicalReportDraftOut",
+        "type": "object"
+      },
+      "StudyClinicalReportDraftUpdate": {
+        "properties": {
+          "clinicalObservations": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinicalobservations"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "indication": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indication"
+          },
+          "medications": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medications"
+          },
+          "referringProfessional": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referringprofessional"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "technician": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technician"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "StudyClinicalReportDraftUpdate",
+        "type": "object"
+      },
+      "StudyClinicalReportIssueOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "warning",
+              "blocking"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "severity"
+        ],
+        "title": "StudyClinicalReportIssueOut",
+        "type": "object"
+      },
+      "StudyClinicalReportPreviewOut": {
+        "properties": {
+          "blockingReasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockingreasons",
+            "type": "array"
+          },
+          "canFinalize": {
+            "title": "Canfinalize",
+            "type": "boolean"
+          },
+          "canGenerateDraft": {
+            "title": "Cangeneratedraft",
+            "type": "boolean"
+          },
+          "draft": {
+            "$ref": "#/components/schemas/StudyClinicalReportDraftOut"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/StudyClinicalReportIssueOut"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "nextVersion": {
+            "title": "Nextversion",
+            "type": "integer"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "snapshotHash": {
+            "title": "Snapshothash",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StudyClinicalReportWindowPlanOut"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "draft",
+          "snapshot",
+          "snapshotHash",
+          "windows",
+          "nextVersion",
+          "canGenerateDraft",
+          "canFinalize",
+          "blockingReasons",
+          "issues"
+        ],
+        "title": "StudyClinicalReportPreviewOut",
+        "type": "object"
+      },
+      "StudyClinicalReportVersionOut": {
+        "properties": {
+          "finalizedAt": {
+            "format": "date-time",
+            "title": "Finalizedat",
+            "type": "string"
+          },
+          "finalizedBy": {
+            "format": "uuid",
+            "title": "Finalizedby",
+            "type": "string"
+          },
+          "finalizedByName": {
+            "title": "Finalizedbyname",
+            "type": "string"
+          },
+          "finalizedByRole": {
+            "title": "Finalizedbyrole",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "pdfByteLength": {
+            "title": "Pdfbytelength",
+            "type": "integer"
+          },
+          "pdfSha256": {
+            "title": "Pdfsha256",
+            "type": "string"
+          },
+          "snapshotSha256": {
+            "title": "Snapshotsha256",
+            "type": "string"
+          },
+          "studyId": {
+            "format": "uuid",
+            "title": "Studyid",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "studyId",
+          "version",
+          "finalizedAt",
+          "finalizedBy",
+          "finalizedByName",
+          "finalizedByRole",
+          "pdfByteLength",
+          "pdfSha256",
+          "snapshotSha256"
+        ],
+        "title": "StudyClinicalReportVersionOut",
+        "type": "object"
+      },
+      "StudyClinicalReportVersionsOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudyClinicalReportVersionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "StudyClinicalReportVersionsOut",
+        "type": "object"
+      },
+      "StudyClinicalReportWindowPlanOut": {
+        "properties": {
+          "blockCount": {
+            "title": "Blockcount",
+            "type": "integer"
+          },
+          "blockIndex": {
+            "title": "Blockindex",
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "clinical",
+              "patient_marker"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "confidenceScore": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidencescore"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "findingDurationMs": {
+            "title": "Findingdurationms",
+            "type": "integer"
+          },
+          "findingEndEpochMs": {
+            "title": "Findingendepochms",
+            "type": "integer"
+          },
+          "findingId": {
+            "format": "uuid",
+            "title": "Findingid",
+            "type": "string"
+          },
+          "findingStartEpochMs": {
+            "title": "Findingstartepochms",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "relatedSymptoms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Relatedsymptoms",
+            "type": "array"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "findingId",
+          "kind",
+          "category",
+          "severity",
+          "findingStartEpochMs",
+          "findingEndEpochMs",
+          "findingDurationMs",
+          "startEpochMs",
+          "endEpochMs",
+          "blockIndex",
+          "blockCount",
+          "confidenceScore",
+          "description",
+          "relatedSymptoms"
+        ],
+        "title": "StudyClinicalReportWindowPlanOut",
+        "type": "object"
+      },
       "StudyDetailOut": {
         "properties": {
           "canAccessDevice": {
@@ -8531,6 +9036,505 @@
           }
         },
         "summary": "Cancel Study",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-report/draft": {
+      "get": {
+        "operationId": "get_clinical_report_draft_studies__study_id__clinical_report_draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportDraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Clinical Report Draft",
+        "tags": [
+          "studies"
+        ]
+      },
+      "put": {
+        "operationId": "update_clinical_report_draft_studies__study_id__clinical_report_draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudyClinicalReportDraftUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportDraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Clinical Report Draft",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-report/finalize": {
+      "post": {
+        "operationId": "finalize_clinical_report_studies__study_id__clinical_report_finalize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "draftRevision",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Draftrevision",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "snapshotHash",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 64,
+              "title": "Snapshothash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/pdf": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "title": "Pdf",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finalize Clinical Report",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-report/preview": {
+      "get": {
+        "operationId": "get_clinical_report_preview_studies__study_id__clinical_report_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportPreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Clinical Report Preview",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-reports": {
+      "get": {
+        "operationId": "list_clinical_report_versions_studies__study_id__clinical_reports_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportVersionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Clinical Report Versions",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-reports/{report_id}/pdf": {
+      "get": {
+        "operationId": "download_clinical_report_studies__study_id__clinical_reports__report_id__pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Clinical Report",
         "tags": [
           "studies"
         ]

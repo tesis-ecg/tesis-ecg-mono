@@ -1,131 +1,148 @@
 import { describe, expect, it } from 'vitest'
 
 import { automaticAnnotations, buildClinicalReport } from './clinicalReport'
-import { detailWindowRequests, estimateOverviewPages } from './clinicalReportPlanning'
 import type { ClinicalReportInput } from './clinicalReportTypes'
 
 const start = 1_700_000_000_000
 
 function input(): ClinicalReportInput {
+  const draft = {
+    studyId: 'study-1',
+    revision: 2,
+    indication: 'Palpitaciones',
+    medications: 'Sin medicación',
+    referringProfessional: 'Dra. Ejemplo',
+    technician: 'Técnico Ejemplo',
+    clinicalObservations: null,
+    conclusion: 'Interpretación de prueba.',
+    updatedAt: new Date(start).toISOString(),
+    updatedBy: 'user-1',
+    updatedByName: 'Dr. Ejemplo',
+    updatedByRole: 'medico',
+  }
   return {
-    study: {
-      id: 'study-1',
-      patientId: 'patient-1',
-      patientName: 'Ana Pérez',
-      deviceId: 'device-1',
-      startedAt: new Date(start).toISOString(),
-      endedAt: new Date(start + 20_000).toISOString(),
-      durationMs: 20_000,
-      deviceSerial: 'HOL-001',
-      canAccessDevice: true,
-      lastDataReceivedAt: null,
-      status: 'completed',
-    },
-    patient: {
-      id: 'patient-1',
-      fullName: 'Ana Pérez',
-      dni: '12345678',
-      birthDate: '1980-01-01',
-      sex: 'F',
-      assignedDeviceId: 'device-1',
-      assignedDeviceSerial: 'HOL-001',
-      studyStatus: 'completed',
-      lastDataReceivedAt: null,
-      contactEmail: null,
-      contactPhone: null,
-      hasAppAccount: true,
-    },
-    signal: {
-      sampleRate: 2,
-      durationMs: 20_000,
-      samples: Float32Array.from({ length: 40 }, (_, index) => Math.sin(index / 3)),
-      startTimestamp: start,
-      timestampsMs: Float64Array.from({ length: 40 }, (_, index) => start + index * 500),
-      gapIndices: [],
-      timeline: [],
-      annotations: [
+    snapshot: {
+      schemaVersion: 1,
+      version: 1,
+      study: {
+        id: 'study-1',
+        status: 'completed',
+        startedAt: new Date(start).toISOString(),
+        endedAt: new Date(start + 60_000).toISOString(),
+        durationMs: 60_000,
+        deviceSerial: 'HOL-001',
+        sampleRate: 500,
+        isSimulated: false,
+      },
+      patient: {
+        id: 'patient-1',
+        fullName: 'Ana Pérez',
+        dni: '12345678',
+        birthDate: '1980-01-01',
+        sex: 'F',
+        medicalRecordNumber: null,
+      },
+      responsibleDoctor: {
+        fullName: 'Dr. Ejemplo',
+        specialty: 'Cardiología',
+        licenseNumber: 'MN 123',
+      },
+      clinicalContext: draft,
+      quality: {
+        recordedMs: 59_000,
+        wallClockMs: 60_000,
+        interruptionMs: 1_000,
+        coveragePercent: 98.3,
+        segments: 2,
+        cuts: 1,
+        lastDataReceivedAt: new Date(start + 60_000).toISOString(),
+        synchronizationSources: ['ntp'],
+        maxSynchronizationUncertaintyMs: 20,
+      },
+      findings: [
         {
-          id: 'finding-1',
           kind: 'tachycardia',
-          category: 'clinical',
-          severity: 'high',
-          startMs: start + 5_000,
-          endMs: start + 5_200,
-          confidenceScore: 0.9,
-          linkedAnnotationId: null,
-          description: null,
+          count: 1,
+          severities: ['high'],
+          totalDurationMs: 10_000,
+          longestDurationMs: 10_000,
+          symptomaticCount: 1,
         },
       ],
-      metadata: {
-        formatVersion: 3,
-        encoding: 'float32-le',
-        sampleCount: 40,
-        isSimulated: false,
-        overviewSamplesPerBucket: null,
-      },
+      technicalEvents: [],
+      patientReports: [],
+      selectedWindows: [],
     },
-    reports: [
-      {
-        id: 'report-1',
-        occurredAt: new Date(start + 5_500).toISOString(),
-        source: 'manual',
-        symptoms: ['palpitations'],
-        symptomLabels: ['Palpitaciones'],
-        symptomsOther: null,
-        activity: 'rest',
-        activityLabel: 'Reposo',
-        activityOther: null,
-        notes: null,
-        alertId: null,
-        alertKind: null,
-        createdAt: new Date(start + 5_500).toISOString(),
-        offsetMs: 5_500,
-        visibleInChart: true,
-      },
-    ],
+    windowPlans: [],
     detailWindows: [],
-    sectionMinutes: 1,
-    paperSpeed: 25,
-    amplitude: 10,
-    generatedAt: new Date(start + 20_000).toISOString(),
+    documentStatus: 'draft',
+    generatedAt: new Date(start + 60_000).toISOString(),
+    generatedBy: { fullName: 'Dr. Ejemplo', role: 'medico' },
   }
 }
 
 describe('clinical ECG report', () => {
-  it('deduplicates overlapping finding and patient-report windows', () => {
-    const value = input()
-    // Una respuesta a una alerta puede enviarse bastante después del evento;
-    // el detalle debe seguir el ancla visible del gráfico, no esa hora tardía.
-    value.reports[0].occurredAt = new Date(start + 19_000).toISOString()
-    const windows = detailWindowRequests(value.signal, value.reports)
+  it('genera un PDF aunque no existan hallazgos elegibles', () => {
+    const pdf = buildClinicalReport(input())
 
-    expect(windows).toHaveLength(1)
-    expect(windows[0].startEpochMs).toBe(start + 100)
-    expect(windows[0].endEpochMs).toBe(start + 10_500)
-  })
-
-  it('estimates overview pages and generates a PDF document', () => {
-    const value = input()
-
-    expect(estimateOverviewPages(value.signal, 1)).toBe(1)
-    const pdf = buildClinicalReport(value)
     expect(new TextDecoder().decode(pdf.slice(0, 8))).toContain('%PDF-')
   })
 
-  it('does not classify patient markers as automatic findings', () => {
+  it('genera tiras desde las ventanas crudas planificadas', () => {
     const value = input()
-    value.signal.annotations.push({
-      id: 'patient-marker-1',
-      kind: 'patient_report',
-      category: 'patient_marker',
-      severity: 'low',
-      startMs: start + 6_000,
-      endMs: start + 6_000,
-      confidenceScore: null,
-      linkedAnnotationId: null,
-      description: 'Palpitaciones',
-    })
+    value.windowPlans = [
+      {
+        id: 'finding:finding-1:1',
+        findingId: 'finding-1',
+        kind: 'tachycardia',
+        category: 'clinical',
+        severity: 'high',
+        findingStartEpochMs: start + 5_000,
+        findingEndEpochMs: start + 15_000,
+        findingDurationMs: 10_000,
+        startEpochMs: start + 5_000,
+        endEpochMs: start + 15_000,
+        blockIndex: 1,
+        blockCount: 1,
+        confidenceScore: 0.9,
+        description: 'Palpitaciones',
+        relatedSymptoms: ['Mareo'],
+      },
+    ]
+    value.detailWindows = [
+      {
+        id: 'finding:finding-1:1',
+        startEpochMs: start + 5_000,
+        endEpochMs: start + 15_000,
+        timestampsMs: Array.from({ length: 100 }, (_, index) => start + 5_000 + index * 100),
+        samplesMv: Array.from({ length: 100 }, (_, index) => Math.sin(index / 4)),
+        gapIndices: [50],
+        source: 'raw',
+      },
+    ]
 
-    expect(automaticAnnotations(value.signal.annotations)).toEqual([value.signal.annotations[0]])
+    expect(new TextDecoder().decode(buildClinicalReport(value).slice(0, 8))).toContain('%PDF-')
+  })
+
+  it('sólo clasifica como automáticos los hallazgos clínicos no vinculados', () => {
+    const clinical = {
+      id: 'finding-1',
+      kind: 'tachycardia',
+      category: 'clinical' as const,
+      severity: 'high' as const,
+      startMs: start,
+      endMs: start + 1000,
+      confidenceScore: 0.9,
+      linkedAnnotationId: null,
+      description: null,
+    }
+    const patientMarker = {
+      ...clinical,
+      id: 'marker-1',
+      category: 'patient_marker' as const,
+      kind: 'patient_report',
+    }
+
+    expect(automaticAnnotations([clinical, patientMarker])).toEqual([clinical])
   })
 })

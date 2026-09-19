@@ -1,4 +1,4 @@
-import { Printer, RulerDimensionLine } from 'lucide-react'
+import { RulerDimensionLine } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -23,7 +23,6 @@ interface ECGPaperControlsProps {
    */
   onScale: boolean
   onResetScale: () => void
-  onPrint?: () => void
   className?: string
 }
 
@@ -47,7 +46,6 @@ export function ECGPaperControls({
   onAmplitudeChange,
   onScale,
   onResetScale,
-  onPrint,
   className,
 }: ECGPaperControlsProps) {
   return (
@@ -101,19 +99,6 @@ export function ECGPaperControls({
           title="El zoom libre sirve para navegar, no para medir"
         >
           Escala libre — volver a {paperSpeed} mm/s · {amplitude} mm/mV
-        </Button>
-      )}
-
-      {onPrint && (
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={onPrint}
-          className="ml-auto"
-          title="Tiras de 10 s con milímetros reales"
-        >
-          <Printer className="size-4" />
-          Informe
         </Button>
       )}
     </div>

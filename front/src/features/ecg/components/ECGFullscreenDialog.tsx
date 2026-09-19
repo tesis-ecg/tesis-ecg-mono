@@ -78,6 +78,12 @@ export function ECGFullscreenDialog({
   const closeViewportRef = useRef<ECGViewportChange | null>(initialViewport)
   const closeCursorRef = useRef<number | null>(initialCursorMs ?? null)
 
+  useEffect(() => {
+    if (!open) return
+    closeViewportRef.current = initialViewport
+    closeCursorRef.current = initialCursorMs ?? null
+  }, [initialCursorMs, initialViewport, open])
+
   const closeDialog = () => {
     onClose?.(closeViewportRef.current, closeCursorRef.current)
     onOpenChange(false)
@@ -157,7 +163,7 @@ function ECGFullscreenBody({
   const viewerSlotRef = useRef<HTMLDivElement | null>(null)
   // La escala declarada viene del padre. Solo el estado de zoom libre queda
   // local: depende del ancho y el viewport de esta instancia del visor.
-  const [onScale, setOnScale] = useState(true)
+  const [onScale, setOnScale] = useState(initialViewport?.isClinicalScale ?? true)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(initialViewport)
   const [viewerHeight, setViewerHeight] = useState(360)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(

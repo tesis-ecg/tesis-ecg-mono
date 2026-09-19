@@ -2,6 +2,10 @@ import { api } from '@/lib/api'
 
 import type {
   Study,
+  StudyClinicalReportDraft,
+  StudyClinicalReportDraftUpdate,
+  StudyClinicalReportPreview,
+  StudyClinicalReportVersion,
   StudyListParams,
   StudyListResponse,
   StudyPatientReportsResponse,
@@ -45,5 +49,62 @@ export async function cancelStudy(id: string): Promise<Study> {
  */
 export async function getStudyPatientReports(id: string): Promise<StudyPatientReportsResponse> {
   const { data } = await api.get<StudyPatientReportsResponse>(`/studies/${id}/patient-reports`)
+  return data
+}
+
+export async function getStudyClinicalReportDraft(id: string): Promise<StudyClinicalReportDraft> {
+  const { data } = await api.get<StudyClinicalReportDraft>(`/studies/${id}/clinical-report/draft`)
+  return data
+}
+
+export async function updateStudyClinicalReportDraft(
+  id: string,
+  update: StudyClinicalReportDraftUpdate,
+): Promise<StudyClinicalReportDraft> {
+  const { data } = await api.put<StudyClinicalReportDraft>(
+    `/studies/${id}/clinical-report/draft`,
+    update,
+  )
+  return data
+}
+
+export async function getStudyClinicalReportPreview(
+  id: string,
+): Promise<StudyClinicalReportPreview> {
+  const { data } = await api.get<StudyClinicalReportPreview>(
+    `/studies/${id}/clinical-report/preview`,
+  )
+  return data
+}
+
+export async function finalizeStudyClinicalReport(
+  id: string,
+  pdf: ArrayBuffer,
+  draftRevision: number,
+  snapshotHash: string,
+): Promise<StudyClinicalReportVersion> {
+  const { data } = await api.post<StudyClinicalReportVersion>(
+    `/studies/${id}/clinical-report/finalize`,
+    pdf,
+    {
+      params: { draftRevision, snapshotHash },
+      headers: { 'Content-Type': 'application/pdf' },
+      timeout: 60_000,
+    },
+  )
+  return data
+}
+
+export async function listStudyClinicalReports(id: string): Promise<StudyClinicalReportVersion[]> {
+  const { data } = await api.get<{ items: StudyClinicalReportVersion[] }>(
+    `/studies/${id}/clinical-reports`,
+  )
+  return data.items
+}
+
+export async function downloadStudyClinicalReport(id: string, reportId: string): Promise<Blob> {
+  const { data } = await api.get<Blob>(`/studies/${id}/clinical-reports/${reportId}/pdf`, {
+    responseType: 'blob',
+  })
   return data
 }

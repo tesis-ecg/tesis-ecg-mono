@@ -509,6 +509,84 @@ export interface SimulateAnomalyRequest {
 
 export type SimulatedAnomalyType = "tachycardia" | "bradycardia" | "afib" | "pvc" | "pause"
 
+export interface StudyClinicalReportDraftOut {
+  "studyId": string
+  "revision": number
+  "indication": string | null
+  "medications": string | null
+  "referringProfessional": string | null
+  "technician": string | null
+  "clinicalObservations": string | null
+  "conclusion": string | null
+  "updatedAt": string | null
+  "updatedBy": string | null
+  "updatedByName": string | null
+  "updatedByRole": string | null
+}
+
+export interface StudyClinicalReportDraftUpdate {
+  "revision": number
+  "indication"?: string | null
+  "medications"?: string | null
+  "referringProfessional"?: string | null
+  "technician"?: string | null
+  "clinicalObservations"?: string | null
+  "conclusion"?: string | null
+}
+
+export interface StudyClinicalReportIssueOut {
+  "code": string
+  "message": string
+  "severity": "warning" | "blocking"
+}
+
+export interface StudyClinicalReportPreviewOut {
+  "draft": StudyClinicalReportDraftOut
+  "snapshot": Record<string, unknown>
+  "snapshotHash": string
+  "windows": Array<StudyClinicalReportWindowPlanOut>
+  "nextVersion": number
+  "canGenerateDraft": boolean
+  "canFinalize": boolean
+  "blockingReasons": Array<string>
+  "issues": Array<StudyClinicalReportIssueOut>
+}
+
+export interface StudyClinicalReportVersionOut {
+  "id": string
+  "studyId": string
+  "version": number
+  "finalizedAt": string
+  "finalizedBy": string
+  "finalizedByName": string
+  "finalizedByRole": string
+  "pdfByteLength": number
+  "pdfSha256": string
+  "snapshotSha256": string
+}
+
+export interface StudyClinicalReportVersionsOut {
+  "items": Array<StudyClinicalReportVersionOut>
+}
+
+export interface StudyClinicalReportWindowPlanOut {
+  "id": string
+  "findingId": string
+  "kind": string
+  "category": "clinical" | "patient_marker"
+  "severity": "low" | "medium" | "high" | "critical"
+  "findingStartEpochMs": number
+  "findingEndEpochMs": number
+  "findingDurationMs": number
+  "startEpochMs": number
+  "endEpochMs": number
+  "blockIndex": number
+  "blockCount": number
+  "confidenceScore": number | null
+  "description": string | null
+  "relatedSymptoms": Array<string>
+}
+
 export interface StudyDetailOut {
   "id": string
   "patientId": string

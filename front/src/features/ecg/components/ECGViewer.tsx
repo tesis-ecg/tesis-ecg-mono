@@ -158,6 +158,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   const cursorTimestampRef = useRef<number>(
     initialCursorMs ?? signal.timestampsMs[signal.timestampsMs.length - 1] ?? signal.startTimestamp,
   )
+  const hasCursorAnchorRef = useRef(initialCursorMs != null)
   useEffect(() => {
     onViewportChangeRef.current = onViewportChange
   }, [onViewportChange])
@@ -400,6 +401,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             if (left == null || left < 0) return
             const timestamp = startTimestamp + u.posToVal(left, 'x') * 1000
             cursorTimestampRef.current = timestamp
+            hasCursorAnchorRef.current = true
             onCursorChangeRef.current?.(timestamp)
           },
         ],
@@ -459,6 +461,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             durationSec,
             restore,
             initialWindowSeconds,
+            hasCursorAnchorRef.current ? cursorTimestampRef.current : undefined,
           )
         ) {
           pendingInitialSpanRef.current = false
@@ -469,8 +472,16 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           setCursorAtTimestamp(inst, cursorTimestampRef.current, startTimestamp, durationSec)
           isInitializingFrameRef.current = false
         }
-      } else if (wasOnScale && before.min != null) {
-        applyScaleSpan(inst, scaleRef.current, before.min, durationSec)
+      } else if (wasOnScale && before.min != null && before.max != null) {
+        applyScaleSpanAtCursor(
+          inst,
+          scaleRef.current,
+          durationSec,
+          cursorTimestampRef.current,
+          signal.startTimestamp,
+          before.min,
+          before.max,
+        )
       }
       // El alto pudo cambiar, y con él cuántos mV entran.
       const after = inst.scales.x
@@ -650,8 +661,16 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     if (previous === null || previous === scale) return
     const inst = uplotRef.current
     if (!inst) return
-    const { min } = inst.scales.x
-    applyScaleSpan(inst, scale, min ?? 0, durationSec)
+    const { min, max } = inst.scales.x
+    applyScaleSpanAtCursor(
+      inst,
+      scale,
+      durationSec,
+      cursorTimestampRef.current,
+      signalRef.current.startTimestamp,
+      min ?? 0,
+      max ?? durationSec,
+    )
     const { min: nextMin, max: nextMax } = inst.scales.x
     if (nextMin != null && nextMax != null) {
       applyVerticalRange(inst, scale, signalRef.current, nextMin, nextMax)
@@ -683,7 +702,15 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       restoreViewport(viewport: ECGViewportChange) {
         const inst = uplotRef.current
         if (!inst) return
-        applyInitialFraming(inst, scaleRef.current, signal, durationSec, viewport, undefined)
+        applyInitialFraming(
+          inst,
+          scaleRef.current,
+          signal,
+          durationSec,
+          viewport,
+          undefined,
+          cursorTimestampRef.current,
+        )
       },
       resetZoom() {
         const inst = uplotRef.current
@@ -693,13 +720,22 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       resetScale() {
         const inst = uplotRef.current
         if (!inst) return
-        const { min } = inst.scales.x
-        applyScaleSpan(inst, scaleRef.current, min ?? 0, durationSec)
+        const { min, max } = inst.scales.x
+        applyScaleSpanAtCursor(
+          inst,
+          scaleRef.current,
+          durationSec,
+          cursorTimestampRef.current,
+          signal.startTimestamp,
+          min ?? 0,
+          max ?? durationSec,
+        )
       },
       setCursor(timestampMs: number) {
         const inst = uplotRef.current
         if (!inst) return
         cursorTimestampRef.current = timestampMs
+        hasCursorAnchorRef.current = true
         setCursorAtTimestamp(inst, timestampMs, signal.startTimestamp, durationSec)
       },
     }),
@@ -896,29 +932,34 @@ function applyInitialFraming(
   durationSec: number,
   restore: ECGViewportChange | null,
   initialWindowSeconds: number | undefined,
+  anchorTimestampMs: number | undefined,
 ): boolean {
   if (restore) {
     const startSec = Math.max(0, (restore.startMs - signal.startTimestamp) / 1000)
     const endSec = Math.min(durationSec, (restore.endMs - signal.startTimestamp) / 1000)
+    const hasAnchor = anchorTimestampMs !== undefined
+    const anchorSec = Math.min(
+      Math.max(
+        hasAnchor ? (anchorTimestampMs - signal.startTimestamp) / 1000 : (startSec + endSec) / 2,
+        0,
+      ),
+      durationSec,
+    )
+    const anchorRatio = hasAnchor ? viewportAnchorRatio(startSec, endSec, anchorSec) : 0.5
     if (restore.isClinicalScale) {
       // La escala clínica manda: al ir a una pantalla más ancha se muestran
-      // más segundos sin alterar los mm/s. Conservamos el borde izquierdo del
-      // tramo que el médico estaba revisando como referencia espacial.
-      return applyScaleSpan(inst, scale, startSec, durationSec)
+      // más segundos sin alterar los mm/s. El cursor es el ancla para que no
+      // salte de lugar al pasar entre contenedores de distinto ancho.
+      return hasAnchor
+        ? applyScaleSpanAtAnchor(inst, scale, anchorSec, anchorRatio, durationSec)
+        : applyScaleSpan(inst, scale, startSec, durationSec)
     }
     if (restore.millisecondsPerPixel && restore.millisecondsPerPixel > 0) {
       // El zoom libre no declara una escala clínica. En ese modo se conserva
-      // la densidad temporal, no el span absoluto, que cambiaría el zoom al
-      // pasar de la solapa a pantalla completa o viceversa.
+      // la densidad temporal y la posición relativa del cursor, no el span
+      // absoluto, que cambiaría el zoom al pasar de una vista a la otra.
       const spanSec = (restore.millisecondsPerPixel * plotWidthPx(inst)) / 1000
-      const centerSec = (startSec + endSec) / 2
-      const [min, max] = centerRangeAt(
-        centerSec,
-        centerSec - spanSec / 2,
-        centerSec + spanSec / 2,
-        0,
-        durationSec,
-      )
+      const [min, max] = rangeAtAnchor(anchorSec, anchorRatio, spanSec, 0, durationSec)
       inst.setScale('x', { min, max })
       return true
     }
@@ -935,6 +976,55 @@ function applyInitialFraming(
     return true
   }
   return applyScaleSpan(inst, scale, durationSec, durationSec)
+}
+
+function applyScaleSpanAtCursor(
+  inst: uPlot,
+  scale: PaperScale,
+  durationSec: number,
+  cursorTimestampMs: number,
+  startTimestamp: number,
+  currentMin: number,
+  currentMax: number,
+): boolean {
+  const cursorSec = Math.min(Math.max((cursorTimestampMs - startTimestamp) / 1000, 0), durationSec)
+  return applyScaleSpanAtAnchor(
+    inst,
+    scale,
+    cursorSec,
+    viewportAnchorRatio(currentMin, currentMax, cursorSec),
+    durationSec,
+  )
+}
+
+function applyScaleSpanAtAnchor(
+  inst: uPlot,
+  scale: PaperScale,
+  anchorSec: number,
+  anchorRatio: number,
+  durationSec: number,
+): boolean {
+  const span = visibleSeconds(scale, plotWidthPx(inst))
+  if (span <= 0) return false
+  const [min, max] = rangeAtAnchor(anchorSec, anchorRatio, span, 0, durationSec)
+  inst.setScale('x', { min, max })
+  return true
+}
+
+function viewportAnchorRatio(min: number, max: number, anchor: number): number {
+  if (max <= min) return 0.5
+  return Math.min(Math.max((anchor - min) / (max - min), 0), 1)
+}
+
+function rangeAtAnchor(
+  anchor: number,
+  anchorRatio: number,
+  span: number,
+  boundsMin: number,
+  boundsMax: number,
+): [number, number] {
+  const min = anchor - span * anchorRatio
+  return clampRange(min, min + span, boundsMin, boundsMax)
 }
 
 function setCursorAtTimestamp(

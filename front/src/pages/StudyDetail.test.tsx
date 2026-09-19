@@ -17,10 +17,30 @@ vi.mock('@/features/ecg/hooks/useEcgSignal', () => ({ useEcgSignal: hooks.ecg })
 vi.mock('@/features/studies/hooks/useStudyPatientReports', () => ({
   useStudyPatientReports: hooks.reports,
 }))
-vi.mock('@/features/ecg/components/ECGViewer', () => ({ ECGViewer: () => null }))
+vi.mock('@/features/ecg/components/ECGViewer', () => ({
+  ECGViewer: ({
+    paperSpeed,
+    amplitude,
+    initialWindowSeconds,
+  }: {
+    paperSpeed: number
+    amplitude: number
+    initialWindowSeconds?: number
+  }) => (
+    <output
+      data-testid="study-ecg-viewer"
+      data-paper-speed={paperSpeed}
+      data-amplitude={amplitude}
+      data-initial-window={initialWindowSeconds}
+    />
+  ),
+}))
 vi.mock('@/features/ecg/components/ECGMinimap', () => ({ ECGMinimap: () => null }))
 vi.mock('@/features/ecg/components/ECGFullscreenDialog', () => ({
   ECGFullscreenDialog: () => null,
+}))
+vi.mock('@/features/ecg/components/ECGClinicalReportDialog', () => ({
+  ECGClinicalReportDialog: () => null,
 }))
 
 import { StudyDetail } from './StudyDetail'
@@ -97,5 +117,39 @@ describe('StudyDetail device tab', () => {
     renderPage()
 
     expect(screen.queryByRole('tab', { name: 'Dispositivo' })).toBeNull()
+  })
+
+  it('abre la señal a escala clínica 25/20 sin una ventana temporal fija', () => {
+    hooks.study.mockReturnValue({
+      data: { ...study, durationMs: 60_000, status: 'completed' },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+    hooks.ecg.mockReturnValue({
+      data: {
+        sampleRate: 1,
+        durationMs: 60_000,
+        samples: new Float32Array(60),
+        startTimestamp: 1_700_000_000_000,
+        timestampsMs: new Float64Array(60),
+        gapIndices: [],
+        timeline: [],
+        annotations: [],
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    })
+
+    renderPage()
+
+    const viewer = screen.getByTestId('study-ecg-viewer')
+    expect(viewer.getAttribute('data-paper-speed')).toBe('25')
+    expect(viewer.getAttribute('data-amplitude')).toBe('20')
+    expect(viewer.hasAttribute('data-initial-window')).toBe(false)
   })
 })

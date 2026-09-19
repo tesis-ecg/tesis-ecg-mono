@@ -11,6 +11,7 @@ from app.db.models.ecg_batch import ECGBatch
 from app.db.models.ecg_event import ECGEvent
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User
 
@@ -341,3 +342,74 @@ async def list_timeline_segments(
         .order_by(StudyTimelineSegment.ordinal)
     )
     return list(result.scalars().all())
+
+
+async def get_report_draft(
+    db: AsyncSession, study_id: uuid.UUID, *, for_update: bool = False
+) -> StudyClinicalReportDraft | None:
+    statement = select(StudyClinicalReportDraft).where(
+        StudyClinicalReportDraft.study_id == study_id,
+        StudyClinicalReportDraft.deleted_at.is_(None),
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    result = await db.execute(statement)
+    return result.scalar_one_or_none()
+
+
+async def list_clinical_reports(
+    db: AsyncSession, study_id: uuid.UUID
+) -> list[tuple[StudyClinicalReport, User]]:
+    result = await db.execute(
+        select(StudyClinicalReport, User)
+        .join(User, StudyClinicalReport.finalized_by == User.id)
+        .where(
+            StudyClinicalReport.study_id == study_id,
+            StudyClinicalReport.deleted_at.is_(None),
+        )
+        .order_by(StudyClinicalReport.version.desc())
+    )
+    return list(result.tuples().all())
+
+
+async def get_clinical_report(
+    db: AsyncSession, report_id: uuid.UUID, study_id: uuid.UUID
+) -> StudyClinicalReport | None:
+    result = await db.execute(
+        select(StudyClinicalReport).where(
+            StudyClinicalReport.id == report_id,
+            StudyClinicalReport.study_id == study_id,
+            StudyClinicalReport.deleted_at.is_(None),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def next_clinical_report_version(db: AsyncSession, study_id: uuid.UUID) -> int:
+    latest = await db.scalar(
+        select(func.max(StudyClinicalReport.version)).where(
+            StudyClinicalReport.study_id == study_id,
+            StudyClinicalReport.deleted_at.is_(None),
+        )
+    )
+    return int(latest or 0) + 1
+
+
+async def get_responsible_doctor(
+    db: AsyncSession, doctor_id: uuid.UUID
+) -> tuple[Doctor, User] | None:
+    row = (
+        await db.execute(
+            select(Doctor, User)
+            .join(User, Doctor.user_id == User.id)
+            .where(
+                Doctor.id == doctor_id,
+                Doctor.deleted_at.is_(None),
+                User.deleted_at.is_(None),
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    doctor, user = row
+    return doctor, user

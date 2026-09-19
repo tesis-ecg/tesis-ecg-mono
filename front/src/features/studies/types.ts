@@ -95,3 +95,138 @@ export interface StudyPatientReportsResponse {
   /** Cuántos todavía no tienen señal debajo. */
   pendingSignalTotal: number
 }
+
+export interface StudyClinicalReportDraft {
+  studyId: string
+  revision: number
+  indication: string | null
+  medications: string | null
+  referringProfessional: string | null
+  technician: string | null
+  clinicalObservations: string | null
+  conclusion: string | null
+  updatedAt: string | null
+  updatedBy: string | null
+  updatedByName: string | null
+  updatedByRole: string | null
+}
+
+export interface StudyClinicalReportDraftUpdate {
+  revision: number
+  indication: string | null
+  medications: string | null
+  referringProfessional: string | null
+  technician: string | null
+  clinicalObservations: string | null
+  conclusion: string | null
+}
+
+export interface StudyClinicalReportWindowPlan {
+  id: string
+  findingId: string
+  kind: string
+  category: 'clinical' | 'patient_marker'
+  severity: 'low' | 'medium' | 'high' | 'critical'
+  findingStartEpochMs: number
+  findingEndEpochMs: number
+  findingDurationMs: number
+  startEpochMs: number
+  endEpochMs: number
+  blockIndex: number
+  blockCount: number
+  confidenceScore: number | null
+  description: string | null
+  relatedSymptoms: string[]
+}
+
+export interface StudyClinicalReportFindingSummary {
+  kind: string
+  count: number
+  severities: string[]
+  totalDurationMs: number
+  longestDurationMs: number
+  symptomaticCount: number
+}
+
+export interface StudyClinicalReportSnapshot {
+  schemaVersion: number
+  version: number
+  study: {
+    id: string
+    status: PatientStudySessionStatus
+    startedAt: string
+    endedAt: string | null
+    durationMs: number
+    deviceSerial: string
+    sampleRate: number
+    isSimulated: boolean
+  }
+  patient: {
+    id: string
+    fullName: string
+    dni: string
+    birthDate: string | null
+    sex: string
+    medicalRecordNumber: string | null
+  }
+  responsibleDoctor: {
+    fullName: string | null
+    specialty: string | null
+    licenseNumber: string | null
+  }
+  clinicalContext: StudyClinicalReportDraft
+  quality: {
+    recordedMs: number
+    wallClockMs: number
+    interruptionMs: number
+    coveragePercent: number
+    segments: number
+    cuts: number
+    lastDataReceivedAt: string | null
+    synchronizationSources: string[]
+    maxSynchronizationUncertaintyMs: number
+  }
+  findings: StudyClinicalReportFindingSummary[]
+  technicalEvents: StudyClinicalReportFindingSummary[]
+  patientReports: Array<{
+    id: string
+    occurredAt: string
+    symptoms: string[]
+    symptomsOther: string | null
+    activity: string
+    activityOther: string | null
+    notes: string | null
+  }>
+  selectedWindows: StudyClinicalReportWindowPlan[]
+}
+
+export interface StudyClinicalReportPreview {
+  draft: StudyClinicalReportDraft
+  snapshot: StudyClinicalReportSnapshot
+  snapshotHash: string
+  windows: StudyClinicalReportWindowPlan[]
+  nextVersion: number
+  canGenerateDraft: boolean
+  canFinalize: boolean
+  blockingReasons: string[]
+  issues: StudyClinicalReportIssue[]
+}
+
+export interface StudyClinicalReportIssue {
+  code: string
+  message: string
+  severity: 'warning' | 'blocking'
+}
+
+export interface StudyClinicalReportVersion {
+  id: string
+  studyId: string
+  version: number
+  finalizedAt: string
+  finalizedBy: string
+  finalizedByName: string
+  finalizedByRole: string
+  pdfByteLength: number
+  pdfSha256: string
+  snapshotSha256: string
+}

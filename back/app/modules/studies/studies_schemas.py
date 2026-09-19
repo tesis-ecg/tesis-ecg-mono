@@ -2,7 +2,7 @@ import enum
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -251,6 +251,102 @@ class StudyEcgReportWindowOut(CamelModel):
 
 class StudyEcgReportWindowsResponse(CamelModel):
     windows: list[StudyEcgReportWindowOut]
+
+
+class StudyClinicalReportDraftUpdate(CamelModel):
+    revision: int = Field(ge=0)
+    indication: str | None = Field(default=None, max_length=4000)
+    medications: str | None = Field(default=None, max_length=8000)
+    referringProfessional: str | None = Field(default=None, max_length=240)
+    technician: str | None = Field(default=None, max_length=240)
+    clinicalObservations: str | None = Field(default=None, max_length=8000)
+    conclusion: str | None = Field(default=None, max_length=12000)
+
+
+class StudyClinicalReportDraftOut(CamelModel):
+    studyId: uuid.UUID
+    revision: int
+    indication: str | None
+    medications: str | None
+    referringProfessional: str | None
+    technician: str | None
+    clinicalObservations: str | None
+    conclusion: str | None
+    updatedAt: datetime | None
+    updatedBy: uuid.UUID | None
+    updatedByName: str | None
+    updatedByRole: str | None
+
+
+class StudyClinicalReportWindowPlanOut(CamelModel):
+    id: str
+    findingId: uuid.UUID
+    kind: str
+    category: Literal["clinical", "patient_marker"]
+    severity: Literal["low", "medium", "high", "critical"]
+    findingStartEpochMs: int
+    findingEndEpochMs: int
+    findingDurationMs: int
+    startEpochMs: int
+    endEpochMs: int
+    blockIndex: int
+    blockCount: int
+    confidenceScore: float | None
+    description: str | None
+    relatedSymptoms: list[str]
+
+
+class StudyClinicalReportIssueOut(CamelModel):
+    code: str
+    message: str
+    severity: Literal["warning", "blocking"]
+
+
+class StudyClinicalReportPreviewOut(CamelModel):
+    draft: StudyClinicalReportDraftOut
+    snapshot: dict[str, Any]
+    snapshotHash: str
+    windows: list[StudyClinicalReportWindowPlanOut]
+    nextVersion: int
+    canGenerateDraft: bool
+    canFinalize: bool
+    blockingReasons: list[str]
+    issues: list[StudyClinicalReportIssueOut]
+
+
+class StudyClinicalReportVersionOut(CamelModel):
+    id: uuid.UUID
+    studyId: uuid.UUID
+    version: int
+    finalizedAt: datetime
+    finalizedBy: uuid.UUID
+    finalizedByName: str
+    finalizedByRole: str
+    pdfByteLength: int
+    pdfSha256: str
+    snapshotSha256: str
+
+
+class StudyClinicalReportVersionsOut(CamelModel):
+    items: list[StudyClinicalReportVersionOut]
+
+
+@dataclass(frozen=True)
+class StudyClinicalReportDraftInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID
+    data: StudyClinicalReportDraftUpdate
+
+
+@dataclass(frozen=True)
+class StudyClinicalReportFinalizeInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID
+    draft_revision: int
+    snapshot_hash: str
+    pdf: bytes
 
 
 class SimulatedAnomalyType(enum.StrEnum):

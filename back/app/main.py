@@ -1,5 +1,6 @@
 import asyncio
 import hmac
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -18,6 +19,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from app.core.config import settings as _settings
 from app.core.logging import setup_logging
+from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
 from app.db.session import engine
 from app.modules.alerts import router as alerts_router
 from app.modules.auth import router as auth_router
@@ -95,10 +97,15 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # navegador —, así que sin la excepción todo POST del paciente daría 403 en
 # preview y producción.
 _ORIGIN_EXEMPT_PREFIXES = ("/ingest/", "/mobile/")
+_CLINICAL_REPORT_FINALIZE_PATH = re.compile(r"^/studies/[^/]+/clinical-report/finalize$")
 
 
 def _is_origin_exempt(path: str) -> bool:
     return path.startswith(_ORIGIN_EXEMPT_PREFIXES)
+
+
+def _is_clinical_report_finalize(path: str) -> bool:
+    return _CLINICAL_REPORT_FINALIZE_PATH.fullmatch(path) is not None
 
 
 @app.middleware("http")
@@ -132,6 +139,39 @@ async def request_security_and_logging(
             },
             headers={"X-Request-ID": request_id},
         )
+
+    # FastAPI materializa `Body(..., bytes)` antes de entrar al handler. Este
+    # endpoint sólo recibe un ArrayBuffer generado por el portal, por lo que
+    # exigir Content-Length evita bufferizar una carga chunked o demasiado
+    # grande antes de que el servicio pueda responder 413.
+    if request.method == "POST" and _is_clinical_report_finalize(request.url.path):
+        content_length = request.headers.get("content-length")
+        try:
+            declared_size = int(content_length) if content_length is not None else None
+        except ValueError:
+            declared_size = None
+        if declared_size is None or declared_size < 0:
+            return JSONResponse(
+                status_code=411,
+                content={
+                    "code": "CONTENT_LENGTH_REQUIRED",
+                    "message": "El informe debe indicar el tamaño del PDF.",
+                    "fields": None,
+                    "requestId": request_id,
+                },
+                headers={"X-Request-ID": request_id},
+            )
+        if declared_size > MAX_CLINICAL_REPORT_PDF_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "code": "REPORT_TOO_LARGE",
+                    "message": "El PDF supera el límite de 20 MB.",
+                    "fields": None,
+                    "requestId": request_id,
+                },
+                headers={"X-Request-ID": request_id},
+            )
 
     started_at = time.perf_counter()
     response = await call_next(request)

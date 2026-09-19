@@ -1,16 +1,19 @@
 import asyncio
+import hashlib
+import json
 import math
 import struct
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import structlog
 from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
 from app.core.s3 import (
     build_presigned_url as _build_presigned_ecg_url,
 )
@@ -24,7 +27,9 @@ from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.patient_report import PatientReport
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment
+from app.db.models.user import User
 from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.patient_app import patient_app_repository as patient_app_repo
@@ -38,6 +43,14 @@ from app.modules.studies.studies_schemas import (
     SimulateAnomalyInput,
     SimulateAnomalyOut,
     SimulatedAnomalyType,
+    StudyClinicalReportDraftInput,
+    StudyClinicalReportDraftOut,
+    StudyClinicalReportFinalizeInput,
+    StudyClinicalReportIssueOut,
+    StudyClinicalReportPreviewOut,
+    StudyClinicalReportVersionOut,
+    StudyClinicalReportVersionsOut,
+    StudyClinicalReportWindowPlanOut,
     StudyDetailOut,
     StudyEcgAnnotationOut,
     StudyEcgLevelChunkOut,
@@ -1271,3 +1284,544 @@ async def list_study_patient_reports(
             )
         )
     return StudyPatientReportsResponse(items=items, total=len(items), pendingSignalTotal=pending)
+
+
+# --------------------------------------------------------------------------- #
+# Informe clínico versionado
+# --------------------------------------------------------------------------- #
+
+
+def _clean_report_text(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return cleaned or None
+
+
+def _draft_out(
+    study_id: uuid.UUID,
+    draft: StudyClinicalReportDraft | None,
+    updated_by: User | None = None,
+) -> StudyClinicalReportDraftOut:
+    if draft is None:
+        return StudyClinicalReportDraftOut(
+            studyId=study_id,
+            revision=0,
+            indication=None,
+            medications=None,
+            referringProfessional=None,
+            technician=None,
+            clinicalObservations=None,
+            conclusion=None,
+            updatedAt=None,
+            updatedBy=None,
+            updatedByName=None,
+            updatedByRole=None,
+        )
+    return StudyClinicalReportDraftOut(
+        studyId=study_id,
+        revision=draft.revision,
+        indication=draft.indication,
+        medications=draft.medications,
+        referringProfessional=draft.referring_professional,
+        technician=draft.technician,
+        clinicalObservations=draft.clinical_observations,
+        conclusion=draft.conclusion,
+        updatedAt=draft.updated_at,
+        updatedBy=draft.updated_by,
+        updatedByName=updated_by.full_name if updated_by else None,
+        updatedByRole=updated_by.role.value if updated_by else None,
+    )
+
+
+def _annotation_duration_ms(annotation: StudyEcgAnnotationOut) -> int:
+    return max(0, annotation.endEpochMs - annotation.startEpochMs)
+
+
+def _selected_report_findings(
+    annotations: list[StudyEcgAnnotationOut],
+) -> list[StudyEcgAnnotationOut]:
+    symptom_linked_ids = {
+        annotation.linkedAnnotationId
+        for annotation in annotations
+        if annotation.linkedAnnotationId is not None
+    }
+    eligible = [
+        annotation
+        for annotation in annotations
+        if annotation.category in {"clinical", "patient_marker"}
+        and annotation.linkedAnnotationId is None
+    ]
+    grouped: dict[str, list[StudyEcgAnnotationOut]] = {}
+    for annotation in eligible:
+        grouped.setdefault(annotation.kind, []).append(annotation)
+
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    selected: list[StudyEcgAnnotationOut] = []
+    for kind in sorted(grouped):
+        ranked = sorted(
+            grouped[kind],
+            key=lambda item: (
+                -(item.id in symptom_linked_ids),
+                -severity_rank[item.severity],
+                -_annotation_duration_ms(item),
+                -(item.confidenceScore if item.confidenceScore is not None else -1),
+                item.startEpochMs,
+                str(item.id),
+            ),
+        )
+        selected.extend(ranked[:3])
+    return selected
+
+
+def _report_window_ranges(annotation: StudyEcgAnnotationOut) -> list[tuple[int, int]]:
+    start = annotation.startEpochMs
+    end = max(annotation.endEpochMs, start)
+    duration = end - start
+    if duration <= 0:
+        return [(max(0, start - 500), start + 500)]
+    if duration <= 240_000:
+        return [(cursor, min(cursor + 60_000, end)) for cursor in range(start, end, 60_000)]
+
+    latest = end - 60_000
+    starts = [start, start + duration // 3, start + (duration * 2) // 3, latest]
+    normalized: list[int] = []
+    for value in starts:
+        value = min(max(value, start), latest)
+        if value not in normalized:
+            normalized.append(value)
+    return [(value, value + 60_000) for value in normalized]
+
+
+def _report_window_plans(
+    annotations: list[StudyEcgAnnotationOut],
+) -> list[StudyClinicalReportWindowPlanOut]:
+    plans: list[StudyClinicalReportWindowPlanOut] = []
+    responses: dict[uuid.UUID, list[str]] = {}
+    for annotation in annotations:
+        if annotation.linkedAnnotationId is not None and annotation.description:
+            responses.setdefault(annotation.linkedAnnotationId, []).append(annotation.description)
+    for annotation in _selected_report_findings(annotations):
+        ranges = _report_window_ranges(annotation)
+        for index, (start, end) in enumerate(ranges, start=1):
+            plans.append(
+                StudyClinicalReportWindowPlanOut(
+                    id=f"finding:{annotation.id}:{index}",
+                    findingId=annotation.id,
+                    kind=annotation.kind,
+                    category=cast(Literal["clinical", "patient_marker"], annotation.category),
+                    severity=annotation.severity,
+                    findingStartEpochMs=annotation.startEpochMs,
+                    findingEndEpochMs=annotation.endEpochMs,
+                    findingDurationMs=_annotation_duration_ms(annotation),
+                    startEpochMs=start,
+                    endEpochMs=end,
+                    blockIndex=index,
+                    blockCount=len(ranges),
+                    confidenceScore=annotation.confidenceScore,
+                    description=annotation.description,
+                    relatedSymptoms=responses.get(annotation.id, []),
+                )
+            )
+    return plans
+
+
+def _summarize_annotations(
+    annotations: list[StudyEcgAnnotationOut], categories: set[str]
+) -> list[dict[str, Any]]:
+    symptom_linked_ids = {
+        item.linkedAnnotationId for item in annotations if item.linkedAnnotationId is not None
+    }
+    grouped: dict[str, list[StudyEcgAnnotationOut]] = {}
+    for item in annotations:
+        if item.category in categories and item.linkedAnnotationId is None:
+            grouped.setdefault(item.kind, []).append(item)
+    return [
+        {
+            "kind": kind,
+            "count": len(items),
+            "severities": sorted({item.severity for item in items}),
+            "totalDurationMs": sum(_annotation_duration_ms(item) for item in items),
+            "longestDurationMs": max((_annotation_duration_ms(item) for item in items), default=0),
+            "symptomaticCount": sum(item.id in symptom_linked_ids for item in items),
+        }
+        for kind, items in sorted(grouped.items())
+    ]
+
+
+def _snapshot_hash(snapshot: dict[str, Any]) -> str:
+    canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def _clinical_report_snapshot(
+    db: AsyncSession,
+    study: Study,
+    patient: Patient,
+    device: Device,
+    draft: StudyClinicalReportDraft | None,
+    version: int,
+    last_data_received_at: datetime | None,
+) -> tuple[
+    dict[str, Any],
+    list[StudyClinicalReportWindowPlanOut],
+    list[StudyClinicalReportIssueOut],
+]:
+    timeline = await repo.list_timeline_segments(db, study.id)
+    reports = await patient_app_repo.list_reports_for_study(db, study.id)
+    annotations = _study_annotations(
+        study,
+        await repo.list_ecg_events(db, study.id),
+        reports,
+        _wall_clock_resolver(study, timeline),
+    )
+    windows = _report_window_plans(annotations)
+    doctor_info = await repo.get_responsible_doctor(db, patient.doctor_id)
+    doctor, doctor_user = doctor_info if doctor_info is not None else (None, None)
+    updated_by = await auth_repo.get_user_by_id(db, draft.updated_by) if draft else None
+    draft_out = _draft_out(study.id, draft, updated_by)
+    recorded_ms = round(_recorded_ms(study))
+    wall_ms = _duration_ms(study)
+    interruption_ms = max(0, wall_ms - recorded_ms)
+
+    snapshot: dict[str, Any] = {
+        "schemaVersion": 1,
+        "version": version,
+        "study": {
+            "id": str(study.id),
+            "status": study.status.value,
+            "startedAt": study.started_at.isoformat(),
+            "endedAt": study.ended_at.isoformat() if study.ended_at else None,
+            "durationMs": wall_ms,
+            "deviceSerial": device.serial_number,
+            "sampleRate": study.sample_rate,
+            "isSimulated": study.is_simulated,
+        },
+        "patient": {
+            "id": str(patient.id),
+            "fullName": f"{patient.first_name} {patient.last_name}".strip(),
+            "dni": patient.dni,
+            "birthDate": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+            "sex": patient.sex.value,
+            "medicalRecordNumber": patient.medical_record_num,
+        },
+        "responsibleDoctor": {
+            "fullName": doctor_user.full_name if doctor_user else None,
+            "specialty": doctor.specialty if doctor else None,
+            "licenseNumber": doctor.license_number if doctor else None,
+        },
+        "clinicalContext": draft_out.model_dump(mode="json"),
+        "quality": {
+            "recordedMs": recorded_ms,
+            "wallClockMs": wall_ms,
+            "interruptionMs": interruption_ms,
+            "coveragePercent": round(min(100, recorded_ms / wall_ms * 100), 1) if wall_ms else 0,
+            "segments": len(timeline) or 1,
+            "cuts": max(0, len(timeline) - 1),
+            "lastDataReceivedAt": (
+                last_data_received_at.isoformat() if last_data_received_at else None
+            ),
+            "synchronizationSources": sorted({item.anchor_source.value for item in timeline}),
+            "maxSynchronizationUncertaintyMs": max(
+                (item.anchor_uncertainty_ms or 0 for item in timeline), default=0
+            ),
+        },
+        "findings": _summarize_annotations(annotations, {"clinical", "patient_marker"}),
+        "technicalEvents": _summarize_annotations(annotations, {"signal_quality", "technical"}),
+        "patientReports": [
+            {
+                "id": str(report.id),
+                "occurredAt": report.occurred_at.isoformat(),
+                "symptoms": [symptom_label(item) for item in report.symptoms or []],
+                "symptomsOther": report.symptoms_other,
+                "activity": activity_label(report.activity),
+                "activityOther": report.activity_other,
+                "notes": report.notes,
+            }
+            for report in reports
+        ],
+        "selectedWindows": [window.model_dump(mode="json") for window in windows],
+    }
+    issues: list[StudyClinicalReportIssueOut] = []
+    if study.status is not StudyStatus.COMPLETED:
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="STUDY_NOT_COMPLETED",
+                message="El estudio debe estar completado para generar una versión final.",
+                severity="blocking",
+            )
+        )
+    if study.is_simulated:
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="SIMULATED_STUDY",
+                message=(
+                    "La señal fue generada con un chaleco simulado; "
+                    "verificá su uso antes de emitirla."
+                ),
+                severity="warning",
+            )
+        )
+    if not _clean_report_text(draft_out.indication):
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="MISSING_INDICATION",
+                message="Completá la indicación del estudio para generar una versión final.",
+                severity="blocking",
+            )
+        )
+    if not _clean_report_text(draft_out.conclusion):
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="MISSING_CONCLUSION",
+                message="Completá la conclusión clínica para generar una versión final.",
+                severity="blocking",
+            )
+        )
+    has_raw = study.ecg_s3_key is not None or bool(study.ecg_segments)
+    if study.samples_count <= 0 or not has_raw:
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="MISSING_RAW_SIGNAL",
+                message=(
+                    "El estudio no tiene señal cruda disponible para "
+                    "finalizar las tiras del informe."
+                ),
+                severity="blocking",
+            )
+        )
+    return snapshot, windows, issues
+
+
+async def get_clinical_report_draft(
+    input_data: StudyIdInput, db: AsyncSession
+) -> StudyClinicalReportDraftOut:
+    if await repo.get_detail(db, input_data.study_id, input_data.doctor_id) is None:
+        raise _not_found()
+    draft = await repo.get_report_draft(db, input_data.study_id)
+    updated_by = await auth_repo.get_user_by_id(db, draft.updated_by) if draft else None
+    return _draft_out(input_data.study_id, draft, updated_by)
+
+
+async def update_clinical_report_draft(
+    input_data: StudyClinicalReportDraftInput, db: AsyncSession
+) -> StudyClinicalReportDraftOut:
+    if await repo.get_detail(db, input_data.study_id, input_data.doctor_id) is None:
+        raise _not_found()
+    draft = await repo.get_report_draft(db, input_data.study_id, for_update=True)
+    if draft is None:
+        if input_data.data.revision != 0:
+            raise _report_revision_conflict()
+        draft = StudyClinicalReportDraft(
+            study_id=input_data.study_id,
+            revision=1,
+            updated_by=input_data.actor_id,
+        )
+        db.add(draft)
+    else:
+        if draft.revision != input_data.data.revision:
+            raise _report_revision_conflict()
+        draft.revision += 1
+
+    data = input_data.data
+    draft.indication = _clean_report_text(data.indication)
+    draft.medications = _clean_report_text(data.medications)
+    draft.referring_professional = _clean_report_text(data.referringProfessional)
+    draft.technician = _clean_report_text(data.technician)
+    draft.clinical_observations = _clean_report_text(data.clinicalObservations)
+    draft.conclusion = _clean_report_text(data.conclusion)
+    draft.updated_by = input_data.actor_id
+    await db.flush()
+    await auth_repo.log_audit_event(
+        db,
+        AuditEventType.STUDY_REPORT_DRAFT_UPDATED,
+        user_id=input_data.actor_id,
+        metadata={"target_study_id": str(input_data.study_id), "revision": draft.revision},
+    )
+    await db.commit()
+    await db.refresh(draft)
+    updated_by = await auth_repo.get_user_by_id(db, draft.updated_by)
+    return _draft_out(input_data.study_id, draft, updated_by)
+
+
+def _report_revision_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "REPORT_DRAFT_CONFLICT",
+            "message": "El borrador cambió en otra sesión. Recargalo antes de guardar.",
+        },
+    )
+
+
+async def get_clinical_report_preview(
+    input_data: StudyIdInput, db: AsyncSession
+) -> StudyClinicalReportPreviewOut:
+    result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
+    if result is None:
+        raise _not_found()
+    study, patient, device, _, last_data_received_at = result
+    draft = await repo.get_report_draft(db, study.id)
+    version = await repo.next_clinical_report_version(db, study.id)
+    snapshot, windows, issues = await _clinical_report_snapshot(
+        db, study, patient, device, draft, version, last_data_received_at
+    )
+    blocking = [issue.message for issue in issues if issue.severity == "blocking"]
+    return StudyClinicalReportPreviewOut(
+        draft=_draft_out(
+            study.id,
+            draft,
+            await auth_repo.get_user_by_id(db, draft.updated_by) if draft else None,
+        ),
+        snapshot=snapshot,
+        snapshotHash=_snapshot_hash(snapshot),
+        windows=windows,
+        nextVersion=version,
+        canGenerateDraft=True,
+        canFinalize=not blocking,
+        blockingReasons=blocking,
+        issues=issues,
+    )
+
+
+def _validate_report_pdf(pdf: bytes) -> None:
+    if len(pdf) > MAX_CLINICAL_REPORT_PDF_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"code": "REPORT_TOO_LARGE", "message": "El PDF supera el límite de 20 MB."},
+        )
+    if len(pdf) < 32 or not pdf.startswith(b"%PDF-") or b"%%EOF" not in pdf[-2048:]:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_REPORT_PDF", "message": "El archivo no es un PDF válido."},
+        )
+
+
+async def finalize_clinical_report(
+    input_data: StudyClinicalReportFinalizeInput, db: AsyncSession
+) -> StudyClinicalReportVersionOut:
+    _validate_report_pdf(input_data.pdf)
+    locked = await repo.get_for_update(db, input_data.study_id, input_data.doctor_id)
+    if locked is None:
+        raise _not_found()
+    study, patient = locked
+    detail = await repo.get_detail(db, study.id, input_data.doctor_id)
+    if detail is None:
+        raise _not_found()
+    _, _, device, _, last_data_received_at = detail
+    draft = await repo.get_report_draft(db, study.id, for_update=True)
+    if draft is None or draft.revision != input_data.draft_revision:
+        raise _report_revision_conflict()
+    version = await repo.next_clinical_report_version(db, study.id)
+    snapshot, _, issues = await _clinical_report_snapshot(
+        db, study, patient, device, draft, version, last_data_received_at
+    )
+    snapshot_hash = _snapshot_hash(snapshot)
+    if snapshot_hash != input_data.snapshot_hash:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REPORT_SNAPSHOT_CONFLICT",
+                "message": "El estudio cambió desde la vista previa. Generá el informe nuevamente.",
+            },
+        )
+    blocking = [issue.message for issue in issues if issue.severity == "blocking"]
+    if blocking:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "REPORT_NOT_FINALIZABLE", "message": " ".join(blocking)},
+        )
+
+    actor = await auth_repo.get_user_by_id(db, input_data.actor_id)
+    if actor is None:
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "UNAUTHORIZED", "message": "Sesión inválida."},
+        )
+    now = datetime.now(UTC)
+    report = StudyClinicalReport(
+        study_id=study.id,
+        version=version,
+        snapshot=snapshot,
+        snapshot_sha256=snapshot_hash,
+        pdf_data=input_data.pdf,
+        pdf_sha256=hashlib.sha256(input_data.pdf).hexdigest(),
+        pdf_byte_length=len(input_data.pdf),
+        finalized_by=input_data.actor_id,
+        finalized_at=now,
+    )
+    db.add(report)
+    await db.flush()
+    await auth_repo.log_audit_event(
+        db,
+        AuditEventType.STUDY_REPORT_FINALIZED,
+        user_id=input_data.actor_id,
+        metadata={
+            "target_study_id": str(study.id),
+            "report_id": str(report.id),
+            "version": version,
+            "pdf_sha256": report.pdf_sha256,
+        },
+    )
+    await db.commit()
+    return StudyClinicalReportVersionOut(
+        id=report.id,
+        studyId=study.id,
+        version=version,
+        finalizedAt=now,
+        finalizedBy=actor.id,
+        finalizedByName=actor.full_name,
+        finalizedByRole=actor.role.value,
+        pdfByteLength=report.pdf_byte_length,
+        pdfSha256=report.pdf_sha256,
+        snapshotSha256=report.snapshot_sha256,
+    )
+
+
+async def list_clinical_report_versions(
+    input_data: StudyIdInput, db: AsyncSession
+) -> StudyClinicalReportVersionsOut:
+    if await repo.get_detail(db, input_data.study_id, input_data.doctor_id) is None:
+        raise _not_found()
+    rows = await repo.list_clinical_reports(db, input_data.study_id)
+    return StudyClinicalReportVersionsOut(
+        items=[
+            StudyClinicalReportVersionOut(
+                id=report.id,
+                studyId=report.study_id,
+                version=report.version,
+                finalizedAt=report.finalized_at,
+                finalizedBy=user.id,
+                finalizedByName=user.full_name,
+                finalizedByRole=user.role.value,
+                pdfByteLength=report.pdf_byte_length,
+                pdfSha256=report.pdf_sha256,
+                snapshotSha256=report.snapshot_sha256,
+            )
+            for report, user in rows
+        ]
+    )
+
+
+async def get_clinical_report_pdf(
+    input_data: StudyIdInput, report_id: uuid.UUID, db: AsyncSession
+) -> tuple[bytes, int]:
+    if await repo.get_detail(db, input_data.study_id, input_data.doctor_id) is None:
+        raise _not_found()
+    report = await repo.get_clinical_report(db, report_id, input_data.study_id)
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "REPORT_NOT_FOUND", "message": "Informe no encontrado."},
+        )
+    if input_data.actor_id is not None:
+        await auth_repo.log_audit_event(
+            db,
+            AuditEventType.STUDY_REPORT_DOWNLOADED,
+            user_id=input_data.actor_id,
+            metadata={
+                "target_study_id": str(input_data.study_id),
+                "report_id": str(report.id),
+                "version": report.version,
+            },
+        )
+        await db.commit()
+    return report.pdf_data, report.version

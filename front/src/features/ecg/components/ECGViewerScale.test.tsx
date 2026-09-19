@@ -211,6 +211,36 @@ describe('ECGViewer — escala clínica', () => {
     expect(plot().scales.x).toEqual({ min: 20, max: 40 })
   })
 
+  it('usa el cursor como ancla al restaurar el zoom en un contenedor más ancho', () => {
+    uPlotMock.widthAtConstruction = 1_000
+    const startTimestamp = 1_700_000_000_000
+    render(
+      <ECGViewer
+        signal={signal(120)}
+        initialViewport={{
+          startMs: startTimestamp + 20_000,
+          endMs: startTimestamp + 30_000,
+          millisecondsPerPixel: 20,
+          isClinicalScale: false,
+        }}
+        initialCursorMs={startTimestamp + 22_000}
+      />,
+    )
+
+    // El cursor estaba al 20% del viewport. Al duplicarse el ancho se conserva
+    // la densidad (20 s visibles) y sigue al 20%: 22 - 20% de 20 = 18.
+    expect(plot().scales.x).toEqual({ min: 18, max: 38 })
+  })
+
+  it('la escala clínica inicial queda anclada al final y el cursor en la última muestra', () => {
+    const onCursorChange = vi.fn()
+    const startTimestamp = 1_700_000_000_000
+    render(<ECGViewer signal={signal(60)} amplitude={20} onCursorChange={onCursorChange} />)
+
+    expect(plot().scales.x).toEqual({ min: 50, max: 60 })
+    expect(onCursorChange).toHaveBeenLastCalledWith(startTimestamp + 59_000)
+  })
+
   it('agrandar el contenedor muestra más señal, no la misma estirada', () => {
     render(<ECGViewer signal={signal()} />)
     const before = plot().scales.x

@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.study import StudyStatus
@@ -11,6 +11,13 @@ from app.modules.studies.studies_schemas import (
     SimulateAnomalyInput,
     SimulateAnomalyOut,
     SimulateAnomalyRequest,
+    StudyClinicalReportDraftInput,
+    StudyClinicalReportDraftOut,
+    StudyClinicalReportDraftUpdate,
+    StudyClinicalReportFinalizeInput,
+    StudyClinicalReportPreviewOut,
+    StudyClinicalReportVersionOut,
+    StudyClinicalReportVersionsOut,
     StudyDetailOut,
     StudyEcgManifestOut,
     StudyEcgOut,
@@ -95,6 +102,107 @@ async def cancel_study(
         ),
         db,
         background,
+    )
+
+
+@router.get("/{study_id}/clinical-report/draft", response_model=StudyClinicalReportDraftOut)
+async def get_clinical_report_draft(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportDraftOut:
+    return await service.get_clinical_report_draft(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.put("/{study_id}/clinical-report/draft", response_model=StudyClinicalReportDraftOut)
+async def update_clinical_report_draft(
+    study_id: uuid.UUID,
+    data: StudyClinicalReportDraftUpdate,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportDraftOut:
+    return await service.update_clinical_report_draft(
+        StudyClinicalReportDraftInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+            data=data,
+        ),
+        db,
+    )
+
+
+@router.get("/{study_id}/clinical-report/preview", response_model=StudyClinicalReportPreviewOut)
+async def get_clinical_report_preview(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportPreviewOut:
+    return await service.get_clinical_report_preview(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.post("/{study_id}/clinical-report/finalize", response_model=StudyClinicalReportVersionOut)
+async def finalize_clinical_report(
+    study_id: uuid.UUID,
+    draft_revision: int = Query(alias="draftRevision", ge=1),
+    snapshot_hash: str = Query(alias="snapshotHash", min_length=64, max_length=64),
+    pdf: bytes = Body(media_type="application/pdf"),
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportVersionOut:
+    return await service.finalize_clinical_report(
+        StudyClinicalReportFinalizeInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+            draft_revision=draft_revision,
+            snapshot_hash=snapshot_hash,
+            pdf=pdf,
+        ),
+        db,
+    )
+
+
+@router.get("/{study_id}/clinical-reports", response_model=StudyClinicalReportVersionsOut)
+async def list_clinical_report_versions(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportVersionsOut:
+    return await service.list_clinical_report_versions(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.get("/{study_id}/clinical-reports/{report_id}/pdf")
+async def download_clinical_report(
+    study_id: uuid.UUID,
+    report_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    pdf, version = await service.get_clinical_report_pdf(
+        StudyIdInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+        ),
+        report_id,
+        db,
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="informe-holter-v{version}-{study_id}.pdf"'
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

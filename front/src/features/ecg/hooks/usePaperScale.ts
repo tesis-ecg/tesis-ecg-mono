@@ -17,6 +17,11 @@ export interface PaperScaleState {
   setOnScale: (value: boolean) => void
 }
 
+interface PaperScaleInitialValues {
+  paperSpeed?: PaperSpeed
+  amplitude?: Amplitude
+}
+
 /**
  * Calibración del visor, compartida por el gráfico y su barra de controles.
  *
@@ -24,14 +29,18 @@ export interface PaperScaleState {
  * un hermano del gráfico, no un hijo: el mismo estado lo consumen el visor de la
  * solapa, el de pantalla completa y el informe imprimible.
  *
- * El arranque es siempre 25 mm/s · 10 mm/mV —el estándar de diagnóstico para
- * adultos— y no lo último que el usuario eligió. Una preferencia recordada haría
- * que un médico abriera un estudio a 50 mm/s sin haberlo pedido, y la escala es
- * justamente lo que no puede sorprender.
+ * Por defecto arranca en 25 mm/s · 10 mm/mV —el estándar de diagnóstico para
+ * adultos—, aunque una pantalla puede declarar otra calibración inicial. Nunca
+ * recuerda la última elección: abrir un estudio con una escala heredada de otra
+ * sesión sería exactamente la sorpresa que esta barra busca evitar.
  */
-export function usePaperScale(): PaperScaleState {
-  const [paperSpeed, setPaperSpeed] = useState<PaperSpeed>(DEFAULT_PAPER_SPEED)
-  const [amplitude, setAmplitude] = useState<Amplitude>(DEFAULT_AMPLITUDE)
+export function usePaperScale(initialValues: PaperScaleInitialValues = {}): PaperScaleState {
+  const [paperSpeed, setPaperSpeed] = useState<PaperSpeed>(
+    initialValues.paperSpeed ?? DEFAULT_PAPER_SPEED,
+  )
+  const [amplitude, setAmplitude] = useState<Amplitude>(
+    initialValues.amplitude ?? DEFAULT_AMPLITUDE,
+  )
   const [onScale, setOnScale] = useState(true)
 
   // Cambiar la calibración devuelve el trazado a la escala por definición: el
