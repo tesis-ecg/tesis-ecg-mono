@@ -18,6 +18,14 @@ export type AlertKind =
   | 'noise'
   | 'symptom_marker'
   | 'other'
+  | 'vest_misplaced'
+  | 'lead_off'
+  | 'internal_gap'
+  | 'patient_report'
+  | 'backlog_overflow'
+  | 'corrupt_frame'
+  | 'device_fault'
+  | 'study_seq_rewind'
 
 export interface Alert {
   id: string

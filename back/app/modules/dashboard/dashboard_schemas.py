@@ -93,7 +93,7 @@ class DashboardSeverityBucketOut(CamelModel):
 class DashboardFleetOut(CamelModel):
     """Salud de la flota: cuántos chalecos asignados están transmitiendo.
 
-    `transmitting` usa el mismo corte de `dashboard_stale_hours` que el watchdog,
+    `transmitting` usa el mismo corte de `device_stale_hours` que el watchdog,
     así que los dos widgets no pueden contradecirse.
     """
 

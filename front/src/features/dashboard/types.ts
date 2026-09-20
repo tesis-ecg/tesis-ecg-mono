@@ -33,6 +33,17 @@ export type AlertKind =
   | 'symptom_marker'
   | 'other'
   | 'device_offline'
+  // Los que el backend ya producía y esta unión no cubría, más los nuevos del
+  // diagnóstico del equipo. Un `kind` que falte acá no rompe nada visible —
+  // `KIND_LABEL` tiene fallback— pero deja el tipo mintiendo.
+  | 'vest_misplaced'
+  | 'lead_off'
+  | 'internal_gap'
+  | 'patient_report'
+  | 'backlog_overflow'
+  | 'corrupt_frame'
+  | 'device_fault'
+  | 'study_seq_rewind'
 
 export interface DashboardAlert {
   id: string

@@ -1,4 +1,4 @@
-import { Activity, ArrowLeft, FileSearch, HeartPulse, NotebookPen } from 'lucide-react'
+import { Activity, ArrowLeft, FileSearch, FileText, HeartPulse, NotebookPen } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -12,14 +12,18 @@ import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
 import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
+import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
+import { ECGClinicalReportDialog } from '@/features/ecg/components/ECGClinicalReportDialog'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
+import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 import { PatientReportsTable } from '@/features/studies/components/PatientReportsTable'
 import { StudyBreadcrumb } from '@/features/studies/components/StudyBreadcrumb'
 import { StudyDeviceTab } from '@/features/studies/components/StudyDeviceTab'
 import { StudyHeader } from '@/features/studies/components/StudyHeader'
+import { StudyClinicalReportTab } from '@/features/studies/components/StudyClinicalReportTab'
 import { useStudy } from '@/features/studies/hooks/useStudy'
 import { useStudyPatientReports } from '@/features/studies/hooks/useStudyPatientReports'
 import type { StudyPatientReport } from '@/features/studies/types'
@@ -44,9 +48,18 @@ export function StudyDetail() {
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
+  const [cursorMs, setCursorMs] = useState<number | null>(null)
   const [fullscreenOpen, setFullscreenOpen] = useState(false)
+  const [fullscreenSnapshot, setFullscreenSnapshot] = useState<{
+    viewport: ECGViewportChange | null
+    cursorMs: number | null
+  } | null>(null)
+  const [printOpen, setPrintOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
-  const [tab, setTab] = useState<'senal' | 'registros' | 'dispositivo'>('senal')
+  // La calibración vive acá y no adentro del visor: la comparten el gráfico de
+  // la solapa, el de pantalla completa y el informe imprimible.
+  const scale = usePaperScale({ paperSpeed: 25, amplitude: 20 })
+  const [tab, setTab] = useState<'senal' | 'registros' | 'informe' | 'dispositivo'>('senal')
 
   // 404 → estado dedicado.
   if (studyQ.isError && isApiError(studyQ.error) && studyQ.error.code === 'NOT_FOUND') {
@@ -116,18 +129,38 @@ export function StudyDetail() {
     if (!viewport || !ecgQ.data) return
     const span = viewport.endMs - viewport.startMs
     const center = (viewport.startMs + viewport.endMs) / 2
-    const fullSpan = (ecgQ.data.samples.length / ecgQ.data.sampleRate) * 1000
+    // `durationMs` y no `samples.length / sampleRate`: el visor clampea contra el
+    // primero, y con huecos en la grabación los dos números difieren — el botón
+    // se quedaba corto y no llegaba al final del estudio.
+    const fullSpan = ecgQ.data.durationMs
     const newSpan = Math.min(fullSpan, span * 2)
     viewerRef.current?.zoomToRange(center - newSpan / 2, center + newSpan / 2)
   }
-  const handleFullscreen = () => setFullscreenOpen(true)
-  const handleFullscreenClose = (lastViewport: ECGViewportChange | null) => {
+  const handleFullscreen = () => {
+    setFullscreenSnapshot({ viewport, cursorMs })
+    setFullscreenOpen(true)
+  }
+  const handleFullscreenClose = (
+    lastViewport: ECGViewportChange | null,
+    lastCursorMs: number | null,
+  ) => {
+    // El cursor es el ancla con la que `restoreViewport` conserva su posición
+    // relativa al volver a un contenedor más angosto. Por eso se restaura antes
+    // que el rango, aunque visualmente ambas operaciones ocurran en el mismo frame.
+    if (lastCursorMs !== null) {
+      setCursorMs(lastCursorMs)
+      viewerRef.current?.setCursor(lastCursorMs)
+    }
     if (lastViewport) {
-      viewerRef.current?.zoomToRange(lastViewport.startMs, lastViewport.endMs)
+      viewerRef.current?.restoreViewport(lastViewport)
     }
   }
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
+  }
+  const handleResetScale = () => {
+    viewerRef.current?.resetScale()
+    scale.setOnScale(true)
   }
   const handleAnnotationSelect = (annotation: ECGAnnotation) => {
     if (!ecgQ.data) return
@@ -171,6 +204,10 @@ export function StudyDetail() {
                 {reportsQ.data.total}
               </span>
             )}
+          </TabsTrigger>
+          <TabsTrigger value="informe">
+            <FileText className="size-4" aria-hidden />
+            Informe clínico
           </TabsTrigger>
           {study.canAccessDevice && (
             <TabsTrigger value="dispositivo">
@@ -236,6 +273,14 @@ export function StudyDetail() {
                       onFullscreen={handleFullscreen}
                     />
                   </div>
+                  <ECGPaperControls
+                    paperSpeed={scale.paperSpeed}
+                    amplitude={scale.amplitude}
+                    onPaperSpeedChange={scale.setPaperSpeed}
+                    onAmplitudeChange={scale.setAmplitude}
+                    onScale={scale.onScale}
+                    onResetScale={handleResetScale}
+                  />
                   <ECGMinimap
                     signal={ecgQ.data}
                     viewport={viewport}
@@ -247,7 +292,13 @@ export function StudyDetail() {
                     ref={viewerRef}
                     signal={ecgQ.data}
                     height={400}
+                    paperSpeed={scale.paperSpeed}
+                    amplitude={scale.amplitude}
                     onViewportChange={setViewport}
+                    initialCursorMs={cursorMs ?? undefined}
+                    followLatest={isInProgress}
+                    onCursorChange={setCursorMs}
+                    onScaleMatchChange={scale.setOnScale}
                     selectedAnnotationId={selectedAnnotationId}
                     onAnnotationSelect={handleAnnotationSelect}
                   />
@@ -300,6 +351,10 @@ export function StudyDetail() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="informe">
+          <StudyClinicalReportTab study={study} onPreview={() => setPrintOpen(true)} />
+        </TabsContent>
+
         {study.canAccessDevice && (
           <TabsContent value="dispositivo">
             <StudyDeviceTab deviceId={study.deviceId} />
@@ -308,16 +363,24 @@ export function StudyDetail() {
       </Tabs>
 
       {ecgQ.data && (
-        <ECGFullscreenDialog
-          signal={ecgQ.data}
-          initialViewport={viewport}
-          open={fullscreenOpen}
-          onOpenChange={setFullscreenOpen}
-          onClose={handleFullscreenClose}
-          selectedAnnotationId={selectedAnnotationId}
-          onAnnotationSelect={setSelectedAnnotationId}
-        />
+        <>
+          <ECGFullscreenDialog
+            signal={ecgQ.data}
+            initialViewport={fullscreenSnapshot?.viewport ?? viewport}
+            initialCursorMs={fullscreenSnapshot?.cursorMs ?? cursorMs}
+            open={fullscreenOpen}
+            onOpenChange={setFullscreenOpen}
+            onClose={handleFullscreenClose}
+            paperSpeed={scale.paperSpeed}
+            amplitude={scale.amplitude}
+            onPaperSpeedChange={scale.setPaperSpeed}
+            onAmplitudeChange={scale.setAmplitude}
+            selectedAnnotationId={selectedAnnotationId}
+            onAnnotationSelect={setSelectedAnnotationId}
+          />
+        </>
       )}
+      <ECGClinicalReportDialog open={printOpen} onOpenChange={setPrintOpen} study={study} />
     </div>
   )
 }

@@ -81,15 +81,29 @@ export function ECGMinimap({
       ctx.fillRect(0, 0, cssWidth, height)
 
       const samples = signal.samples
-      if (samples.length === 0) return
-      const samplesPerColumn = Math.max(1, Math.floor(samples.length / cssWidth))
+      if (samples.length === 0 || cssWidth <= 0 || signal.durationMs <= 0) return
+      const columnMins = new Float64Array(cssWidth)
+      const columnMaxs = new Float64Array(cssWidth)
+      columnMins.fill(Infinity)
+      columnMaxs.fill(-Infinity)
       let yMin = Infinity
       let yMax = -Infinity
       for (let i = 0; i < samples.length; i++) {
         const v = samples[i]
+        if (!Number.isFinite(v)) continue
+        const timestamp = signal.timestampsMs[i]
+        const elapsedMs =
+          signal.timestampsMs.length === samples.length && Number.isFinite(timestamp)
+            ? timestamp - signal.startTimestamp
+            : (i / Math.max(samples.length - 1, 1)) * signal.durationMs
+        if (elapsedMs < 0 || elapsedMs > signal.durationMs) continue
+        const col = Math.min(cssWidth - 1, Math.floor((elapsedMs / signal.durationMs) * cssWidth))
+        columnMins[col] = Math.min(columnMins[col], v)
+        columnMaxs[col] = Math.max(columnMaxs[col], v)
         if (v < yMin) yMin = v
         if (v > yMax) yMax = v
       }
+      if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) return
       if (yMin === yMax) {
         yMin -= 1
         yMax += 1
@@ -100,15 +114,8 @@ export function ECGMinimap({
       ctx.lineWidth = 1
       ctx.beginPath()
       for (let col = 0; col < cssWidth; col++) {
-        const start = col * samplesPerColumn
-        const end = Math.min(samples.length, start + samplesPerColumn)
-        let mn = Infinity
-        let mx = -Infinity
-        for (let i = start; i < end; i++) {
-          const v = samples[i]
-          if (v < mn) mn = v
-          if (v > mx) mx = v
-        }
+        const mn = columnMins[col]
+        const mx = columnMaxs[col]
         if (mn === Infinity) continue
         const yTop = 2 + (yMax - mx) * yScale
         const yBot = 2 + (yMax - mn) * yScale

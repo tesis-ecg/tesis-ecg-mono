@@ -8,6 +8,19 @@ import type { ECGSignal, ECGViewerHandle } from '../types'
 
 const uPlotMock = vi.hoisted(() => ({ instances: [] as unknown[] }))
 
+/**
+ * px por milímetro fijos, para que la aritmética de la escala sea exacta.
+ *
+ * jsdom no hace layout, así que `measurePxPerMm` caería en su fallback nominal
+ * (96/25,4 = 3,7795…) y los segundos visibles saldrían con coma. Con 2 px/mm y
+ * los 500 px de ancho del mock, 25 mm/s dan exactamente 10 s de ventana — que es
+ * la tira de papel clínica y lo que estos tests venían asumiendo.
+ */
+vi.mock('../paperScale', async () => {
+  const actual = await vi.importActual<typeof import('../paperScale')>('../paperScale')
+  return { ...actual, measurePxPerMm: () => 2 }
+})
+
 vi.mock('uplot', () => {
   type ScaleHook = (plot: MockUPlot, scaleKey: string) => void
   interface MockOptions {
@@ -16,7 +29,10 @@ vi.mock('uplot', () => {
 
   class MockUPlot {
     readonly over = document.createElement('div')
-    readonly scales = { x: { min: null as number | null, max: null as number | null } }
+    readonly scales = {
+      x: { min: null as number | null, max: null as number | null },
+      y: { min: null as number | null, max: null as number | null },
+    }
     private readonly options: MockOptions
 
     constructor(options: MockOptions, _data: unknown, container: HTMLElement) {
@@ -35,6 +51,7 @@ vi.mock('uplot', () => {
 
     setScale(scaleKey: string, limits: { min: number; max: number }) {
       if (scaleKey === 'x') this.scales.x = limits
+      if (scaleKey === 'y') this.scales.y = limits
       for (const hook of this.options.hooks?.setScale ?? []) hook(this, scaleKey)
     }
 
@@ -62,11 +79,23 @@ import { ECGViewer } from './ECGViewer'
 
 beforeEach(() => {
   uPlotMock.instances.length = 0
+  // La spec garantiza un callback inicial por elemento observado, y de eso
+  // depende el encuadre del visor: un doble que no lo dispare no modela un
+  // `ResizeObserver`.
   globalThis.ResizeObserver = class {
-    observe() {}
+    private readonly callback: ResizeObserverCallback
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+    }
+    observe(target: Element) {
+      this.callback(
+        [{ target, contentRect: { width: 500 } } as unknown as ResizeObserverEntry],
+        this as unknown as ResizeObserver,
+      )
+    }
     disconnect() {}
     unobserve() {}
-  }
+  } as unknown as typeof ResizeObserver
   Object.defineProperties(HTMLElement.prototype, {
     setPointerCapture: { configurable: true, value: vi.fn() },
     releasePointerCapture: { configurable: true, value: vi.fn() },

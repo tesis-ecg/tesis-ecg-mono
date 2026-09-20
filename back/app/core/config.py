@@ -84,8 +84,30 @@ class Settings(BaseSettings):
     ingest_timeline_gap_tolerance_ms: int = Field(default=2_000, ge=100, le=600_000)
 
     # Dashboard / watchdog
-    dashboard_stale_hours: int = 10
+    #: Sin noticias del equipo por más de esto: **aviso**.
+    #:
+    #: Una hora son seis ventanas de envío perdidas (el puente despacha cada 10
+    #: min), así que es un corte que no dispara por ruido y avisa temprano.
+    device_stale_hours: int = Field(default=1, ge=1, le=24)
+    #: Sin noticias por más de esto: **crítico, se está por perder registro**.
+    #:
+    #: El número sale de la autonomía offline MEDIDA sobre esta placa, no de la
+    #: documentada. La flash aguanta 9,94 h con la señal de PhysioNet, pero sobre
+    #: el equipo real el ratio de compresión depende de cuánta interferencia de
+    #: red entra, y eso depende de cómo quede puesto el chaleco: 5,1 h con el
+    #: chaleco flojo, 7,1 con gel, 8,6 bien puesto (`INTEGRACION.md` §9.1).
+    #:
+    #: **Se dimensiona contra las 5,1 h**, que es el caso normal de un paciente
+    #: durante 15 días, no el extremo. Cuatro horas dejan ~1 h de margen para
+    #: intervenir antes de que el log circular empiece a pisar señal sin subir.
+    #: El valor anterior era 10 h, o sea que el sistema avisaba DESPUÉS de que ya
+    #: se había perdido registro.
+    device_critical_hours: int = Field(default=4, ge=1, le=24)
     dashboard_low_battery_pct: int = 45
+    #: Ventana de silencio del aviso de falla grave del equipo. Los bits 2, 4 y 6
+    #: de `statusFlags` son ESTADOS: el equipo los repite mientras la condición
+    #: esté, así que sin esto una flash rota alertaría en cada lote.
+    device_fault_debounce_minutes: int = Field(default=60, ge=1, le=1440)
     # Los dos límites alimentan el `default` de un Query(ge=1, le=50), y FastAPI no
     # valida el default: las cotas tienen que estar acá o un .env fuera de rango
     # pasaría sin chistar cuando el FE llama sin query params.
@@ -127,6 +149,11 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET es demasiado predecible para preview/producción")
         if self.is_secure_environment and not self.readiness_token:
             raise ValueError("READINESS_TOKEN es obligatorio en preview/producción")
+        # Los dos umbrales del watchdog son escalones de la misma escala: si el
+        # crítico no queda por encima del aviso, el equipo salta a crítico sin
+        # pasar por el aviso y el escalón temprano deja de existir.
+        if self.device_critical_hours <= self.device_stale_hours:
+            raise ValueError("DEVICE_CRITICAL_HOURS tiene que ser mayor que DEVICE_STALE_HOURS")
         return self
 
 

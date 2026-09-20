@@ -100,6 +100,32 @@ def starts_new_segment(
     return device_gap_ms > settings.ingest_timeline_gap_tolerance_ms
 
 
+def gap_before_ms(last: StudyTimelineSegment | None, batch: ECGBatch, timing: BatchTiming) -> int:
+    """Cuánto tiempo real pasó entre el final del tramo anterior y este lote.
+
+    Es la **duración del hueco**, que es lo que el médico necesita ver cuando el
+    equipo perdió señal (`INTEGRACION.md` §9.1: "registro de cada overflow con su
+    hora de pared"). `starts_new_segment` decide *si* hay hueco; esto mide
+    *cuánto*, con el mismo criterio y por el mismo motivo:
+
+    - **Mismo `bootId`**: se mide en el reloj del equipo, que es exacto y no
+      arrastra la latencia del pedido. Es el caso del overflow del log circular,
+      donde el equipo siguió corriendo y solo se pisó señal.
+    - **`bootId` distinto**: el `millis()` volvió a cero, así que las dos cifras
+      no son comparables y la única referencia es la hora de pared. Trae el ruido
+      de las anclas, pero ante un hueco de horas eso no cambia nada.
+
+    Devuelve 0 si no hay tramo anterior o si el cálculo da negativo (anclas
+    ruidosas que se solapan): un hueco negativo no existe.
+    """
+    if last is None:
+        return 0
+    if last.boot_id == timing.boot_id and last.last_t0_ms is not None:
+        return max(timing.first_t0_ms - t0_at(last, last.end_epoch_ms), 0)
+    actual_start_ms = (batch.epoch_anchor_ms or 0) + timing.first_t0_ms
+    return max(actual_start_ms - last.end_epoch_ms, 0)
+
+
 def fit_anchor(anchors: list[tuple[int, int]]) -> tuple[int, int]:
     """Ajusta `epoch = a + (1 + ppm/1e6)·t0` sobre las anclas de un mismo arranque.
 

@@ -256,3 +256,50 @@ async def test_una_home_vacia_no_rompe_los_graficos(
     assert activity["fleet"] == {"assigned": 0, "transmitting": 0}
     assert activity["alertsTrend"] == {"current": 0, "previous": 0}
     assert all(item["count"] == 0 for item in activity["pendingBySeverity"])
+
+
+async def test_el_equipo_callado_escala_de_aviso_a_critico(
+    db: Any, as_user: Any, make_doctor: Any, make_patient: Any, make_device: Any
+) -> None:
+    """Dos escalones, dimensionados contra las 5,1 h medidas (`INTEGRACION.md` §9.1).
+
+    El umbral único de 10 h estaba calcado de la autonomía offline de PhysioNet
+    (9,94 h) y por eso no servía: avisaba justo cuando el log circular ya había
+    empezado a pisar señal que nunca se subió. Sobre la placa real, con el
+    chaleco flojo —el caso normal de un paciente— la ventana es de 5,1 h.
+
+    A la hora es un aviso: seis ventanas de envío perdidas, todavía recuperable.
+    A las cuatro es crítico: queda menos de una hora de buffer.
+    """
+    doctor = await make_doctor()
+    warning_patient = await make_patient(doctor)
+    critical_patient = await make_patient(doctor)
+    warning, _ = await make_device(warning_patient, status=DeviceStatus.ASSIGNED)
+    critical, _ = await make_device(critical_patient, status=DeviceStatus.ASSIGNED)
+    now = datetime.now(UTC)
+    warning.last_seen_at = now - timedelta(hours=2)
+    critical.last_seen_at = now - timedelta(hours=6)
+    await db.flush()
+    client: AsyncClient = as_user(await _doctor_user(db, doctor))
+
+    alerts = (await client.get("/dashboard/alerts")).json()
+    by_patient = {item["patientId"]: item for item in alerts if item["kind"] == "device_offline"}
+
+    assert by_patient[str(warning_patient.id)]["severity"] == "medium"
+    assert by_patient[str(critical_patient.id)]["severity"] == "critical"
+
+
+async def test_un_equipo_que_reporto_hace_diez_minutos_no_alerta(
+    db: Any, as_user: Any, make_doctor: Any, make_patient: Any, make_device: Any
+) -> None:
+    """El puente despacha cada 10 min: una ventana sola no es una desconexión."""
+    doctor = await make_doctor()
+    patient = await make_patient(doctor)
+    device, _ = await make_device(patient, status=DeviceStatus.ASSIGNED)
+    device.last_seen_at = datetime.now(UTC) - timedelta(minutes=12)
+    await db.flush()
+    client: AsyncClient = as_user(await _doctor_user(db, doctor))
+
+    alerts = (await client.get("/dashboard/alerts")).json()
+
+    assert [item for item in alerts if item["kind"] == "device_offline"] == []

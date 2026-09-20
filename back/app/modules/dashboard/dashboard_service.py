@@ -40,6 +40,8 @@ from app.modules.dashboard.dashboard_time import dashboard_date, dashboard_day_s
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 _DEVICE_ALERT_SEVERITY = "medium"
+#: Severidad del mismo aviso una vez cruzado `device_critical_hours`.
+_DEVICE_CRITICAL_SEVERITY = "critical"
 
 #: Cuántos días dibuja el gráfico de actividad de la home, y el largo de la
 #: ventana con la que se compara la semana anterior.
@@ -54,7 +56,25 @@ def _patient_name(patient: Patient) -> str:
 
 
 def _stale_before() -> datetime:
-    return datetime.now(UTC) - timedelta(hours=settings.dashboard_stale_hours)
+    """Corte de "hace rato que no manda nada".
+
+    El equipo despacha un lote cada 10 minutos, así que una hora ya son seis
+    ventanas perdidas. El valor anterior (10 h) estaba calcado de la autonomía
+    offline documentada de la flash, y eso lo hacía inútil: avisaba justo cuando
+    el log circular ya había empezado a pisar señal sin subir. Ver
+    `device_critical_hours` en `core/config.py`.
+    """
+    return datetime.now(UTC) - timedelta(hours=settings.device_stale_hours)
+
+
+def _critical_before() -> datetime:
+    """Corte de "se está por perder registro".
+
+    Dimensionado contra las **5,1 h** de autonomía offline medidas sobre esta
+    placa con el chaleco flojo, que es el caso normal de un paciente
+    (`INTEGRACION.md` §9.1) — no contra las 9,94 h de PhysioNet.
+    """
+    return datetime.now(UTC) - timedelta(hours=settings.device_critical_hours)
 
 
 def _duration_ms(study: Study) -> int:
@@ -87,15 +107,27 @@ def _alert_out(
     )
 
 
-def _device_alert_out(device: Device, patient: Patient) -> DashboardAlertOut:
+def _device_alert_out(
+    device: Device, patient: Patient, critical_before: datetime
+) -> DashboardAlertOut:
+    """Alerta sintética de equipo callado, con severidad en dos escalones.
+
+    Pasado `device_critical_hours` la desconexión deja de ser una molestia y pasa
+    a ser pérdida inminente de registro: al equipo le queda menos de una hora de
+    buffer antes de que el log circular empiece a pisar señal que nunca subió
+    (`INTEGRACION.md` §9.1). Que las dos cosas se vieran igual era el problema
+    del umbral único.
+    """
+    last_seen = device.last_seen_at or device.created_at
+    severity = _DEVICE_CRITICAL_SEVERITY if last_seen < critical_before else _DEVICE_ALERT_SEVERITY
     return DashboardAlertOut(
         id=f"device-{device.id}",
         patientId=patient.id,
         patientName=_patient_name(patient),
         kind="device_offline",
-        severity=_DEVICE_ALERT_SEVERITY,
+        severity=severity,
         # detectedAt es requerido por el FE: si el device nunca reportó, cae en created_at.
-        detectedAt=device.last_seen_at or device.created_at,
+        detectedAt=last_seen,
         studyId=None,
     )
 
@@ -158,7 +190,10 @@ async def list_alerts(
         _alert_out(alert, patient, event_type, event_metadata, study_id)
         for alert, patient, event_type, event_metadata, study_id in rows
     ]
-    alerts.extend(_device_alert_out(device, patient) for device, patient in stale_devices)
+    critical_before = _critical_before()
+    alerts.extend(
+        _device_alert_out(device, patient, critical_before) for device, patient in stale_devices
+    )
     # Cada fuente ya viene ordenada y cortada por su propia clave final (el repo
     # ordena por severidad y después por fecha), así que el merge solo intercala.
     # Dos pasadas estables: severidad asc, y dentro de cada severidad detectedAt desc.

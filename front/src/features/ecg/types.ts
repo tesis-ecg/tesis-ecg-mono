@@ -53,7 +53,7 @@ export interface ECGAnnotation {
 export interface ECGSignal {
   /** Frecuencia de muestreo en Hz (típicamente 250 Hz para Holter clínico). */
   sampleRate: number
-  /** Duración del eje visible; excluye intervalos en los que no hubo muestras. */
+  /** Duración del eje de pared; incluye intervalos en los que no hubo muestras. */
   durationMs: number
   /** Muestras del canal único, en mV. */
   samples: Float32Array
@@ -78,6 +78,15 @@ export interface ECGSignal {
   timeline: ECGTimelineSegment[]
   /** Hallazgos y problemas de calidad alineados al mismo eje temporal. */
   annotations: ECGAnnotation[]
+  /** Metadatos de adquisición necesarios para el informe clínico. */
+  metadata?: {
+    formatVersion: number
+    encoding: string
+    sampleCount: number
+    isSimulated: boolean
+    /** Tamaño del bucket de la vista descargada; null si la señal es cruda. */
+    overviewSamplesPerBucket: number | null
+  }
 }
 
 export interface ECGViewerProps {
@@ -85,34 +94,44 @@ export interface ECGViewerProps {
   /** Alto del viewer en píxeles. Default 400. */
   height?: number
   /**
-   * Velocidad de papel clínica en mm/s. Default 25 (estándar para diagnóstico
-   * de adultos). Usado para calcular el aspect ratio horizontal.
+   * Velocidad de barrido en mm/s. Default 25, el estándar de diagnóstico para
+   * adultos. **Decide cuántos segundos entran en el ancho disponible**, así que
+   * agrandar la ventana muestra más señal en vez de estirar la misma.
    */
   paperSpeed?: number
   /**
-   * Amplitud clínica en mm/mV. Default 10 (estándar). Usado para calcular el
-   * aspect ratio vertical.
+   * Ganancia en mm/mV. Default 10, el estándar. Fija el rango vertical: la misma
+   * onda mide lo mismo sin importar qué más haya en la ventana.
    */
   amplitude?: number
-  /**
-   * Ancho del viewport inicial en segundos. Default 10 s — convención clínica
-   * de tira de papel (25 mm/s × 25 cm ≈ 10 s). El viewer arranca mostrando los
-   * últimos `initialWindowSec` segundos de la señal.
-   *
-   * Si `initialViewport` también está provisto, este último tiene precedencia.
-   */
-  initialWindowSec?: number
   /**
    * Viewport inicial absoluto (timestamps en ms epoch). Si se pasa, sobreescribe
    * a `initialWindowSec`. Útil para sincronizar dos instancias del viewer (por
    * ejemplo cuando se abre el viewer en una modal mostrando lo mismo).
    */
   initialViewport?: ECGViewportChange
+  /** Ventana inicial alternativa para vistas de dominio como el estudio. */
+  initialWindowSeconds?: number
+  /** Mantiene el extremo derecho en datos nuevos mientras el médico siga ahí. */
+  followLatest?: boolean
+  /** Cursor inicial absoluto. Por defecto se ubica en la última muestra. */
+  initialCursorMs?: number
   /**
    * Callback opcional disparado cuando cambia el viewport (zoom, pan o llamada
    * a la API imperativa). Útil para sincronizar mini-mapa, panel lateral, etc.
    */
   onViewportChange?: (viewport: ECGViewportChange) => void
+  /** Timestamp bajo la cruz del cursor; permite sincronizar dos viewers. */
+  onCursorChange?: (cursorMs: number) => void
+  /**
+   * Avisa si el rango visible todavía corresponde a `paperSpeed`.
+   *
+   * El zoom libre (Ctrl + rueda, el mini-mapa) sirve para navegar, no para
+   * medir. Quien dibuje el rótulo de la escala necesita saber cuándo dejó de ser
+   * cierto: un cartel que diga "25 mm/s" sobre un trazado que no lo está es peor
+   * que no tener cartel.
+   */
+  onScaleMatchChange?: (matchesScale: boolean) => void
   /** Aviso resaltado en el gráfico y el panel de hallazgos. */
   selectedAnnotationId?: string | null
   /** Selección de una banda directamente sobre el canvas. */
@@ -132,8 +151,14 @@ export interface ECGViewerHandle {
   jumpTo: (timestampMs: number) => void
   /** Ajusta el viewport para mostrar exactamente el rango `[startMs, endMs]`. */
   zoomToRange: (startMs: number, endMs: number) => void
+  /** Restaura viewport, densidad y modo de escala compartidos entre viewers. */
+  restoreViewport: (viewport: ECGViewportChange) => void
   /** Vuelve al rango completo del estudio. */
   resetZoom: () => void
+  /** Vuelve a la escala clínica declarada, conservando dónde está mirando. */
+  resetScale: () => void
+  /** Ubica la cruz del cursor sin modificar el viewport. */
+  setCursor: (timestampMs: number) => void
 }
 
 /**
@@ -146,4 +171,12 @@ export type ECGViewportChange = {
   startMs: number
   /** Timestamp UNIX en ms del último sample visible. */
   endMs: number
+  /**
+   * Densidad horizontal efectiva del viewport. Se comparte al pasar entre el
+   * visor embebido y la pantalla completa para que un zoom libre no cambie por
+   * el solo hecho de cambiar el ancho disponible.
+   */
+  millisecondsPerPixel?: number
+  /** Si el rango representa la escala clínica declarada (mm/s). */
+  isClinicalScale?: boolean
 }

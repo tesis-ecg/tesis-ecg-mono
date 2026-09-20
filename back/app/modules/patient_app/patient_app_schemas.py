@@ -78,7 +78,7 @@ class MobileDeviceOut(CamelModel):
     - ``none``: no tiene chaleco asignado
     - ``never_connected``: asignado pero todavía no se encendió
     - ``recording``: hay un estudio en curso y llegaron datos hace poco
-    - ``stale``: hace más de `dashboard_stale_hours` que no manda nada
+    - ``stale``: hace más de `device_stale_hours` que no manda nada
 
     `vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo
     puede estar grabando y transmitiendo perfecto y no registrar nada igual

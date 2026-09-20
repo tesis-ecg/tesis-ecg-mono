@@ -10,6 +10,7 @@ import uuid
 import pytest
 
 from app.db.models.device import DeviceStatus
+from app.db.models.ecg_batch import ECGBatch
 from tests.frame_builder import corrupt_crc
 from tests.ingest_helpers import INGEST_URL, build_frames, device_headers, post_frames
 
@@ -68,9 +69,17 @@ async def test_ack_stops_at_the_first_gap(client, s3, make_patient, make_device)
     assert body["lastAcceptedSeq"] == 11
 
 
-async def test_ack_is_zero_when_the_gap_is_at_the_start(
-    client, s3, make_patient, make_device
+async def test_a_gap_at_the_start_of_a_batch_is_accepted_and_recorded(
+    client, s3, db, make_patient, make_device
 ) -> None:
+    """El salto hacia adelante se acepta, y el hueco queda contado.
+
+    Es el defecto de `INTEGRACION.md` §4.6, que trabó la ingesta hasta
+    septiembre de 2026. Go-back-N garantiza que la primera trama de un lote es la
+    más vieja sin confirmar: si el equipo manda la 3, es porque la 2 ya no la
+    tiene. Antes se esperaba esa trama 2 para siempre —`framesAccepted: 0` en
+    todos los reintentos— y el estudio dejaba de archivar sin ningún síntoma.
+    """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     frames = build_frames(2000, first_seq=0)
@@ -78,12 +87,33 @@ async def test_ack_is_zero_when_the_gap_is_at_the_start(
     first = (await post_frames(client, device, api_key, frames[:2])).json()
     assert first["framesAccepted"] == 2
 
-    # Se saltea la trama 2 y se manda de la 3 en adelante.
+    # Se saltea la trama 2 y se manda de la 3 en adelante, con el MISMO bootId:
+    # el equipo no se reinició, se le pisó el log circular.
     second = (await post_frames(client, device, api_key, frames[3:5])).json()
 
-    assert second["framesAccepted"] == 0
-    assert second["batchId"] is None
-    assert second["lastAcceptedSeq"] == 1
+    assert second["framesAccepted"] == 2
+    assert second["batchId"] is not None
+    assert second["lastAcceptedSeq"] == 4
+
+    batch = await db.get(ECGBatch, second["batchId"])
+    assert batch is not None
+    # Falta exactamente la trama 2.
+    assert batch.preceding_seq_gap_frames == 1
+
+
+async def test_a_gap_in_the_middle_of_a_batch_still_cuts_the_ack(
+    client, s3, make_patient, make_device
+) -> None:
+    """La regla 1 no cambió: un hueco que el equipo SÍ puede llenar corta ahí."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(2600, first_seq=0)
+
+    # 0, 1, y después 3: la 2 falta en el medio del mismo cuerpo.
+    body = (await post_frames(client, device, api_key, frames[:2] + frames[3:5])).json()
+
+    assert body["framesAccepted"] == 2
+    assert body["lastAcceptedSeq"] == 1
 
 
 async def test_frames_out_of_order_within_a_body_are_not_a_gap(

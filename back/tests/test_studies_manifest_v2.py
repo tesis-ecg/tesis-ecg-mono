@@ -232,6 +232,52 @@ async def test_a_study_without_any_signal_is_404(
     assert response.json()["code"] == "ECG_NOT_FOUND"
 
 
+async def test_report_windows_reads_only_the_requested_raw_range(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    """El PDF pide tiras cortas, no descarga el Holter entero al navegador."""
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = await _manifest(client, study_id)
+    start = manifest["startTimestamp"] + 1_000
+
+    response = await client.post(
+        f"/studies/{study_id}/ecg/report-windows",
+        json={"windows": [{"id": "detail-1", "startEpochMs": start, "endEpochMs": start + 2_000}]},
+    )
+
+    assert response.status_code == 200, response.text
+    window = response.json()["windows"][0]
+    assert window["id"] == "detail-1"
+    assert window["source"] == "raw"
+    assert len(window["samplesMv"]) == len(window["timestampsMs"])
+    assert 900 <= len(window["samplesMv"]) <= 1_100
+
+
+async def test_report_windows_rejects_a_window_longer_than_ten_seconds(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = await _manifest(client, study_id)
+
+    response = await client.post(
+        f"/studies/{study_id}/ecg/report-windows",
+        json={
+            "windows": [
+                {
+                    "id": "too-long",
+                    "startEpochMs": manifest["startTimestamp"],
+                    "endEpochMs": manifest["startTimestamp"] + 10_001,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_WINDOW"
+
+
 async def test_manifest_grows_as_batches_arrive(
     client, s3, db, as_user, make_user, make_patient, make_device
 ) -> None:

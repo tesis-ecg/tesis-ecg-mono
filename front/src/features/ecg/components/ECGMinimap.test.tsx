@@ -31,9 +31,29 @@ beforeEach(() => {
   }
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('ECGMinimap annotations', () => {
+  it('deja vacías las columnas del eje temporal en las que no hubo señal', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(10)
+    const withGap = signal()
+    withGap.samples = Float32Array.from([0, 1, 0.5, 0])
+    withGap.timestampsMs = Float64Array.from([
+      withGap.startTimestamp,
+      withGap.startTimestamp + 1_000,
+      withGap.startTimestamp + 9_000,
+      withGap.startTimestamp + 10_000,
+    ])
+    withGap.gapIndices = [2]
+
+    render(<ECGMinimap signal={withGap} viewport={null} onViewportChange={() => undefined} />)
+
+    expect(canvasContext.moveTo.mock.calls.map(([x]) => x)).toEqual([0.5, 1.5, 9.5])
+  })
+
   it('renderiza un marcador accesible y notifica su selección', () => {
     const onSelect = vi.fn()
     render(

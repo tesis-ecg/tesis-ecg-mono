@@ -22,6 +22,18 @@ import {
 } from '../annotationMeta'
 import { centerRangeAt, layoutVisibleAnnotationLabels } from '../annotationLayout'
 import { drawAnnotationBands, type ECGAnnotationColors } from '../annotationPlugin'
+import { drawPaperGrid, type PaperGridColors } from '../paperGridPlugin'
+import {
+  DEFAULT_AMPLITUDE,
+  DEFAULT_PAPER_SPEED,
+  baselineMv,
+  matchesScale,
+  measurePxPerMm,
+  paperScale,
+  verticalRange,
+  visibleSeconds,
+  type PaperScale,
+} from '../paperScale'
 import type {
   ECGAnnotationSeverity,
   ECGSignal,
@@ -47,6 +59,7 @@ interface EcgTokens {
   bg: string
   fg: string
   alerts: ECGAnnotationColors
+  paperGrid: PaperGridColors
 }
 
 function readEcgTokens(): EcgTokens {
@@ -62,6 +75,10 @@ function readEcgTokens(): EcgTokens {
       medium: readAlertToken(style, 'medium', '#294dec', 'rgba(41, 77, 236, 0.14)'),
       high: readAlertToken(style, 'high', '#b86a16', 'rgba(239, 196, 130, 0.24)'),
       critical: readAlertToken(style, 'critical', '#c53f34', 'rgba(236, 127, 116, 0.22)'),
+    },
+    paperGrid: {
+      minor: style.getPropertyValue('--ecg-grid-minor').trim() || 'rgba(214, 138, 128, 0.35)',
+      major: style.getPropertyValue('--ecg-grid-major').trim() || 'rgba(197, 92, 78, 0.55)',
     },
   }
 }
@@ -99,19 +116,20 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   {
     signal,
     height = 400,
-    paperSpeed: _paperSpeed = 25,
-    amplitude: _amplitude = 10,
-    initialWindowSec = 10,
+    paperSpeed = DEFAULT_PAPER_SPEED,
+    amplitude = DEFAULT_AMPLITUDE,
     initialViewport,
+    initialWindowSeconds,
+    followLatest = false,
+    initialCursorMs,
     onViewportChange,
+    onCursorChange,
+    onScaleMatchChange,
     selectedAnnotationId = null,
     onAnnotationSelect,
   },
   ref,
 ) {
-  void _paperSpeed
-  void _amplitude
-
   const containerRef = useRef<HTMLDivElement | null>(null)
   const labelsOverlayRef = useRef<HTMLDivElement | null>(null)
   const uplotRef = useRef<uPlot | null>(null)
@@ -128,15 +146,25 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // Sobrevive a la recreación de uPlot cuando llega una señal nueva por
   // polling. Es absoluto porque la duración crece y el eje puede tener huecos.
   const preservedViewportRef = useRef<ECGViewportChange | null>(initialViewport ?? null)
+  const followsLatestRef = useRef(followLatest)
+  const isInitializingFrameRef = useRef(false)
   // El último viewport notificado (en segundos), para no disparar el callback
   // con valores idénticos durante interacciones continuas.
   const lastViewportRef = useRef<{ min: number; max: number } | null>(null)
   // Callback estable — guardarlo en ref para que los handlers de eventos no se
   // re-creen en cada render cuando el padre pasa un closure nuevo.
   const onViewportChangeRef = useRef(onViewportChange)
+  const onCursorChangeRef = useRef(onCursorChange)
+  const cursorTimestampRef = useRef<number>(
+    initialCursorMs ?? signal.timestampsMs[signal.timestampsMs.length - 1] ?? signal.startTimestamp,
+  )
+  const hasCursorAnchorRef = useRef(initialCursorMs != null)
   useEffect(() => {
     onViewportChangeRef.current = onViewportChange
   }, [onViewportChange])
+  useEffect(() => {
+    onCursorChangeRef.current = onCursorChange
+  }, [onCursorChange])
   useEffect(() => {
     onAnnotationSelectRef.current = onAnnotationSelect
   }, [onAnnotationSelect])
@@ -144,6 +172,25 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     selectedAnnotationIdRef.current = selectedAnnotationId
     uplotRef.current?.redraw()
   }, [selectedAnnotationId])
+
+  // --- Escala clínica ------------------------------------------------------ #
+  //
+  // Se mide una sola vez por montaje: es una lectura de layout y no cambia
+  // salvo que el usuario mueva el zoom del navegador.
+  const [pxPerMm] = useState(measurePxPerMm)
+  const scale = useMemo(
+    () => paperScale(paperSpeed, amplitude, pxPerMm),
+    [paperSpeed, amplitude, pxPerMm],
+  )
+  // La escala viaja por ref y no por la dependencia del efecto a propósito:
+  // `scales.y.range` y el hook de la grilla la leen en cada dibujo, así que
+  // cambiar la ganancia repinta sin recrear la instancia de uPlot (que
+  // significaría perder el viewport y rearmar el canvas).
+  const scaleRef = useRef<PaperScale>(scale)
+  const onScaleMatchChangeRef = useRef(onScaleMatchChange)
+  useEffect(() => {
+    onScaleMatchChangeRef.current = onScaleMatchChange
+  }, [onScaleMatchChange])
 
   // Eje X precalculado en segundos desde el inicio. Memoizado por largo y
   // sample rate para evitar reallocar 900k floats en cada render.
@@ -235,13 +282,32 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       },
       scales: {
         x: { time: false },
-        y: { auto: true },
+        // Rango FIJO derivado de la ganancia, no `auto`. Con `auto` uPlot elegía
+        // el rango a partir de lo que hubiera en la ventana, así que la misma
+        // onda se veía más alta o más baja según qué más entrara: un artefacto
+        // grande aplastaba el trazado y ningún milímetro medía lo mismo que el
+        // de al lado.
+        //
+        // El callback sigue acá aunque `applyVerticalRange` lo pise enseguida,
+        // y no es redundante: uPlot lo llama una sola vez, durante la
+        // construcción, con el área de trazado todavía en 0 px, y después no lo
+        // vuelve a llamar por su cuenta. Sacarlo dejaba a la escala sin rango
+        // hasta la primera corrección y el gráfico salía **en blanco**. Acá es
+        // la red: un encuadre aproximado siempre es mejor que nada dibujado.
+        y: {
+          auto: false,
+          range: (u, dataMin, dataMax) =>
+            verticalRange(scaleRef.current, plotHeightPx(u), (dataMin + dataMax) / 2),
+        },
       },
       axes: [
         {
           stroke: tokens.fg,
           ticks: { stroke: tokens.grid, width: 1 },
-          grid: { stroke: tokens.grid, width: 1 },
+          // La grilla de uPlot se apaga en los dos ejes: pone sus divisiones
+          // donde le queden números redondos, y en un ECG la retícula ES el
+          // instrumento de medida. La dibuja `drawPaperGrid` a escala real.
+          grid: { show: false },
           // Hora de pared real, no tiempo transcurrido: es lo que el médico
           // necesita para cruzar un hallazgo con lo que el paciente estaba
           // haciendo. `v` es segundos desde el inicio del eje, que arranca en
@@ -253,7 +319,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         {
           stroke: tokens.fg,
           ticks: { stroke: tokens.grid, width: 1 },
-          grid: { stroke: tokens.grid, width: 1 },
+          grid: { show: false },
           values: (_self, splits) => splits.map((v) => `${v.toFixed(1)} mV`),
           size: 60,
         },
@@ -274,6 +340,11 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       ],
       hooks: {
         drawClear: [
+          // El orden importa: retícula, después bandas, y uPlot pinta la serie
+          // arriba de todo. Al revés la grilla taparía el trazado.
+          (u) => {
+            drawPaperGrid(u, scaleRef.current, tokens.paperGrid)
+          },
           (u) => {
             drawAnnotationBands(
               u,
@@ -290,11 +361,20 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             if (scaleKey !== 'x') return
             const { min, max } = u.scales.x
             if (min == null || max == null) return
+            const plotWidth = plotWidthPx(u)
+            const isClinicalScale = matchesScale(scaleRef.current, plotWidth, max - min)
             const nextViewport = {
               startMs: startTimestamp + min * 1000,
               endMs: startTimestamp + max * 1000,
+              millisecondsPerPixel: plotWidth > 0 ? ((max - min) * 1000) / plotWidth : undefined,
+              isClinicalScale,
             }
             preservedViewportRef.current = nextViewport
+            if (followLatest && !isInitializingFrameRef.current) {
+              // No perseguimos al médico si se fue a revisar el pasado. Volver
+              // al borde derecho (incluido un zoom ahí) reactiva el seguimiento.
+              followsLatestRef.current = Math.abs(max - durationSec) < 0.05
+            }
             const last = lastViewportRef.current
             if (last && last.min === min && last.max === max) return
             lastViewportRef.current = { min, max }
@@ -304,6 +384,25 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
                 : nextViewport,
             )
             onViewportChangeRef.current?.(nextViewport)
+            // La línea de base sigue a la ventana visible, así que el rango
+            // vertical se recalcula acá. El span no cambia —lo fija la ganancia—
+            // pero el centro sí.
+            applyVerticalRange(u, scaleRef.current, signal, min, max)
+            // El zoom libre sirve para navegar, no para medir. Si el rango
+            // visible dejó de corresponder a `paperSpeed`, el rótulo de la barra
+            // tiene que decirlo: si no, alguien puede medir un QT sobre una
+            // escala que no es la que el cartel afirma.
+            onScaleMatchChangeRef.current?.(isClinicalScale)
+          },
+        ],
+        setCursor: [
+          (u) => {
+            const left = u.cursor.left
+            if (left == null || left < 0) return
+            const timestamp = startTimestamp + u.posToVal(left, 'x') * 1000
+            cursorTimestampRef.current = timestamp
+            hasCursorAnchorRef.current = true
+            onCursorChangeRef.current?.(timestamp)
           },
         ],
       },
@@ -311,35 +410,85 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
 
     const data: uPlot.AlignedData = [xs as unknown as number[], ys as unknown as number[]]
 
+    isInitializingFrameRef.current = true
     const u = new uPlot(opts, data, container)
     uplotRef.current = u
 
     // La primera instancia usa `initialViewport`; las recreaciones por polling
     // restauran el último rango observado. Si la señal es más corta que el
     // rango pedido, se recorta de forma segura.
-    const viewportToRestore = preservedViewportRef.current
-    if (viewportToRestore) {
-      const startSec = Math.max(0, (viewportToRestore.startMs - signal.startTimestamp) / 1000)
-      const endSec = Math.min(durationSec, (viewportToRestore.endMs - signal.startTimestamp) / 1000)
-      if (endSec > startSec) {
-        u.setScale('x', { min: startSec, max: endSec })
-      } else {
-        u.setScale('x', { min: 0, max: durationSec })
-      }
-    } else {
-      const initialSpan = Math.min(initialWindowSec, durationSec)
-      u.setScale('x', { min: durationSec - initialSpan, max: durationSec })
-    }
     syncPlotArea(u)
+
+    // El encuadre inicial queda pendiente a propósito: ver el comentario del
+    // `ResizeObserver` de abajo.
+    pendingInitialSpanRef.current = true
 
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0]
-      if (!entry || !uplotRef.current) return
+      const inst = uplotRef.current
+      if (!entry || !inst) return
       const w = Math.floor(entry.contentRect.width)
-      if (w > 0) {
-        uplotRef.current.setSize({ width: w, height })
-        syncPlotArea(uplotRef.current)
+      if (w <= 0) return
+      // Si venía a escala clínica, tiene que seguir a escala clínica después de
+      // redimensionar: eso significa mostrar MÁS segundos, no los mismos
+      // estirados. Es la diferencia observable entre una escala de verdad y un
+      // eje que solo se veía bien con cierto ancho de ventana.
+      const before = inst.scales.x
+      const previousWidth = plotWidthPx(inst)
+      const wasOnScale =
+        before.min != null &&
+        before.max != null &&
+        matchesScale(scaleRef.current, previousWidth, before.max - before.min)
+
+      inst.setSize({ width: w, height })
+      if (pendingInitialSpanRef.current) {
+        // **El encuadre inicial se hace acá y no antes.** Es el único momento
+        // con la geometría definitiva: el constructor de uPlot corre antes de
+        // que el navegador maquete el contenedor (`over` mide 0), y su hook
+        // `ready` también. Y uPlot reserva el ancho de los ejes recién al medir
+        // las etiquetas durante el primer dibujo, así que hasta ahí el área de
+        // trazado mide de más. Medido en el navegador, encuadrar temprano daba
+        // 7,2 mm/s en el peor caso y 24,0 mm/s en el mejor, con 25 declarados.
+        //
+        // La spec de `ResizeObserver` garantiza un callback inicial por cada
+        // elemento observado, así que esto siempre corre.
+        const restore = followsLatestRef.current ? null : preservedViewportRef.current
+        if (
+          applyInitialFraming(
+            inst,
+            scaleRef.current,
+            signal,
+            durationSec,
+            restore,
+            initialWindowSeconds,
+            hasCursorAnchorRef.current ? cursorTimestampRef.current : undefined,
+          )
+        ) {
+          pendingInitialSpanRef.current = false
+          if (followsLatestRef.current) {
+            cursorTimestampRef.current =
+              signal.timestampsMs[signal.timestampsMs.length - 1] ?? signal.startTimestamp
+          }
+          setCursorAtTimestamp(inst, cursorTimestampRef.current, startTimestamp, durationSec)
+          isInitializingFrameRef.current = false
+        }
+      } else if (wasOnScale && before.min != null && before.max != null) {
+        applyScaleSpanAtCursor(
+          inst,
+          scaleRef.current,
+          durationSec,
+          cursorTimestampRef.current,
+          signal.startTimestamp,
+          before.min,
+          before.max,
+        )
       }
+      // El alto pudo cambiar, y con él cuántos mV entran.
+      const after = inst.scales.x
+      if (after.min != null && after.max != null) {
+        applyVerticalRange(inst, scaleRef.current, signal, after.min, after.max)
+      }
+      syncPlotArea(inst)
     })
     ro.observe(container)
 
@@ -475,7 +624,59 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       uplotRef.current = null
       lastViewportRef.current = null
     }
-  }, [signal, height, xs, ys, annotationDrawOrder, annotationLinks, durationSec, initialWindowSec])
+  }, [
+    signal,
+    height,
+    xs,
+    ys,
+    annotationDrawOrder,
+    annotationLinks,
+    durationSec,
+    initialWindowSeconds,
+    followLatest,
+  ])
+
+  // Cambiar ganancia o barrido NO recrea la instancia: se actualiza la ref que
+  // leen `scales.y.range` y la grilla, se reencuadra el eje de tiempo a la
+  // escala nueva y se repinta. Recrearla costaría el canvas entero y, peor,
+  // perdería el viewport justo cuando el médico está mirando algo.
+  //
+  // Solo reencuadra cuando la escala **cambió de verdad**. Sin esa guarda el
+  // efecto también corría al montar y al recrearse la instancia por polling, y
+  // ahí pisaba el viewport que el efecto de creación acababa de restaurar: el
+  // médico perdía el tramo que estaba mirando cada vez que llegaba un lote nuevo.
+  const appliedScaleRef = useRef<PaperScale | null>(null)
+  // El encuadre inicial quedó pendiente porque al crear la instancia el área de
+  // trazado todavía medía 0. Lo resuelve el primer `ResizeObserver`, que corre
+  // ya con layout.
+  const pendingInitialSpanRef = useRef(false)
+  // La señal, para el efecto de escala: no puede entrar como dependencia sin
+  // reencuadrar en cada lote nuevo que llega por polling.
+  const signalRef = useRef(signal)
+  signalRef.current = signal
+  useEffect(() => {
+    scaleRef.current = scale
+    const previous = appliedScaleRef.current
+    appliedScaleRef.current = scale
+    if (previous === null || previous === scale) return
+    const inst = uplotRef.current
+    if (!inst) return
+    const { min, max } = inst.scales.x
+    applyScaleSpanAtCursor(
+      inst,
+      scale,
+      durationSec,
+      cursorTimestampRef.current,
+      signalRef.current.startTimestamp,
+      min ?? 0,
+      max ?? durationSec,
+    )
+    const { min: nextMin, max: nextMax } = inst.scales.x
+    if (nextMin != null && nextMax != null) {
+      applyVerticalRange(inst, scale, signalRef.current, nextMin, nextMax)
+    }
+    inst.redraw()
+  }, [scale, durationSec])
 
   // API imperativa — convierte timestamps absolutos a segundos desde el inicio.
   useImperativeHandle(
@@ -498,13 +699,47 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         const [newMin, newMax] = clampRange(startSec, endSec, 0, durationSec)
         inst.setScale('x', { min: newMin, max: newMax })
       },
+      restoreViewport(viewport: ECGViewportChange) {
+        const inst = uplotRef.current
+        if (!inst) return
+        applyInitialFraming(
+          inst,
+          scaleRef.current,
+          signal,
+          durationSec,
+          viewport,
+          undefined,
+          cursorTimestampRef.current,
+        )
+      },
       resetZoom() {
         const inst = uplotRef.current
         if (!inst) return
         inst.setScale('x', { min: 0, max: durationSec })
       },
+      resetScale() {
+        const inst = uplotRef.current
+        if (!inst) return
+        const { min, max } = inst.scales.x
+        applyScaleSpanAtCursor(
+          inst,
+          scaleRef.current,
+          durationSec,
+          cursorTimestampRef.current,
+          signal.startTimestamp,
+          min ?? 0,
+          max ?? durationSec,
+        )
+      },
+      setCursor(timestampMs: number) {
+        const inst = uplotRef.current
+        if (!inst) return
+        cursorTimestampRef.current = timestampMs
+        hasCursorAnchorRef.current = true
+        setCursorAtTimestamp(inst, timestampMs, signal.startTimestamp, durationSec)
+      },
     }),
-    [signal.startTimestamp, durationSec],
+    [signal, durationSec],
   )
 
   return (
@@ -622,6 +857,207 @@ function buildYSeries(signal: ECGSignal): Float32Array | (number | null)[] {
  * el span — si el rango pedido es más ancho que las cotas, devuelve las cotas
  * completas.
  */
+/**
+ * Reencuadra el eje de tiempo a la escala vigente, anclado en `from`.
+ *
+ * Es la operación inversa a la de antes: la escala fija cuántos segundos entran
+ * en el ancho disponible, y el viewport se ajusta a eso. Se usa al cambiar la
+ * ganancia o el barrido, al redimensionar y al volver desde el zoom libre.
+ */
+/**
+ * Ancho y alto del área de trazado, en px CSS.
+ *
+ * **Sale de `bbox` y no de `over`, y la diferencia importa.** uPlot fija `bbox`
+ * dentro del constructor, mientras que `over` es un elemento que el navegador
+ * todavía no maquetó: durante la construcción mide 0. Y `scales.y.range` corre
+ * justo ahí, así que midiendo `over` el rango vertical caía en su fallback de
+ * ±1 mV y se quedaba pegado (uPlot no vuelve a llamar `range` por su cuenta).
+ * Medido en el navegador: 22,9 mm/mV efectivos con la escala declarada en 10, y
+ * 7,2 mm/s con el barrido declarado en 25.
+ *
+ * `bbox` viene en píxeles de dispositivo, de ahí la división por `pxRatio`. El
+ * fallback a `over` cubre los dobles de test, que no simulan el canvas.
+ */
+function plotWidthPx(inst: uPlot): number {
+  const fromBbox = inst.bbox?.width
+  if (fromBbox) return fromBbox / (uPlot.pxRatio || 1)
+  return inst.over?.clientWidth ?? 0
+}
+
+function plotHeightPx(inst: uPlot): number {
+  const fromBbox = inst.bbox?.height
+  if (fromBbox) return fromBbox / (uPlot.pxRatio || 1)
+  return inst.over?.clientHeight ?? 0
+}
+
+/**
+ * Fija el rango vertical: span de la ganancia, centro en la línea de base.
+ *
+ * El span no depende de los datos —eso es lo que hace comparable un milímetro
+ * con el de al lado— pero el centro sí: el front-end es DC-acoplado y el
+ * potencial de media celda de los electrodos puede correr el trazado decenas de
+ * mV sin que sea una falla (`INTEGRACION.md` §3.2, y es por eso que `raw_uV` es
+ * int32 y no int16). Un rango anclado en 0 dejaría a esos pacientes con la
+ * pantalla en blanco.
+ */
+function applyVerticalRange(
+  inst: uPlot,
+  scale: PaperScale,
+  signal: ECGSignal,
+  minSec: number,
+  maxSec: number,
+): void {
+  const heightPx = plotHeightPx(inst)
+  if (heightPx <= 0) return
+  const rate = signal.sampleRate || 500
+  const center = baselineMv(signal.samples, Math.floor(minSec * rate), Math.ceil(maxSec * rate))
+  const [min, max] = verticalRange(scale, heightPx, center)
+  const current = inst.scales.y
+  // Sin la comparación esto se llamaría a sí mismo: `setScale` dispara el hook
+  // que lo invocó. El epsilon absorbe el redondeo del centro.
+  if (current.min != null && Math.abs(current.min - min) < 1e-9) return
+  inst.setScale('y', { min, max })
+}
+
+/**
+ * Encuadre inicial: restaura el viewport preservado, o encuadra a la escala.
+ *
+ * `preservedViewportRef` lleva el rango que el médico estaba mirando y tiene que
+ * sobrevivir a que llegue un lote nuevo por polling, que recrea la instancia.
+ */
+function applyInitialFraming(
+  inst: uPlot,
+  scale: PaperScale,
+  signal: ECGSignal,
+  durationSec: number,
+  restore: ECGViewportChange | null,
+  initialWindowSeconds: number | undefined,
+  anchorTimestampMs: number | undefined,
+): boolean {
+  if (restore) {
+    const startSec = Math.max(0, (restore.startMs - signal.startTimestamp) / 1000)
+    const endSec = Math.min(durationSec, (restore.endMs - signal.startTimestamp) / 1000)
+    const hasAnchor = anchorTimestampMs !== undefined
+    const anchorSec = Math.min(
+      Math.max(
+        hasAnchor ? (anchorTimestampMs - signal.startTimestamp) / 1000 : (startSec + endSec) / 2,
+        0,
+      ),
+      durationSec,
+    )
+    const anchorRatio = hasAnchor ? viewportAnchorRatio(startSec, endSec, anchorSec) : 0.5
+    if (restore.isClinicalScale) {
+      // La escala clínica manda: al ir a una pantalla más ancha se muestran
+      // más segundos sin alterar los mm/s. El cursor es el ancla para que no
+      // salte de lugar al pasar entre contenedores de distinto ancho.
+      return hasAnchor
+        ? applyScaleSpanAtAnchor(inst, scale, anchorSec, anchorRatio, durationSec)
+        : applyScaleSpan(inst, scale, startSec, durationSec)
+    }
+    if (restore.millisecondsPerPixel && restore.millisecondsPerPixel > 0) {
+      // El zoom libre no declara una escala clínica. En ese modo se conserva
+      // la densidad temporal y la posición relativa del cursor, no el span
+      // absoluto, que cambiaría el zoom al pasar de una vista a la otra.
+      const spanSec = (restore.millisecondsPerPixel * plotWidthPx(inst)) / 1000
+      const [min, max] = rangeAtAnchor(anchorSec, anchorRatio, spanSec, 0, durationSec)
+      inst.setScale('x', { min, max })
+      return true
+    }
+    inst.setScale(
+      'x',
+      endSec > startSec ? { min: startSec, max: endSec } : { min: 0, max: durationSec },
+    )
+    return true
+  }
+  if (initialWindowSeconds !== undefined) {
+    const initialSpan = Math.min(durationSec, initialWindowSeconds)
+    const [min, max] = clampRange(durationSec - initialSpan, durationSec, 0, durationSec)
+    inst.setScale('x', { min, max })
+    return true
+  }
+  return applyScaleSpan(inst, scale, durationSec, durationSec)
+}
+
+function applyScaleSpanAtCursor(
+  inst: uPlot,
+  scale: PaperScale,
+  durationSec: number,
+  cursorTimestampMs: number,
+  startTimestamp: number,
+  currentMin: number,
+  currentMax: number,
+): boolean {
+  const cursorSec = Math.min(Math.max((cursorTimestampMs - startTimestamp) / 1000, 0), durationSec)
+  return applyScaleSpanAtAnchor(
+    inst,
+    scale,
+    cursorSec,
+    viewportAnchorRatio(currentMin, currentMax, cursorSec),
+    durationSec,
+  )
+}
+
+function applyScaleSpanAtAnchor(
+  inst: uPlot,
+  scale: PaperScale,
+  anchorSec: number,
+  anchorRatio: number,
+  durationSec: number,
+): boolean {
+  const span = visibleSeconds(scale, plotWidthPx(inst))
+  if (span <= 0) return false
+  const [min, max] = rangeAtAnchor(anchorSec, anchorRatio, span, 0, durationSec)
+  inst.setScale('x', { min, max })
+  return true
+}
+
+function viewportAnchorRatio(min: number, max: number, anchor: number): number {
+  if (max <= min) return 0.5
+  return Math.min(Math.max((anchor - min) / (max - min), 0), 1)
+}
+
+function rangeAtAnchor(
+  anchor: number,
+  anchorRatio: number,
+  span: number,
+  boundsMin: number,
+  boundsMax: number,
+): [number, number] {
+  const min = anchor - span * anchorRatio
+  return clampRange(min, min + span, boundsMin, boundsMax)
+}
+
+function setCursorAtTimestamp(
+  inst: uPlot,
+  timestampMs: number,
+  startTimestamp: number,
+  durationSec: number,
+): void {
+  const target = Math.min(Math.max((timestampMs - startTimestamp) / 1000, 0), durationSec)
+  const left = inst.valToPos(target, 'x')
+  const setCursor = (
+    inst as uPlot & { setCursor?: (cursor: { left: number; top: number }) => void }
+  ).setCursor
+  if (Number.isFinite(left) && setCursor) setCursor.call(inst, { left, top: 0 })
+}
+
+function applyScaleSpan(
+  inst: uPlot,
+  scale: PaperScale,
+  from: number,
+  durationSec: number,
+): boolean {
+  const span = visibleSeconds(scale, plotWidthPx(inst))
+  // Ancho 0: el navegador todavía no maquetó el área de trazado. No se inventa
+  // un encuadre; el llamador reintenta cuando haya medida.
+  if (span <= 0) return false
+  // `clampRange` ya devuelve el estudio entero cuando el span pedido lo supera,
+  // que es el caso de un registro más corto que una tira de papel.
+  const [min, max] = clampRange(from, from + span, 0, durationSec)
+  inst.setScale('x', { min, max })
+  return true
+}
+
 function clampRange(
   min: number,
   max: number,

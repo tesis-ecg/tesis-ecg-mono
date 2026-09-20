@@ -58,6 +58,27 @@ class DeviceContext:
     bridge_epoch_ms: int | None = None
     time_sync_source: TimeSyncSource = TimeSyncSource.SERVER_RECEIVE
     time_sync_uncertainty_ms: int | None = None
+    #: Diagnóstico del paquete de STATUS reenviado por el puente (`INTEGRACION.md`
+    #: §11.1). Son el ÚNICO canal por el que este equipo puede avisar que perdió
+    #: señal del paciente: backlog pisado, flash que no graba, trama descartada
+    #: por CRC, muestras perdidas aguas arriba. Sin leerlas, un equipo que está
+    #: perdiendo registro se ve idéntico a uno sano.
+    #:
+    #: Los cuatro son `None` cuando el firmware es anterior a septiembre de 2026:
+    #: son aditivas y opcionales a propósito, así que la ausencia no es un error.
+    #: Vienen acumuladas con OR desde el último POST confirmado, no son una foto.
+    lead_flags: int | None = None
+    loss_flags: int | None = None
+    status_flags: int | None = None
+    #: Estimación del peor atraso del tramo, del propio firmware.
+    #:
+    #: **No sirve para alertar.** Biomédica la midió con +98 % de error con
+    #: electrodo seco y +44 % con gel, y explicó que no la van a corregir: el
+    #: firmware asume 280 muestras por trama (un número de PhysioNet) y la señal
+    #: real de esta placa comprime a 141 con electrodo seco. Se persiste como
+    #: diagnóstico. El atraso de verdad sale de restar el `t0Ms` de las tramas
+    #: contra `uptime_ms` de este mismo POST, que están en el mismo dominio.
+    backlog_seconds: int | None = None
 
     def boot_epoch_ms(self, received_at: datetime) -> tuple[int, TimeSyncSource, int]:
         """Instante UTC en que el `millis()` del equipo valía cero.
@@ -94,6 +115,20 @@ _DEFAULT_UNCERTAINTY_MS: dict[TimeSyncSource, int] = {
     TimeSyncSource.NONE: 3_600_000,
     TimeSyncSource.SERVER_RECEIVE: 7_000,
 }
+
+
+def _in_range(value: int | None, low: int, high: int) -> int | None:
+    """El valor si cae dentro del rango declarado; `None` si no.
+
+    **Descarta en vez de rechazar, y es deliberado.** Estas cuatro cabeceras son
+    diagnóstico: contestar `422` por un byte fuera de rango tiraría al piso un
+    lote de señal del paciente por un dato accesorio. Lo que se pierde
+    descartando es una lectura; lo que se perdería rechazando son minutos de
+    registro que el equipo va a tener que retransmitir.
+    """
+    if value is None or not low <= value <= high:
+        return None
+    return value
 
 
 def _time_sync_error(code: str, message: str) -> HTTPException:
@@ -170,6 +205,10 @@ async def get_authenticated_device(
     x_bridge_epoch_ms: int | None = Header(default=None),
     x_time_sync_source: str | None = Header(default=None, max_length=32),
     x_time_sync_uncertainty_ms: int | None = Header(default=None),
+    x_device_lead_flags: int | None = Header(default=None),
+    x_device_loss_flags: int | None = Header(default=None),
+    x_device_status_flags: int | None = Header(default=None),
+    x_device_backlog_seconds: int | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceContext:
     # Import diferido: `app.modules.ingest` importa este módulo (mismo patrón
@@ -229,4 +268,8 @@ async def get_authenticated_device(
         bridge_epoch_ms=bridge_epoch_ms,
         time_sync_source=sync_source,
         time_sync_uncertainty_ms=sync_uncertainty_ms,
+        lead_flags=_in_range(x_device_lead_flags, 0, 255),
+        loss_flags=_in_range(x_device_loss_flags, 0, 255),
+        status_flags=_in_range(x_device_status_flags, 0, 255),
+        backlog_seconds=_in_range(x_device_backlog_seconds, 0, 65_535),
     )

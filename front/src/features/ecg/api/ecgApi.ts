@@ -91,6 +91,22 @@ interface EcgManifest {
   annotations?: EcgAnnotation[]
 }
 
+export interface EcgReportWindowRequest {
+  id: string
+  startEpochMs: number
+  endEpochMs: number
+}
+
+export interface EcgReportWindow {
+  id: string
+  startEpochMs: number
+  endEpochMs: number
+  timestampsMs: number[]
+  samplesMv: number[]
+  gapIndices: number[]
+  source: 'raw' | 'envelope'
+}
+
 const MAX_INITIAL_POINTS = 20_000
 const MAX_LEGACY_BYTES = 5 * 1024 * 1024
 
@@ -186,7 +202,27 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       linkedAnnotationId: annotation.linkedAnnotationId ?? null,
       description: annotation.description ?? null,
     })),
+    metadata: {
+      formatVersion: manifest.formatVersion,
+      encoding: manifest.encoding,
+      sampleCount: manifest.sampleCount,
+      isSimulated: Boolean(manifest.isSimulated),
+      overviewSamplesPerBucket: level?.samplesPerBucket ?? null,
+    },
   }
+}
+
+export async function getStudyEcgReportWindows(
+  studyId: string,
+  windows: EcgReportWindowRequest[],
+  signal?: AbortSignal,
+): Promise<EcgReportWindow[]> {
+  const { data } = await api.post<{ windows: EcgReportWindow[] }>(
+    `/studies/${studyId}/ecg/report-windows`,
+    { windows },
+    { signal },
+  )
+  return data.windows
 }
 
 /**
@@ -273,6 +309,13 @@ export async function getStudyEcgLegacy(studyId: string, signal?: AbortSignal): 
     // huecos, así que el eje uniforme de siempre es correcto.
     ...uniformTimeline(meta.sampleCount, meta.sampleCount, meta.sampleRate, meta.startTimestamp),
     annotations: [],
+    metadata: {
+      formatVersion: 1,
+      encoding: 'float32-le',
+      sampleCount: meta.sampleCount,
+      isSimulated: false,
+      overviewSamplesPerBucket: null,
+    },
   }
 }
 
