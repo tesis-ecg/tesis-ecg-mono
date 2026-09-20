@@ -206,6 +206,37 @@ describe('ECGClinicalReportDialog preview', () => {
     expect(WorkerMock.instances[0].terminate).toHaveBeenCalled()
   })
 
+  it('genera en el hilo principal si el worker no puede iniciarse', async () => {
+    renderDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' }))
+    await waitFor(() => expect(WorkerMock.instances).toHaveLength(1))
+
+    await act(async () => {
+      WorkerMock.instances[0].onerror?.()
+    })
+
+    expect((await screen.findByTestId('clinical-report-pdf-preview')).getAttribute('data')).toBe(
+      'blob:report-1',
+    )
+    expect(WorkerMock.instances[0].terminate).toHaveBeenCalled()
+  })
+
+  it('genera en el hilo principal si el constructor del worker falla', async () => {
+    class FailingWorker {
+      constructor() {
+        throw new DOMException('Blocked by Content Security Policy', 'SecurityError')
+      }
+    }
+    vi.stubGlobal('Worker', FailingWorker)
+    renderDialog()
+    fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' }))
+
+    expect((await screen.findByTestId('clinical-report-pdf-preview')).getAttribute('data')).toBe(
+      'blob:report-1',
+    )
+    expect(WorkerMock.instances).toHaveLength(0)
+  })
+
   it('genera el documento final y lo persiste', async () => {
     renderDialog()
     fireEvent.click(screen.getByRole('button', { name: 'Generar informe final' }))

@@ -69,7 +69,7 @@ export function StudyClinicalReportTab({ study, onPreview }: StudyClinicalReport
         onPreview={onPreview}
       />
       <div className="flex flex-col gap-4">
-        <Card className="gap-4 p-5">
+        <Card className="flex flex-col gap-4 p-5">
           <div>
             <h3 className="text-h6 text-gray-900">Resumen del informe</h3>
             <p className="mt-1 text-body3 text-gray-500">
@@ -99,7 +99,7 @@ export function StudyClinicalReportTab({ study, onPreview }: StudyClinicalReport
           ) : null}
         </Card>
 
-        <Card className="gap-4 p-5">
+        <Card className="flex flex-col gap-4 p-5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-h6 text-gray-900">Versiones finales</h3>
@@ -199,7 +199,7 @@ function ClinicalReportForm({
   const conflict = isApiError(update.error) && update.error.code === 'CONFLICT'
 
   return (
-    <Card className="gap-6 p-5">
+    <Card className="flex flex-col gap-6 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-h5 text-gray-900">Datos clínicos e interpretación</h2>

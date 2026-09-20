@@ -1604,9 +1604,11 @@ async def get_clinical_report_draft(
 async def update_clinical_report_draft(
     input_data: StudyClinicalReportDraftInput, db: AsyncSession
 ) -> StudyClinicalReportDraftOut:
-    if await repo.get_detail(db, input_data.study_id, input_data.doctor_id) is None:
+    locked = await repo.get_for_update(db, input_data.study_id, input_data.doctor_id)
+    if locked is None:
         raise _not_found()
-    draft = await repo.get_report_draft(db, input_data.study_id, for_update=True)
+    study, _ = locked
+    draft = await repo.get_report_draft(db, study.id, for_update=True)
     if draft is None:
         if input_data.data.revision != 0:
             raise _report_revision_conflict()

@@ -368,30 +368,62 @@ function splitWindowRequests(
 
 function generateInWorker(input: ClinicalReportInput, signal: AbortSignal): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('../clinicalReport.worker.ts', import.meta.url), {
-      type: 'module',
-    })
+    let worker: Worker | null = null
+    let settled = false
+    let fallingBack = false
+    const cleanup = () => {
+      signal.removeEventListener('abort', cancel)
+      worker?.terminate()
+    }
+    const finish = (result: ArrayBuffer) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(result)
+    }
+    const fail = (cause: unknown) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(cause)
+    }
     const cancel = () => {
-      worker.terminate()
-      reject(new DOMException('Generación cancelada.', 'AbortError'))
+      fail(new DOMException('Generación cancelada.', 'AbortError'))
+    }
+    const startFallback = () => {
+      if (settled || fallingBack) return
+      fallingBack = true
+      worker?.terminate()
+      void generateOnMainThread(input, signal).then(finish, fail)
     }
     if (signal.aborted) return cancel()
     signal.addEventListener('abort', cancel, { once: true })
-    worker.onmessage = (
-      event: MessageEvent<{ ok: boolean; pdf?: ArrayBuffer; message?: string }>,
-    ) => {
-      signal.removeEventListener('abort', cancel)
-      worker.terminate()
-      if (event.data.ok && event.data.pdf) resolve(event.data.pdf)
-      else reject(new Error(event.data.message ?? 'No se pudo generar el informe.'))
+    try {
+      worker = new Worker(new URL('../clinicalReport.worker.ts', import.meta.url), {
+        type: 'module',
+      })
+      worker.onmessage = (
+        event: MessageEvent<{ ok: boolean; pdf?: ArrayBuffer; message?: string }>,
+      ) => {
+        if (event.data.ok && event.data.pdf) finish(event.data.pdf)
+        else fail(new Error(event.data.message ?? 'No se pudo generar el informe.'))
+      }
+      worker.onerror = startFallback
+      worker.postMessage(input)
+    } catch {
+      startFallback()
     }
-    worker.onerror = () => {
-      signal.removeEventListener('abort', cancel)
-      worker.terminate()
-      reject(new Error('No se pudo iniciar el generador del informe.'))
-    }
-    worker.postMessage(input)
   })
+}
+
+async function generateOnMainThread(
+  input: ClinicalReportInput,
+  signal: AbortSignal,
+): Promise<ArrayBuffer> {
+  if (signal.aborted) throw new DOMException('Generación cancelada.', 'AbortError')
+  const { buildClinicalReport } = await import('../clinicalReport')
+  if (signal.aborted) throw new DOMException('Generación cancelada.', 'AbortError')
+  return buildClinicalReport(input)
 }
 
 function safeFilename(value: string): string {
