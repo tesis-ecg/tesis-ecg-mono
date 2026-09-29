@@ -412,10 +412,12 @@ def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
         )
 
     # Huecos internos: la trama declara más duración de la que tendría si no
-    # faltara ninguna muestra. Un hueco no es una línea isoeléctrica.
+    # faltara ninguna muestra. Un hueco no es una línea isoeléctrica, pero el
+    # exceso chico sí es reloj: el ADS1292R muestrea con su propio oscilador y
+    # `durationMs` es millis(), así que solo cuenta lo que excede esa tolerancia.
     offset = 0
     for frame in batch.frames:
-        gap_ms = frame.info.internal_gap_ms
+        gap_ms = frame.info.gap_beyond_clock_ms
         if gap_ms > 0:
             events.append(
                 DerivedEvent(

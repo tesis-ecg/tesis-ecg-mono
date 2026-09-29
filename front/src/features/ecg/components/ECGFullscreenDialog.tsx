@@ -43,6 +43,9 @@ interface ECGFullscreenDialogProps {
   onAmplitudeChange: (value: Amplitude) => void
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotationId: string) => void
+  /** Avisos dibujados sobre el gráfico; compartido con la vista principal. */
+  showAnnotations?: boolean
+  onShowAnnotationsChange?: (show: boolean) => void
 }
 
 /**
@@ -71,6 +74,8 @@ export function ECGFullscreenDialog({
   onAmplitudeChange,
   selectedAnnotationId = null,
   onAnnotationSelect,
+  showAnnotations = true,
+  onShowAnnotationsChange,
 }: ECGFullscreenDialogProps) {
   // Snapshot del viewport entregado por el padre cuando se abre la modal.
   // Sobrevive en una ref para que `onClose` lo pueda usar después de que el
@@ -123,6 +128,8 @@ export function ECGFullscreenDialog({
             onPaperSpeedChange={onPaperSpeedChange}
             onAmplitudeChange={onAmplitudeChange}
             onAnnotationSelect={onAnnotationSelect}
+            showAnnotations={showAnnotations}
+            onShowAnnotationsChange={onShowAnnotationsChange}
           />
         )}
       </DialogContent>
@@ -143,6 +150,9 @@ interface ECGFullscreenBodyProps {
   onPaperSpeedChange: (value: PaperSpeed) => void
   onAmplitudeChange: (value: Amplitude) => void
   onAnnotationSelect?: (annotationId: string) => void
+  /** Avisos dibujados sobre el gráfico; compartido con la vista principal. */
+  showAnnotations?: boolean
+  onShowAnnotationsChange?: (show: boolean) => void
 }
 
 function ECGFullscreenBody({
@@ -158,6 +168,8 @@ function ECGFullscreenBody({
   onPaperSpeedChange,
   onAmplitudeChange,
   onAnnotationSelect,
+  showAnnotations = true,
+  onShowAnnotationsChange,
 }: ECGFullscreenBodyProps) {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const viewerSlotRef = useRef<HTMLDivElement | null>(null)
@@ -260,6 +272,7 @@ function ECGFullscreenBody({
         onViewportChange={handleMinimapChange}
         selectedAnnotationId={selectedAnnotationId}
         onAnnotationSelect={handleAnnotationSelect}
+        showAnnotations={showAnnotations}
       />
 
       <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -277,6 +290,7 @@ function ECGFullscreenBody({
             onScaleMatchChange={setOnScale}
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={handleAnnotationSelect}
+            showAnnotations={showAnnotations}
           />
         </div>
         <ECGFindingsPanel
@@ -284,6 +298,8 @@ function ECGFullscreenBody({
           recordingStartMs={signal.startTimestamp}
           selectedAnnotationId={selectedAnnotationId}
           onAnnotationSelect={handleAnnotationSelect}
+          showOnChart={showAnnotations}
+          onShowOnChartChange={onShowAnnotationsChange}
           className="overflow-hidden rounded-md border border-border bg-card p-3"
         />
       </div>

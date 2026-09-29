@@ -35,6 +35,7 @@ import {
   type PaperScale,
 } from '../paperScale'
 import type {
+  ECGAnnotation,
   ECGAnnotationSeverity,
   ECGSignal,
   ECGViewerHandle,
@@ -95,6 +96,8 @@ function readAlertToken(
   }
 }
 
+const NO_ANNOTATIONS: ECGAnnotation[] = []
+
 /**
  * `<ECGViewer />` — renderiza una traza ECG de canal único con uPlot.
  *
@@ -127,6 +130,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     onScaleMatchChange,
     selectedAnnotationId = null,
     onAnnotationSelect,
+    showAnnotations = true,
   },
   ref,
 ) {
@@ -196,26 +200,27 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // sample rate para evitar reallocar 900k floats en cada render.
   const xs = useMemo(() => buildXAxis(signal), [signal])
   const ys = useMemo(() => buildYSeries(signal), [signal])
+  // Ocultar los avisos no los borra: el panel los sigue listando. Pasar la
+  // lista vacía reutiliza el camino de una señal nueva por polling, que ya
+  // conserva el viewport al recrear uPlot.
+  const annotations = showAnnotations ? signal.annotations : NO_ANNOTATIONS
   const annotationDrawOrder = useMemo(
-    () => [...signal.annotations].sort(compareAnnotationsForPainting),
-    [signal.annotations],
+    () => [...annotations].sort(compareAnnotationsForPainting),
+    [annotations],
   )
-  const annotationLinks = useMemo(
-    () => buildAnnotationLinks(signal.annotations),
-    [signal.annotations],
-  )
+  const annotationLinks = useMemo(() => buildAnnotationLinks(annotations), [annotations])
 
   const annotationLabelLayouts = useMemo(() => {
     if (!overlayViewport || !plotArea) return []
     return layoutVisibleAnnotationLabels({
-      annotations: signal.annotations,
+      annotations,
       viewportStartMs: overlayViewport.startMs,
       viewportEndMs: overlayViewport.endMs,
       plotWidthPx: plotArea.width,
       labelWidths,
       selectedAnnotationId,
     })
-  }, [labelWidths, overlayViewport, plotArea, selectedAnnotationId, signal.annotations])
+  }, [labelWidths, overlayViewport, plotArea, selectedAnnotationId, annotations])
 
   useLayoutEffect(() => {
     const overlay = labelsOverlayRef.current
