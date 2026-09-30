@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog'
 
 import { focusViewerOnAnnotation } from '../annotationMeta'
-import type { Amplitude, PaperSpeed } from '../paperScale'
+import type { AmplitudeMode, PaperSpeed } from '../paperScale'
 import type { ECGAnnotation, ECGSignal, ECGViewerHandle, ECGViewportChange } from '../types'
 import { ECGFindingsPanel } from './ECGFindingsPanel'
 import { ECGMinimap } from './ECGMinimap'
@@ -38,9 +38,9 @@ interface ECGFullscreenDialogProps {
   onClose?: (lastViewport: ECGViewportChange | null, lastCursorMs: number | null) => void
   /** Calibración compartida con el visor principal y el informe. */
   paperSpeed: PaperSpeed
-  amplitude: Amplitude
+  amplitude: AmplitudeMode
   onPaperSpeedChange: (value: PaperSpeed) => void
-  onAmplitudeChange: (value: Amplitude) => void
+  onAmplitudeChange: (value: AmplitudeMode) => void
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotationId: string) => void
   /** Avisos dibujados sobre el gráfico; compartido con la vista principal. */
@@ -146,9 +146,9 @@ interface ECGFullscreenBodyProps {
   onMinimize: () => void
   initialSelectedAnnotationId: string | null
   paperSpeed: PaperSpeed
-  amplitude: Amplitude
+  amplitude: AmplitudeMode
   onPaperSpeedChange: (value: PaperSpeed) => void
-  onAmplitudeChange: (value: Amplitude) => void
+  onAmplitudeChange: (value: AmplitudeMode) => void
   onAnnotationSelect?: (annotationId: string) => void
   /** Avisos dibujados sobre el gráfico; compartido con la vista principal. */
   showAnnotations?: boolean
@@ -230,7 +230,7 @@ function ECGFullscreenBody({
     onPaperSpeedChange(value)
     setOnScale(true)
   }
-  const handleAmplitudeChange = (value: Amplitude) => {
+  const handleAmplitudeChange = (value: AmplitudeMode) => {
     onAmplitudeChange(value)
     setOnScale(true)
   }

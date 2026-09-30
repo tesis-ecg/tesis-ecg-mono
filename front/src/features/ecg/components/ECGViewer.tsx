@@ -26,6 +26,7 @@ import { drawPaperGrid, type PaperGridColors } from '../paperGridPlugin'
 import {
   DEFAULT_AMPLITUDE,
   DEFAULT_PAPER_SPEED,
+  autoVerticalRange,
   baselineMv,
   matchesScale,
   measurePxPerMm,
@@ -302,7 +303,9 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         y: {
           auto: false,
           range: (u, dataMin, dataMax) =>
-            verticalRange(scaleRef.current, plotHeightPx(u), (dataMin + dataMax) / 2),
+            scaleRef.current.autoAmplitude
+              ? [dataMin, dataMax]
+              : verticalRange(scaleRef.current, plotHeightPx(u), (dataMin + dataMax) / 2),
         },
       },
       axes: [
@@ -915,12 +918,23 @@ function applyVerticalRange(
   const heightPx = plotHeightPx(inst)
   if (heightPx <= 0) return
   const rate = signal.sampleRate || 500
-  const center = baselineMv(signal.samples, Math.floor(minSec * rate), Math.ceil(maxSec * rate))
-  const [min, max] = verticalRange(scale, heightPx, center)
+  const from = Math.floor(minSec * rate)
+  const to = Math.ceil(maxSec * rate)
+  // En modo automático el rango lo pone la señal visible: es lo que permite ver
+  // un trazado que se sale de cualquier ganancia fija.
+  const autoRange = scale.autoAmplitude ? autoVerticalRange(signal.samples, from, to) : null
+  const [min, max] =
+    autoRange ?? verticalRange(scale, heightPx, baselineMv(signal.samples, from, to))
   const current = inst.scales.y
   // Sin la comparación esto se llamaría a sí mismo: `setScale` dispara el hook
   // que lo invocó. El epsilon absorbe el redondeo del centro.
-  if (current.min != null && Math.abs(current.min - min) < 1e-9) return
+  if (
+    current.min != null &&
+    current.max != null &&
+    Math.abs(current.min - min) < 1e-9 &&
+    Math.abs(current.max - max) < 1e-9
+  )
+    return
   inst.setScale('y', { min, max })
 }
 

@@ -30,6 +30,17 @@ export const AMPLITUDES = [5, 10, 20] as const
 export type PaperSpeed = (typeof PAPER_SPEEDS)[number]
 export type Amplitude = (typeof AMPLITUDES)[number]
 
+/**
+ * Ganancia automática: el rango vertical se ajusta a la señal visible.
+ *
+ * Existe para las pruebas de banco, donde el trazado puede salirse de cualquier
+ * ganancia fija (un offset grande, un artefacto, una señal sin calibrar) y lo
+ * primero que hace falta es **verla entera**. No sirve para medir: los mm/mV
+ * dejan de ser fijos y el rótulo lo dice.
+ */
+export const AUTO_AMPLITUDE = 'auto' as const
+export type AmplitudeMode = Amplitude | typeof AUTO_AMPLITUDE
+
 /** El estándar de diagnóstico para adultos. */
 export const DEFAULT_PAPER_SPEED: PaperSpeed = 25
 export const DEFAULT_AMPLITUDE: Amplitude = 10
@@ -68,7 +79,13 @@ export function measurePxPerMm(): number {
 
 export interface PaperScale {
   paperSpeed: number
+  /**
+   * Ganancia en mm/mV. En modo automático queda en la estándar y solo gradúa la
+   * retícula (0,1 mV el cuadro chico); el rango vertical lo pone la señal.
+   */
   amplitude: number
+  /** `true` cuando el rango vertical sigue a la señal en vez de a la ganancia. */
+  autoAmplitude: boolean
   pxPerMm: number
   /** px por segundo del eje de tiempo. */
   pxPerSec: number
@@ -76,13 +93,20 @@ export interface PaperScale {
   pxPerMv: number
 }
 
-export function paperScale(paperSpeed: number, amplitude: number, pxPerMm: number): PaperScale {
+export function paperScale(
+  paperSpeed: number,
+  amplitude: number | typeof AUTO_AMPLITUDE,
+  pxPerMm: number,
+): PaperScale {
+  const autoAmplitude = amplitude === AUTO_AMPLITUDE
+  const gain = autoAmplitude ? DEFAULT_AMPLITUDE : amplitude
   return {
     paperSpeed,
-    amplitude,
+    amplitude: gain,
+    autoAmplitude,
     pxPerMm,
     pxPerSec: paperSpeed * pxPerMm,
-    pxPerMv: amplitude * pxPerMm,
+    pxPerMv: gain * pxPerMm,
   }
 }
 
@@ -155,9 +179,51 @@ export function baselineMv(samples: Float32Array, from: number, to: number): num
   return values.length % 2 === 0 ? (values[middle - 1] + values[middle]) / 2 : values[middle]
 }
 
+/**
+ * Span mínimo del modo automático, en mV.
+ *
+ * Sin piso, una señal plana (electrodo suelto, sin pulso) se estiraría hasta
+ * llenar la altura y el ruido de cuantización parecería actividad.
+ */
+const AUTO_MIN_SPAN_MV = 1
+/** Margen arriba y abajo del modo automático, como fracción del span. */
+const AUTO_PADDING = 0.08
+
+/**
+ * Rango vertical del modo automático: mínimo y máximo del tramo, con margen.
+ *
+ * A diferencia de `baselineMv`, acá no se muestrea con salto: el objetivo es que
+ * **ningún** pico quede fuera de pantalla, y un QRS dura pocas muestras.
+ * Devuelve `null` si el tramo no tiene muestras finitas.
+ */
+export function autoVerticalRange(
+  samples: Float32Array,
+  from: number,
+  to: number,
+): [number, number] | null {
+  const start = Math.max(0, Math.min(from, samples.length))
+  const end = Math.max(start, Math.min(to, samples.length))
+  let min = Infinity
+  let max = -Infinity
+  for (let i = start; i < end; i++) {
+    const value = samples[i]
+    if (!Number.isFinite(value)) continue
+    if (value < min) min = value
+    if (value > max) max = value
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null
+  const center = (min + max) / 2
+  const span = Math.max(max - min, AUTO_MIN_SPAN_MV) * (1 + AUTO_PADDING * 2)
+  return [center - span / 2, center + span / 2]
+}
+
 /** El rótulo que va en pantalla, como en cualquier electrocardiógrafo. */
 export function scaleLabel(scale: PaperScale): string {
-  return `${scale.paperSpeed} mm/s · ${scale.amplitude} mm/mV`
+  return `${scale.paperSpeed} mm/s · ${amplitudeLabel(scale.autoAmplitude ? AUTO_AMPLITUDE : scale.amplitude)}`
+}
+
+export function amplitudeLabel(amplitude: number | typeof AUTO_AMPLITUDE): string {
+  return amplitude === AUTO_AMPLITUDE ? 'Amplitud automática' : `${amplitude} mm/mV`
 }
 
 /**

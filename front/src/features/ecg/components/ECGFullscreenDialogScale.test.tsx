@@ -113,7 +113,7 @@ const signal: ECGSignal = {
 
 function ControlledDialog() {
   const [paperSpeed, setPaperSpeed] = useState<25 | 50>(25)
-  const [amplitude, setAmplitude] = useState<5 | 10 | 20>(10)
+  const [amplitude, setAmplitude] = useState<5 | 10 | 20 | 'auto'>(10)
   return (
     <>
       <output data-testid="parent-scale">{`${paperSpeed}/${amplitude}`}</output>

@@ -3,15 +3,15 @@ import { useCallback, useState } from 'react'
 import {
   DEFAULT_AMPLITUDE,
   DEFAULT_PAPER_SPEED,
-  type Amplitude,
+  type AmplitudeMode,
   type PaperSpeed,
 } from '../paperScale'
 
 export interface PaperScaleState {
   paperSpeed: PaperSpeed
-  amplitude: Amplitude
+  amplitude: AmplitudeMode
   setPaperSpeed: (value: PaperSpeed) => void
-  setAmplitude: (value: Amplitude) => void
+  setAmplitude: (value: AmplitudeMode) => void
   /** `false` cuando el zoom libre corrió el trazado de la escala declarada. */
   onScale: boolean
   setOnScale: (value: boolean) => void
@@ -19,7 +19,7 @@ export interface PaperScaleState {
 
 interface PaperScaleInitialValues {
   paperSpeed?: PaperSpeed
-  amplitude?: Amplitude
+  amplitude?: AmplitudeMode
 }
 
 /**
@@ -38,7 +38,7 @@ export function usePaperScale(initialValues: PaperScaleInitialValues = {}): Pape
   const [paperSpeed, setPaperSpeed] = useState<PaperSpeed>(
     initialValues.paperSpeed ?? DEFAULT_PAPER_SPEED,
   )
-  const [amplitude, setAmplitude] = useState<Amplitude>(
+  const [amplitude, setAmplitude] = useState<AmplitudeMode>(
     initialValues.amplitude ?? DEFAULT_AMPLITUDE,
   )
   const [onScale, setOnScale] = useState(true)
@@ -49,7 +49,7 @@ export function usePaperScale(initialValues: PaperScaleInitialValues = {}): Pape
     setPaperSpeed(value)
     setOnScale(true)
   }, [])
-  const changeAmplitude = useCallback((value: Amplitude) => {
+  const changeAmplitude = useCallback((value: AmplitudeMode) => {
     setAmplitude(value)
     setOnScale(true)
   }, [])

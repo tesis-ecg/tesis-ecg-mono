@@ -10,13 +10,20 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 
-import { AMPLITUDES, PAPER_SPEEDS, type Amplitude, type PaperSpeed } from '../paperScale'
+import {
+  AMPLITUDES,
+  AUTO_AMPLITUDE,
+  PAPER_SPEEDS,
+  amplitudeLabel,
+  type AmplitudeMode,
+  type PaperSpeed,
+} from '../paperScale'
 
 interface ECGPaperControlsProps {
   paperSpeed: PaperSpeed
-  amplitude: Amplitude
+  amplitude: AmplitudeMode
   onPaperSpeedChange: (value: PaperSpeed) => void
-  onAmplitudeChange: (value: Amplitude) => void
+  onAmplitudeChange: (value: AmplitudeMode) => void
   /**
    * `false` cuando el zoom libre corrió el trazado de la escala declarada. El
    * rótulo lo dice y aparece el botón para volver.
@@ -38,6 +45,11 @@ interface ECGPaperControlsProps {
  * El zoom libre sigue existiendo para navegar. Lo que no puede pasar es que se
  * mida sobre él creyendo que es la escala estándar, y por eso el rótulo cambia a
  * "escala libre" en cuanto el viewport deja de corresponder.
+ *
+ * La única excepción a los pasos fijos es la amplitud automática: el rango
+ * vertical sigue a la señal para poder verla entera cuando se sale de cualquier
+ * ganancia (pruebas de banco, offsets grandes). El rótulo lo nombra así y no con
+ * mm/mV, porque en ese modo no hay ganancia que declarar.
  */
 export function ECGPaperControls({
   paperSpeed,
@@ -68,17 +80,22 @@ export function ECGPaperControls({
 
       <Select
         value={String(amplitude)}
-        onValueChange={(value) => onAmplitudeChange(Number(value) as Amplitude)}
+        onValueChange={(value) =>
+          onAmplitudeChange(
+            value === AUTO_AMPLITUDE ? AUTO_AMPLITUDE : (Number(value) as AmplitudeMode),
+          )
+        }
       >
-        <SelectTrigger size="sm" className="w-[120px]" aria-label="Ganancia">
+        <SelectTrigger size="sm" className="w-[180px]" aria-label="Ganancia">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {AMPLITUDES.map((gain) => (
             <SelectItem key={gain} value={String(gain)}>
-              {gain} mm/mV
+              {amplitudeLabel(gain)}
             </SelectItem>
           ))}
+          <SelectItem value={AUTO_AMPLITUDE}>{amplitudeLabel(AUTO_AMPLITUDE)}</SelectItem>
         </SelectContent>
       </Select>
 
@@ -88,7 +105,7 @@ export function ECGPaperControls({
           data-testid="ecg-scale-label"
         >
           <RulerDimensionLine className="size-4" aria-hidden />
-          {paperSpeed} mm/s · {amplitude} mm/mV
+          {paperSpeed} mm/s · {amplitudeLabel(amplitude)}
         </span>
       ) : (
         <Button
@@ -98,7 +115,7 @@ export function ECGPaperControls({
           data-testid="ecg-scale-label"
           title="El zoom libre sirve para navegar, no para medir"
         >
-          Escala libre — volver a {paperSpeed} mm/s · {amplitude} mm/mV
+          Escala libre — volver a {paperSpeed} mm/s · {amplitudeLabel(amplitude)}
         </Button>
       )}
     </div>

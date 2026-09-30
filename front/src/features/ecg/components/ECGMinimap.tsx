@@ -23,7 +23,7 @@ interface ECGMinimapProps {
   height?: number
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotation: ECGAnnotation) => void
-  /** Muestra la franja de avisos arriba del mini-mapa. Default true. */
+  /** Muestra los avisos: la franja de arriba y las bandas sobre la traza. Default true. */
   showAnnotations?: boolean
 }
 
@@ -282,23 +282,26 @@ export function ECGMinimap({
         onPointerCancel={handlePointerUp}
       >
         <canvas ref={canvasRef} className="absolute inset-0 block" />
-        {annotationDrawOrder.map((annotation) => {
-          const startPct = annotationPercent(annotation.startMs)
-          const endPct = annotationPercent(annotation.endMs)
-          return (
-            <span
-              key={annotation.id}
-              className="pointer-events-none absolute top-0 bottom-0 border-x"
-              style={{
-                left: `${startPct}%`,
-                width: `${Math.max(endPct - startPct, 0.2)}%`,
-                minWidth: annotation.endMs <= annotation.startMs ? 8 : 4,
-                borderColor: `var(--ecg-alert-${annotation.severity})`,
-                backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
-              }}
-            />
-          )
-        })}
+        {/* Ocultar los avisos del gráfico también los saca de la vista previa:
+            si no, el médico sigue viendo las bandas de color sin saber de qué. */}
+        {showAnnotations &&
+          annotationDrawOrder.map((annotation) => {
+            const startPct = annotationPercent(annotation.startMs)
+            const endPct = annotationPercent(annotation.endMs)
+            return (
+              <span
+                key={annotation.id}
+                className="pointer-events-none absolute top-0 bottom-0 border-x"
+                style={{
+                  left: `${startPct}%`,
+                  width: `${Math.max(endPct - startPct, 0.2)}%`,
+                  minWidth: annotation.endMs <= annotation.startMs ? 8 : 4,
+                  borderColor: `var(--ecg-alert-${annotation.severity})`,
+                  backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
+                }}
+              />
+            )
+          })}
         <div
           className="pointer-events-none absolute top-0 bottom-0 border-2"
           style={{
