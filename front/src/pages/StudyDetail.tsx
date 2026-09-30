@@ -56,6 +56,7 @@ export function StudyDetail() {
   } | null>(null)
   const [printOpen, setPrintOpen] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+  const [showAnnotationsOnChart, setShowAnnotationsOnChart] = useState(true)
   // La calibración vive acá y no adentro del visor: la comparten el gráfico de
   // la solapa, el de pantalla completa y el informe imprimible.
   const scale = usePaperScale({ paperSpeed: 25, amplitude: 20 })
@@ -287,6 +288,7 @@ export function StudyDetail() {
                     onViewportChange={handleMinimapChange}
                     selectedAnnotationId={selectedAnnotationId}
                     onAnnotationSelect={handleAnnotationSelect}
+                    showAnnotations={showAnnotationsOnChart}
                   />
                   <ECGViewer
                     ref={viewerRef}
@@ -301,6 +303,7 @@ export function StudyDetail() {
                     onScaleMatchChange={scale.setOnScale}
                     selectedAnnotationId={selectedAnnotationId}
                     onAnnotationSelect={handleAnnotationSelect}
+                    showAnnotations={showAnnotationsOnChart}
                   />
                   <p className="text-body3 mt-10 text-gray-500">
                     Zoom:{' '}
@@ -320,6 +323,8 @@ export function StudyDetail() {
                   recordingStartMs={ecgQ.data?.startTimestamp ?? 0}
                   selectedAnnotationId={selectedAnnotationId}
                   onAnnotationSelect={handleAnnotationSelect}
+                  showOnChart={showAnnotationsOnChart}
+                  onShowOnChartChange={setShowAnnotationsOnChart}
                   className="h-full"
                 />
               </Card>
@@ -377,6 +382,8 @@ export function StudyDetail() {
             onAmplitudeChange={scale.setAmplitude}
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={setSelectedAnnotationId}
+            showAnnotations={showAnnotationsOnChart}
+            onShowAnnotationsChange={setShowAnnotationsOnChart}
           />
         </>
       )}

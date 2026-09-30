@@ -23,6 +23,8 @@ interface ECGMinimapProps {
   height?: number
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotation: ECGAnnotation) => void
+  /** Muestra la franja de avisos arriba del mini-mapa. Default true. */
+  showAnnotations?: boolean
 }
 
 /**
@@ -42,6 +44,7 @@ export function ECGMinimap({
   height = 64,
   selectedAnnotationId,
   onAnnotationSelect,
+  showAnnotations = true,
 }: ECGMinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -201,7 +204,7 @@ export function ECGMinimap({
 
   return (
     <div className="flex w-full flex-col gap-1.5">
-      {signal.annotations.length > 0 && (
+      {showAnnotations && signal.annotations.length > 0 && (
         <TooltipProvider delayDuration={200}>
           <div className="relative h-8 rounded-sm bg-gray-50" aria-label="Avisos del estudio">
             {annotationDrawOrder.map((annotation) => {

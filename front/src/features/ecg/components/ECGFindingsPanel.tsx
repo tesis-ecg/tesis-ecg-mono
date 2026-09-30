@@ -1,7 +1,8 @@
-import { MessageSquareReply } from 'lucide-react'
+import { Eye, EyeOff, MessageSquareReply } from 'lucide-react'
 import { useMemo } from 'react'
 
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 import {
@@ -24,6 +25,9 @@ interface ECGFindingsPanelProps {
   recordingStartMs: number
   selectedAnnotationId: string | null
   onAnnotationSelect: (annotation: ECGAnnotation) => void
+  /** Si los avisos se dibujan sobre el gráfico. Sin el callback no hay botón. */
+  showOnChart?: boolean
+  onShowOnChartChange?: (show: boolean) => void
   className?: string
 }
 
@@ -42,6 +46,8 @@ export function ECGFindingsPanel({
   recordingStartMs,
   selectedAnnotationId,
   onAnnotationSelect,
+  showOnChart = true,
+  onShowOnChartChange,
   className,
 }: ECGFindingsPanelProps) {
   const links = useMemo(() => buildAnnotationLinks(annotations), [annotations])
@@ -57,11 +63,27 @@ export function ECGFindingsPanel({
 
   return (
     <section className={cn('flex min-h-0 flex-col gap-3', className)} aria-label="Hallazgos ECG">
-      <div>
-        <h2 className="text-h6 text-gray-900">Hallazgos</h2>
-        <p className="text-body3 text-gray-500">
-          {findings.length === 1 ? '1 aviso detectado' : `${findings.length} avisos detectados`}
-        </p>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-h6 text-gray-900">Hallazgos</h2>
+          <p className="text-body3 text-gray-500">
+            {findings.length === 1 ? '1 aviso detectado' : `${findings.length} avisos detectados`}
+          </p>
+        </div>
+        {/* Con muchos avisos juntos las marcas tapan la traza; ocultarlas del
+            gráfico no los descarta: siguen listados acá. */}
+        {onShowOnChartChange && annotations.length > 0 && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-pressed={!showOnChart}
+            onClick={() => onShowOnChartChange(!showOnChart)}
+          >
+            {showOnChart ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+            {showOnChart ? 'Ocultar del gráfico' : 'Mostrar en gráfico'}
+          </Button>
+        )}
       </div>
 
       {findings.length === 0 ? (

@@ -179,14 +179,33 @@ async def test_internal_gap_is_reported_with_its_exact_length(
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     samples = [Sample(timestamp_ms=i * STEP_MS, raw_uV=[i % 100]) for i in range(600)]
-    for sample in samples[300:]:
-        sample.timestamp_ms += 4  # 4 ms que no existen en ningún lado
+    # Saltos de 4 ms cada 5 muestras: ninguno cierra la trama, pero juntos
+    # superan la tolerancia del reloj del ADS en cualquier trama que los toque.
+    for jump_at in range(300, 600, 5):
+        for sample in samples[jump_at:]:
+            sample.timestamp_ms += 4
 
     await _ingest(client, db, device, api_key, encode_samples(samples))
 
     gaps = [e for e in await _events(db) if e.event_metadata["kind"] == "internal_gap"]
     assert gaps
     assert gaps[0].severity == ECGEventSeverity.MEDIUM
+
+
+async def test_adc_clock_drift_is_not_reported_as_gap(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El ADS1292R va 0,25 % lento: eso no es un hueco (INTEGRACION.md §12.11)."""
+    from app.ml.decompression import STEP_MS
+    from tests.frame_builder import Sample, encode_samples
+
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    samples = [Sample(timestamp_ms=i * STEP_MS + i // 200, raw_uV=[i % 100]) for i in range(1500)]
+
+    await _ingest(client, db, device, api_key, encode_samples(samples))
+
+    assert [e for e in await _events(db) if e.event_metadata["kind"] == "internal_gap"] == []
 
 
 async def test_a_clean_batch_produces_no_events(client, s3, db, make_patient, make_device):

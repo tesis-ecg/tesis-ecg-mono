@@ -136,6 +136,8 @@ export interface ECGViewerProps {
   selectedAnnotationId?: string | null
   /** Selección de una banda directamente sobre el canvas. */
   onAnnotationSelect?: (annotation: ECGAnnotation) => void
+  /** Dibuja bandas y rótulos de avisos sobre la traza. Default true. */
+  showAnnotations?: boolean
 }
 
 /**

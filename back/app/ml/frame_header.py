@@ -39,6 +39,16 @@ RICE_SEED_MEAN = 8
 SAMPLE_RATE_HZ = 500
 STEP_MS = 1000 // SAMPLE_RATE_HZ  # división ENTERA, igual que el firmware
 
+# Cuánto puede apartarse el muestreo real de SAMPLE_RATE_HZ: el ADS1292R convierte
+# con su oscilador interno, ±1,5 % en temperatura según su datasheet (0,25 % lento
+# sobre la placa del proyecto). `durationMs` es tiempo de millis() del micro, así
+# que una trama sin ninguna muestra faltante puede declarar hasta ese 1,5 % de más.
+# Copia de ADS_CLOCK_TOLERANCE_PPM (config.h del firmware, INTEGRACION.md §12.11).
+ADS_CLOCK_TOLERANCE_PPM = 15_000
+# t0Ms y el timestamp de la última muestra son millis() leídos cuando loop()
+# atiende el DRDY: cada uno puede llegar 1 ms tarde.
+MILLIS_JITTER_MS = 2
+
 # Bits de hdrFlags (byte 3)
 HDR_REASON_MASK = 0x03
 HDR_DIAGNOSTIC = 0x04
@@ -100,13 +110,27 @@ class FrameInfo:
 
     @property
     def internal_gap_ms(self) -> int:
-        """Milisegundos de señal que FALTAN dentro de esta trama (0 = ninguno).
+        """Cuánto excede `durationMs` a la grilla nominal, en ms (0 = nada).
 
-        Es exacto al milisegundo. Lo único que no se puede saber es en qué punto
-        de la trama estaba el hueco. Un hueco no es una línea isoeléctrica: es
-        información clínica y hay que guardarla.
+        NO es "la señal que falta" tal cual: `durationMs` es tiempo de millis()
+        y las muestras llegan al ritmo del oscilador del ADS1292R. Una trama de
+        400 muestras sin pérdida declara así ~2 ms de más. Para decidir si falta
+        señal, ver `gap_beyond_clock_ms`.
         """
         return max(0, self.duration_ms - self.expected_duration_ms)
+
+    @property
+    def gap_beyond_clock_ms(self) -> int:
+        """La parte del exceso que el reloj del ADS1292R no puede explicar.
+
+        0 = la trama es compatible con no haber perdido ninguna muestra. Por
+        encima, falta señal adentro de la trama (lo único que no se sabe es
+        dónde). Cota conservadora: no ve huecos más chicos que la tolerancia
+        (~14 ms en una trama de 400 muestras). Es la regla de referencia del
+        firmware (`FrameInfo.gap_beyond_clock_ms`, holter_frame_decoder.py).
+        """
+        tolerance = self.expected_duration_ms * ADS_CLOCK_TOLERANCE_PPM // 1_000_000
+        return max(0, self.internal_gap_ms - tolerance - MILLIS_JITTER_MS)
 
 
 def read_header(frame: bytes) -> FrameInfo:
