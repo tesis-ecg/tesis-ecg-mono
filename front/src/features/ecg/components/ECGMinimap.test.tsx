@@ -81,6 +81,20 @@ describe('ECGMinimap annotations', () => {
     expect(onSelect).toHaveBeenCalledWith(signal().annotations[0])
   })
 
+  it('ocultar los avisos también saca sus colores de la vista previa', () => {
+    const { container } = render(
+      <ECGMinimap
+        signal={signal()}
+        viewport={null}
+        onViewportChange={() => undefined}
+        showAnnotations={false}
+      />,
+    )
+
+    expect(screen.queryByTestId('timeline-annotation-range-event-1')).toBeNull()
+    expect(container.innerHTML).not.toContain('--ecg-alert-')
+  })
+
   it('asigna un fondo visible a todas las severidades y ancho mínimo a eventos puntuales', () => {
     const severities: ECGAnnotationSeverity[] = ['low', 'medium', 'high', 'critical']
     const withAllSeverities = signal()

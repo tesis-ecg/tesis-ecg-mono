@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   AMPLITUDES,
+  AUTO_AMPLITUDE,
   DEFAULT_AMPLITUDE,
   DEFAULT_PAPER_SPEED,
   LARGE_BOX_MM,
   PAPER_SPEEDS,
+  autoVerticalRange,
   baselineMv,
   matchesScale,
   paperScale,
@@ -121,6 +123,9 @@ describe('rótulo y zoom libre', () => {
   it('el rótulo dice la calibración vigente', () => {
     expect(scaleLabel(paperScale(25, 10, PX_PER_MM))).toBe('25 mm/s · 10 mm/mV')
     expect(scaleLabel(paperScale(50, 20, PX_PER_MM))).toBe('50 mm/s · 20 mm/mV')
+    expect(scaleLabel(paperScale(25, AUTO_AMPLITUDE, PX_PER_MM))).toBe(
+      '25 mm/s · Amplitud automática',
+    )
   })
 
   it('reconoce cuándo el viewport dejó de corresponder a la escala', () => {
@@ -132,5 +137,42 @@ describe('rótulo y zoom libre', () => {
     // Un zoom de verdad sí.
     expect(matchesScale(scale, 1000, 4)).toBe(false)
     expect(matchesScale(scale, 1000, 30)).toBe(false)
+  })
+})
+
+describe('amplitud automática', () => {
+  it('encuadra el tramo entero, con margen, aunque se salga de cualquier ganancia', () => {
+    // Un offset de 40 mV con un QRS de 2 mV: a 20 mm/mV quedaría fuera de
+    // pantalla, que es justo el caso de las pruebas de banco.
+    const samples = Float32Array.from([40, 40.2, 42, 39.5, 40])
+    const [min, max] = autoVerticalRange(samples, 0, samples.length)!
+    expect(min).toBeLessThan(39.5)
+    expect(max).toBeGreaterThan(42)
+  })
+
+  it('no pierde un pico de una sola muestra', () => {
+    const samples = new Float32Array(100_000)
+    samples[54_321] = 7
+    const [, max] = autoVerticalRange(samples, 0, samples.length)!
+    expect(max).toBeGreaterThan(7)
+  })
+
+  it('una señal plana no se estira hasta llenar la altura', () => {
+    const [min, max] = autoVerticalRange(Float32Array.from([3, 3, 3]), 0, 3)!
+    expect(max - min).toBeGreaterThanOrEqual(1)
+    expect((min + max) / 2).toBeCloseTo(3, 5)
+  })
+
+  it('ignora NaN y devuelve null sin muestras', () => {
+    expect(autoVerticalRange(Float32Array.from([NaN, NaN]), 0, 2)).toBeNull()
+    const [min, max] = autoVerticalRange(Float32Array.from([NaN, 1, 2]), 0, 3)!
+    expect(min).toBeLessThan(1)
+    expect(max).toBeGreaterThan(2)
+  })
+
+  it('la retícula sigue graduada en la ganancia estándar', () => {
+    const scale = paperScale(25, AUTO_AMPLITUDE, PX_PER_MM)
+    expect(scale.autoAmplitude).toBe(true)
+    expect(scale.amplitude).toBe(DEFAULT_AMPLITUDE)
   })
 })

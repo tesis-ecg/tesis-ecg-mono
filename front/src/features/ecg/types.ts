@@ -101,9 +101,10 @@ export interface ECGViewerProps {
   paperSpeed?: number
   /**
    * Ganancia en mm/mV. Default 10, el estándar. Fija el rango vertical: la misma
-   * onda mide lo mismo sin importar qué más haya en la ventana.
+   * onda mide lo mismo sin importar qué más haya en la ventana. Con `'auto'` el
+   * rango sigue a la señal visible, para verla entera aunque no se pueda medir.
    */
-  amplitude?: number
+  amplitude?: number | 'auto'
   /**
    * Viewport inicial absoluto (timestamps en ms epoch). Si se pasa, sobreescribe
    * a `initialWindowSec`. Útil para sincronizar dos instancias del viewer (por

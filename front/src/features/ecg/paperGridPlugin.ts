@@ -101,6 +101,11 @@ export function drawPaperGrid(u: uPlot, scale: PaperScale, colors: PaperGridColo
 
   const minorSpacingPx = scale.pxPerMm * ratio
   const drawMinor = minorSpacingPx >= MIN_MINOR_SPACING_PX
+  // El eje vertical se mide aparte: en amplitud automática el rango lo pone la
+  // señal, así que 0,1 mV puede ocupar mucho menos que un milímetro.
+  const mvSpacingPx = (mv: number) => Math.abs(u.valToPos(mv, 'y', true) - u.valToPos(0, 'y', true))
+  const drawMinorY = mvSpacingPx(mvPerMm * SMALL_BOX_MM) >= MIN_MINOR_SPACING_PX
+  const drawMajorY = mvSpacingPx(mvPerMm * LARGE_BOX_MM) >= MIN_MINOR_SPACING_PX
 
   const left = bbox.left
   const right = bbox.left + bbox.width
@@ -122,15 +127,17 @@ export function drawPaperGrid(u: uPlot, scale: PaperScale, colors: PaperGridColo
       colors.minor,
       ratio,
     )
-    drawLines(
-      ctx,
-      gridPositions(u, 'y', mvPerMm * SMALL_BOX_MM, yScale.min, yScale.max),
-      false,
-      left,
-      right,
-      colors.minor,
-      ratio,
-    )
+    if (drawMinorY) {
+      drawLines(
+        ctx,
+        gridPositions(u, 'y', mvPerMm * SMALL_BOX_MM, yScale.min, yScale.max),
+        false,
+        left,
+        right,
+        colors.minor,
+        ratio,
+      )
+    }
   }
 
   drawLines(
@@ -142,15 +149,17 @@ export function drawPaperGrid(u: uPlot, scale: PaperScale, colors: PaperGridColo
     colors.major,
     ratio,
   )
-  drawLines(
-    ctx,
-    gridPositions(u, 'y', mvPerMm * LARGE_BOX_MM, yScale.min, yScale.max),
-    false,
-    left,
-    right,
-    colors.major,
-    ratio,
-  )
+  if (drawMajorY) {
+    drawLines(
+      ctx,
+      gridPositions(u, 'y', mvPerMm * LARGE_BOX_MM, yScale.min, yScale.max),
+      false,
+      left,
+      right,
+      colors.major,
+      ratio,
+    )
+  }
 
   ctx.restore()
 }
