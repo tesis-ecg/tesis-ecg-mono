@@ -44,6 +44,7 @@ import type {
   ECGViewportChange,
 } from '../types'
 import { formatWallClock, formatWallClockShort } from '../utils/formatEcgTimestamp'
+import { sampleRangeForSeconds } from '../utils/sampleRange'
 
 /**
  * Lee los tokens CSS del ECG desde `document.documentElement`. uPlot pinta sobre
@@ -917,14 +918,17 @@ function applyVerticalRange(
 ): void {
   const heightPx = plotHeightPx(inst)
   if (heightPx <= 0) return
-  const rate = signal.sampleRate || 500
-  const from = Math.floor(minSec * rate)
-  const to = Math.ceil(maxSec * rate)
+  const [from, to] = sampleRangeForSeconds(signal, minSec, maxSec)
+  // Una ventana sin muestras (un hueco, o antes de que llegue el lote) no dice
+  // dónde está la señal: se conserva el rango actual. Centrar en 0 mV dejaba
+  // fuera de pantalla a cualquier trazado con offset.
+  const extent = autoVerticalRange(signal.samples, from, to)
+  if (!extent) return
   // En modo automático el rango lo pone la señal visible: es lo que permite ver
   // un trazado que se sale de cualquier ganancia fija.
-  const autoRange = scale.autoAmplitude ? autoVerticalRange(signal.samples, from, to) : null
-  const [min, max] =
-    autoRange ?? verticalRange(scale, heightPx, baselineMv(signal.samples, from, to))
+  const [min, max] = scale.autoAmplitude
+    ? extent
+    : verticalRange(scale, heightPx, baselineMv(signal.samples, from, to))
   const current = inst.scales.y
   // Sin la comparación esto se llamaría a sí mismo: `setScale` dispara el hook
   // que lo invocó. El epsilon absorbe el redondeo del centro.
