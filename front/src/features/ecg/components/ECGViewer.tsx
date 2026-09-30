@@ -395,8 +395,20 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             onViewportChangeRef.current?.(nextViewport)
             // La línea de base sigue a la ventana visible, así que el rango
             // vertical se recalcula acá. El span no cambia —lo fija la ganancia—
-            // pero el centro sí.
-            applyVerticalRange(u, scaleRef.current, signal, min, max)
+            // pero el centro sí (y en amplitud automática, también el span).
+            //
+            // **Diferido a propósito.** Este hook corre adentro del `setScales`
+            // de uPlot, que al terminar de avisar borra todas las escalas
+            // pendientes: un `setScale('y')` hecho acá se perdía, y el eje Y
+            // quedaba con el rango de la primera ventana aunque uno se
+            // desplazara o hiciera zoom. La microtarea corre después de ese
+            // borrado y antes de que el navegador pinte, así que no parpadea.
+            queueMicrotask(() => {
+              if (uplotRef.current !== u) return
+              const { min: nextMin, max: nextMax } = u.scales.x
+              if (nextMin == null || nextMax == null) return
+              applyVerticalRange(u, scaleRef.current, signal, nextMin, nextMax)
+            })
             // El zoom libre sirve para navegar, no para medir. Si el rango
             // visible dejó de corresponder a `paperSpeed`, el rótulo de la barra
             // tiene que decirlo: si no, alguien puede medir un QT sobre una
