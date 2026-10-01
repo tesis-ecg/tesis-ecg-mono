@@ -7,6 +7,7 @@ señal completa (`raw` para los seedeados, `segments` para los ingestados).
 import hashlib
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from sqlalchemy import select
 
@@ -14,8 +15,9 @@ from app.core.s3 import put_object
 from app.db.models.audit_event import AuditEvent, AuditEventType
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
+from app.db.models.study import Study
 from app.db.models.user import UserRole
-from app.modules.ingest.processing import process_batch
+from app.modules.ingest.processing import append_filtered_view, process_batch
 from tests.ingest_helpers import build_frames, post_frames
 
 
@@ -28,6 +30,13 @@ async def _ingested_study(client, db, make_patient, make_device, samples: int = 
     device, api_key = await make_device(patient=patient)
     body = (await post_frames(client, device, api_key, build_frames(samples))).json()
     await process_batch(db, body["batchId"])
+    study = await db.get(Study, body["studyId"])
+    assert study is not None
+    # These manifest contract tests use a short synthetic study. The production
+    # path waits 120 seconds; force its safe prefix here to test the view shape.
+    with patch("app.modules.ingest.processing.CONTEXT_SECONDS", 0):
+        await append_filtered_view(db, study)
+    await db.commit()
     return patient, body["studyId"]
 
 
@@ -249,9 +258,27 @@ async def test_report_windows_reads_only_the_requested_raw_range(
     assert response.status_code == 200, response.text
     window = response.json()["windows"][0]
     assert window["id"] == "detail-1"
-    assert window["source"] == "raw"
+    assert window["source"] == "filtered_visualization"
     assert len(window["samplesMv"]) == len(window["timestampsMs"])
     assert 900 <= len(window["samplesMv"]) <= 1_100
+
+
+async def test_unfinished_filtered_window_reports_processing(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    patient = await make_patient()
+    device, key = await make_device(patient=patient)
+    body = (await post_frames(client, device, key, build_frames(900))).json()
+    await process_batch(db, body["batchId"])
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = await _manifest(client, body["studyId"])
+    start = manifest["timeline"][0]["startEpochMs"]
+    response = await client.post(
+        f"/studies/{body['studyId']}/ecg/report-windows",
+        json={"windows": [{"id": "pending", "startEpochMs": start, "endEpochMs": start + 1000}]},
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "ECG_PROCESSING"
 
 
 async def test_report_windows_rejects_a_window_longer_than_ten_seconds(
@@ -289,11 +316,20 @@ async def test_manifest_grows_as_batches_arrive(
 
     first = (await post_frames(client, device, api_key, frames[:half])).json()
     await process_batch(db, first["batchId"])
+    study = await db.get(Study, first["studyId"])
+    assert study is not None
+    with patch("app.modules.ingest.processing.CONTEXT_SECONDS", 0):
+        await append_filtered_view(db, study)
+    await db.commit()
     as_user(await make_user(UserRole.ADMIN))
     before = await _manifest(client, first["studyId"])
 
     second = (await post_frames(client, device, api_key, frames[half:])).json()
     await process_batch(db, second["batchId"])
+    await db.refresh(study)
+    with patch("app.modules.ingest.processing.CONTEXT_SECONDS", 0):
+        await append_filtered_view(db, study)
+    await db.commit()
     after = await _manifest(client, first["studyId"])
 
     assert after["sampleCount"] > before["sampleCount"]

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Enum,
     ForeignKey,
@@ -123,5 +124,6 @@ class StudyTimelineSegment(TimestampMixin, Base):
         nullable=False,
     )
     anchor_uncertainty_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    anchor_matches_boot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     study: Mapped["Study"] = relationship()

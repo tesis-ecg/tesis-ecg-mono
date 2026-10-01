@@ -48,6 +48,7 @@ class RunningStudyOut(CamelModel):
     id: uuid.UUID
     patientName: str
     startedAt: datetime
+    startedAtVerified: bool
     durationMs: int
     deviceSerial: str
 

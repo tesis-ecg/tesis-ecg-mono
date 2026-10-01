@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -349,7 +349,9 @@ async def _sync_account_email(db: AsyncSession, patient: Patient, new_email: str
     return email
 
 
-async def delete_patient(input_data: PatientIdInput, db: AsyncSession) -> None:
+async def delete_patient(
+    input_data: PatientIdInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> None:
     patient = await repo.get_patient_model_for_update(
         db, input_data.patient_id, input_data.doctor_id
     )
@@ -363,7 +365,7 @@ async def delete_patient(input_data: PatientIdInput, db: AsyncSession) -> None:
     # estudios abiertos. Se cancelan, no se completan: la baja del paciente no
     # es el final normal de un Holter.
     await studies.close_open_studies_for_patient(
-        db, patient, input_data.actor_id, "patient_deleted"
+        db, patient, input_data.actor_id, "patient_deleted", background
     )
     # La cuenta de la app se cierra en el mismo acto. Sin esto el paciente
     # seguiría logueándose y recibiendo avisos de un estudio que ya no existe.

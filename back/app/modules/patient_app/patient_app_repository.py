@@ -141,7 +141,7 @@ async def list_patient_alerts(
     )
     requires_response = or_(
         Alert.kind.is_(None),
-        Alert.kind != VEST_MISPLACED_KIND,
+        Alert.kind.not_in((VEST_MISPLACED_KIND, "battery_low", "battery_critical")),
     )
     vest_alert = aliased(Alert)
     latest_vest_alert_id = (

@@ -79,6 +79,12 @@ class DeviceContext:
     #: diagnóstico. El atraso de verdad sale de restar el `t0Ms` de las tramas
     #: contra `uptime_ms` de este mismo POST, que están en el mismo dominio.
     backlog_seconds: int | None = None
+    #: Arranque del par (epoch, uptime) enviado en este POST. El puente puede
+    #: reconstruir el de un lote viejo; no siempre es el arranque actual.
+    boot_id: int | None = None
+    rssi_dbm: int | None = None
+    sqi: int | None = None
+    battery_flags: int | None = None
 
     def boot_epoch_ms(self, received_at: datetime) -> tuple[int, TimeSyncSource, int]:
         """Instante UTC en que el `millis()` del equipo valía cero.
@@ -209,6 +215,10 @@ async def get_authenticated_device(
     x_device_loss_flags: int | None = Header(default=None),
     x_device_status_flags: int | None = Header(default=None),
     x_device_backlog_seconds: int | None = Header(default=None),
+    x_device_boot_id: int | None = Header(default=None),
+    x_device_rssi: int | None = Header(default=None),
+    x_device_sqi: int | None = Header(default=None),
+    x_device_battery_flags: int | None = Header(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceContext:
     # Import diferido: `app.modules.ingest` importa este módulo (mismo patrón
@@ -272,4 +282,8 @@ async def get_authenticated_device(
         loss_flags=_in_range(x_device_loss_flags, 0, 255),
         status_flags=_in_range(x_device_status_flags, 0, 255),
         backlog_seconds=_in_range(x_device_backlog_seconds, 0, 65_535),
+        boot_id=_in_range(x_device_boot_id, 0, 15),
+        rssi_dbm=_in_range(x_device_rssi, -127, 0),
+        sqi=_in_range(x_device_sqi, 1, 3),
+        battery_flags=_in_range(x_device_battery_flags, 0, 15),
     )

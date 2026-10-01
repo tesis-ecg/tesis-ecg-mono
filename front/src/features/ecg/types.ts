@@ -19,6 +19,7 @@ export interface ECGTimelineSegment {
    */
   anchorSource: 'ntp' | 'none' | 'server_receive'
   anchorUncertaintyMs: number | null
+  anchorMatchesBoot?: boolean | null
 }
 
 export interface ECGAnnotation {
@@ -86,6 +87,9 @@ export interface ECGSignal {
     isSimulated: boolean
     /** Tamaño del bucket de la vista descargada; null si la señal es cruda. */
     overviewSamplesPerBucket: number | null
+    processedSampleCount?: number
+    startTimeVerified?: boolean
+    viewKind?: 'raw' | 'filtered_visualization'
   }
 }
 

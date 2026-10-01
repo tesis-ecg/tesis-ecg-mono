@@ -117,6 +117,7 @@ def _patient_study_out(study: Study) -> PatientStudyOut:
         id=study.id,
         patientId=study.patient_id,
         startedAt=study.started_at,
+        startedAtVerified=study.started_at_verified,
         endedAt=study.ended_at,
         durationHours=_duration_hours(study),
         status=study.status,
@@ -140,6 +141,7 @@ def _study_detail_out(
         patientName=f"{patient.first_name} {patient.last_name}".strip(),
         deviceId=device.id,
         startedAt=study.started_at,
+        startedAtVerified=study.started_at_verified,
         endedAt=study.ended_at,
         durationMs=_duration_ms(study),
         deviceSerial=device.serial_number,
@@ -251,7 +253,9 @@ class _ReportPlacement(NamedTuple):
     linked_event_id: uuid.UUID | None
 
 
-def _report_offset_ms(report: PatientReport, study: Study) -> int | None:
+def _report_offset_ms(
+    report: PatientReport, study: Study, segments: list[StudyTimelineSegment]
+) -> int | None:
     """Dónde cae el registro dentro de la señal, o `None` si todavía no hay.
 
     **No se recorta contra el final de la grabación**, a diferencia de
@@ -266,10 +270,21 @@ def _report_offset_ms(report: PatientReport, study: Study) -> int | None:
     `samples_count` crece y la misma función lo empieza a ubicar sola: no hay
     job ni backfill, es una función del estado actual.
     """
-    offset_ms = (report.occurred_at - study.started_at).total_seconds() * 1000
-    if offset_ms < 0 or offset_ms > _recorded_ms(study):
+    if segments:
+        occurred_ms = int(report.occurred_at.timestamp() * 1000)
+        for segment in segments:
+            if segment.anchor_matches_boot is not True:
+                continue
+            if segment.start_epoch_ms <= occurred_ms <= segment.end_epoch_ms:
+                span = max(segment.end_epoch_ms - segment.start_epoch_ms, 1)
+                within = (occurred_ms - segment.start_epoch_ms) * segment.sample_count / span
+                sample = segment.start_sample_index + within
+                return round(sample * 1000 / study.sample_rate)
         return None
-    return round(offset_ms)
+    if not study.started_at_verified:
+        return None
+    offset_ms = (report.occurred_at - study.started_at).total_seconds() * 1000
+    return round(offset_ms) if 0 <= offset_ms <= _recorded_ms(study) else None
 
 
 def _report_severity(report: PatientReport) -> Literal["low", "medium", "high", "critical"]:
@@ -315,6 +330,7 @@ def _report_placements(
     study: Study,
     reports: list[PatientReport],
     event_offsets: dict[uuid.UUID, tuple[int, int]],
+    segments: list[StudyTimelineSegment],
 ) -> dict[uuid.UUID, _ReportPlacement]:
     """Dónde va cada registro sobre la traza, y de qué hallazgo cuelga.
 
@@ -345,7 +361,9 @@ def _report_placements(
         if offsets is not None and event_id is not None:
             placements[report.id] = _ReportPlacement((offsets[0] + offsets[1]) // 2, event_id)
         else:
-            placements[report.id] = _ReportPlacement(_report_offset_ms(report, study), None)
+            placements[report.id] = _ReportPlacement(
+                _report_offset_ms(report, study, segments), None
+            )
     return placements
 
 
@@ -448,7 +466,12 @@ def _wall_clock_resolver(
             end = segment.start_sample_index + segment.sample_count
             if sample < end or segment is segments[-1]:
                 within = max(sample - segment.start_sample_index, 0)
-                return int(segment.start_epoch_ms + within * 1000 / rate)
+                return round(
+                    segment.start_epoch_ms
+                    + within
+                    * (segment.end_epoch_ms - segment.start_epoch_ms)
+                    / max(segment.sample_count, 1)
+                )
         return started_ms + offset_ms
 
     return resolve
@@ -459,12 +482,15 @@ def _study_annotations(
     events: list[ECGEvent],
     reports: list[PatientReport],
     to_epoch_ms: Callable[[int], int],
+    segments: list[StudyTimelineSegment],
 ) -> list[StudyEcgAnnotationOut]:
     # Los hallazgos primero: los registros necesitan saber cuáles llegaron a la
     # señal para poder anclarse en el que contestaron.
     annotations, event_offsets = _event_annotations(study, events, to_epoch_ms)
     annotations.extend(
-        _report_annotations(reports, _report_placements(study, reports, event_offsets), to_epoch_ms)
+        _report_annotations(
+            reports, _report_placements(study, reports, event_offsets, segments), to_epoch_ms
+        )
     )
     annotations.sort(key=lambda item: (item.startOffsetMs, item.endOffsetMs, str(item.id)))
     return annotations
@@ -565,14 +591,34 @@ async def get_study_ecg(input_data: StudyIdInput, db: AsyncSession) -> StudyEcgO
     )
 
 
-async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> StudyEcgManifestOut:
+async def get_study_ecg_manifest(
+    input_data: StudyIdInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> StudyEcgManifestOut:
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
     study, _, _, _, _ = result
-    # Un estudio ingestado no tiene `ecg_s3_key`: su señal vive en segmentos. Lo
-    # que define "hay ECG" es que exista alguna de las dos formas.
-    if study.ecg_s3_key is None and not study.ecg_segments:
+    from app.modules.ingest import ingest_repository as ingest_repo
+
+    pending = await ingest_repo.list_batches_to_process(db, study.id)
+    if background is not None:
+        from app.modules.ingest.processing import process_study_task
+
+        if pending or (
+            study.filter_view_enabled
+            and study.status is not StudyStatus.IN_PROGRESS
+            and study.filtered_samples_count < study.samples_count
+        ):
+            background.add_task(process_study_task, study.id)
+    # El manifest puede estar vacío mientras se procesa el primer lote. Se
+    # devuelve en ese caso para que BackgroundTasks reintente y la UI muestre
+    # "sin datos procesados" sin descargar el crudo como si fuera filtrado.
+    if (
+        study.ecg_s3_key is None
+        and not (study.ecg_filtered_segments if study.filter_view_enabled else study.ecg_segments)
+        and study.samples_count == 0
+        and not pending
+    ):
         raise HTTPException(
             status_code=404,
             detail={"code": "ECG_NOT_FOUND", "message": "ECG no disponible para este estudio."},
@@ -594,7 +640,11 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
                 for chunk in level.get("chunks", [])
             ],
         )
-        for level in study.ecg_pyramid_levels
+        for level in (
+            study.ecg_filtered_pyramid_levels
+            if study.filter_view_enabled
+            else study.ecg_pyramid_levels
+        )
     ]
     segments = [
         StudyEcgSegmentOut(
@@ -605,7 +655,9 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
             startSampleIndex=int(segment["startSampleIndex"]),
             sampleCount=int(segment["sampleCount"]),
         )
-        for segment in study.ecg_segments
+        for segment in (
+            study.ecg_filtered_segments if study.filter_view_enabled else study.ecg_segments
+        )
     ]
     raw = (
         StudyEcgObjectOut(
@@ -629,6 +681,7 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
             bootId=segment.boot_id,
             anchorSource=segment.anchor_source.value,
             anchorUncertaintyMs=segment.anchor_uncertainty_ms,
+            anchorMatchesBoot=segment.anchor_matches_boot,
         )
         for segment in timeline_segments
     ]
@@ -637,6 +690,7 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         await repo.list_ecg_events(db, study.id),
         await patient_app_repo.list_reports_for_study(db, study.id),
         to_epoch_ms,
+        timeline_segments,
     )
     if input_data.actor_id is not None:
         await auth_repo.log_audit_event(
@@ -651,9 +705,11 @@ async def get_study_ecg_manifest(input_data: StudyIdInput, db: AsyncSession) -> 
         sampleRate=study.sample_rate,
         sampleCount=study.samples_count,
         startTimestamp=int(study.started_at.timestamp() * 1000),
+        startTimeVerified=study.started_at_verified,
         durationMs=_duration_ms(study),
         status=study.status,
         isSimulated=study.is_simulated,
+        viewKind="filtered_visualization" if study.filter_view_enabled else "raw",
         raw=raw,
         levels=levels,
         segments=segments,
@@ -707,18 +763,19 @@ def _segment_timestamp_ms(
 
 
 def _raw_objects_for_window(
-    study: Study, start_sample: int, end_sample: int
+    study: Study, start_sample: int, end_sample: int, *, filtered: bool = False
 ) -> list[tuple[str, int, int]]:
     """Devuelve (key, inicio global, fin global) de cada objeto que toca el rango."""
-    if study.ecg_segments:
+    source_segments = study.ecg_filtered_segments if filtered else study.ecg_segments
+    if source_segments:
         objects: list[tuple[str, int, int]] = []
-        for item in study.ecg_segments:
+        for item in source_segments:
             object_start = int(item["startSampleIndex"])
             object_end = object_start + int(item["sampleCount"])
             if object_end > start_sample and object_start < end_sample:
                 objects.append((str(item["key"]), object_start, object_end))
         return objects
-    if study.ecg_s3_key is not None:
+    if not filtered and study.ecg_s3_key is not None:
         return [(study.ecg_s3_key, 0, study.samples_count)]
     return []
 
@@ -728,6 +785,8 @@ def _read_raw_window(
     timeline_segments: list[StudyTimelineSegment],
     start_ms: int,
     end_ms: int,
+    *,
+    filtered: bool = False,
 ) -> tuple[list[int], list[float], list[int]]:
     """Lee exactamente las muestras de una ventana, respetando huecos de pared."""
     timeline: list[StudyTimelineSegment | None] = (
@@ -744,7 +803,7 @@ def _read_raw_window(
             continue
         sample_start, sample_end = bounds
         for key, object_start, object_end in _raw_objects_for_window(
-            study, sample_start, sample_end
+            study, sample_start, sample_end, filtered=filtered
         ):
             read_start = max(sample_start, object_start)
             read_end = min(sample_end, object_end)
@@ -860,8 +919,20 @@ async def get_study_ecg_report_windows(
     if result is None:
         raise _not_found()
     study, _, _, _, _ = result
-    has_raw = study.ecg_s3_key is not None or bool(study.ecg_segments)
-    if study.samples_count <= 0 or (not has_raw and not study.ecg_pyramid_levels):
+    has_raw = (
+        bool(study.ecg_filtered_segments)
+        if study.filter_view_enabled
+        else study.ecg_s3_key is not None or bool(study.ecg_segments)
+    )
+    available_levels = (
+        study.ecg_filtered_pyramid_levels if study.filter_view_enabled else study.ecg_pyramid_levels
+    )
+    if study.samples_count <= 0 or (not has_raw and not available_levels):
+        if study.filter_view_enabled and study.samples_count > 0:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "ECG_PROCESSING", "message": "El ECG todavía se está procesando."},
+            )
         raise HTTPException(
             status_code=404,
             detail={"code": "ECG_NOT_FOUND", "message": "ECG no disponible para este estudio."},
@@ -883,10 +954,39 @@ async def get_study_ecg_report_windows(
     timeline = await repo.list_timeline_segments(db, study.id)
     windows = []
     for window in data.windows:
-        reader = _read_raw_window if has_raw else _read_envelope_window
-        timestamps, samples, gap_indices = await asyncio.to_thread(
-            reader, study, timeline, window.startEpochMs, window.endEpochMs
-        )
+        if study.filter_view_enabled:
+            runs: list[StudyTimelineSegment | None] = list(timeline) if timeline else [None]
+            if any(
+                bounds is not None and bounds[1] > study.filtered_samples_count
+                for run in runs
+                if (
+                    bounds := _window_sample_bounds(
+                        run, window.startEpochMs, window.endEpochMs, study
+                    )
+                )
+                is not None
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "ECG_PROCESSING",
+                        "message": "La ventana solicitada todavía se está procesando.",
+                    },
+                )
+        if study.filter_view_enabled:
+            timestamps, samples, gap_indices = await asyncio.to_thread(
+                _read_raw_window,
+                study,
+                timeline,
+                window.startEpochMs,
+                window.endEpochMs,
+                filtered=True,
+            )
+        else:
+            reader = _read_raw_window if has_raw else _read_envelope_window
+            timestamps, samples, gap_indices = await asyncio.to_thread(
+                reader, study, timeline, window.startEpochMs, window.endEpochMs
+            )
         windows.append(
             StudyEcgReportWindowOut(
                 id=window.id,
@@ -895,7 +995,13 @@ async def get_study_ecg_report_windows(
                 timestampsMs=timestamps,
                 samplesMv=samples,
                 gapIndices=gap_indices,
-                source="raw" if has_raw else "envelope",
+                source=(
+                    "filtered_visualization"
+                    if study.filter_view_enabled
+                    else "raw"
+                    if has_raw
+                    else "envelope"
+                ),
             )
         )
     if input_data.actor_id is not None:
@@ -1019,8 +1125,7 @@ async def _transition(
         metadata={"target_study_id": str(study.id), "patient_id": str(patient.id)},
     )
     await db.commit()
-    if background is not None:
-        background.add_task(compact_study_pyramid_task, input_data.study_id)
+    _schedule_study_finalization(background, study)
 
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:  # pragma: no cover - la fila se acaba de commitear
@@ -1168,8 +1273,22 @@ async def simulate_anomaly(
     )
 
 
+def _schedule_study_finalization(background: BackgroundTasks | None, study: Study) -> None:
+    if background is None or not (
+        study.filter_view_enabled or study.ecg_segments or study.ecg_pyramid_levels
+    ):
+        return
+    from app.modules.ingest.processing import process_study_task
+
+    background.add_task(process_study_task, study.id)
+
+
 async def close_open_studies_for_device(
-    db: AsyncSession, device: Device, actor_id: uuid.UUID | None, reason: str
+    db: AsyncSession,
+    device: Device,
+    actor_id: uuid.UUID | None,
+    reason: str,
+    background: BackgroundTasks | None = None,
 ) -> int:
     """Cierra los estudios abiertos del equipo. **No commitea.**
 
@@ -1194,6 +1313,7 @@ async def close_open_studies_for_device(
     patient = await repo.get_patient_for_update(db, device.patient_id)
     for study in studies:
         _close(study, StudyStatus.COMPLETED)
+        _schedule_study_finalization(background, study)
         await auth_repo.log_audit_event(
             db,
             AuditEventType.STUDY_COMPLETED,
@@ -1211,7 +1331,11 @@ async def close_open_studies_for_device(
 
 
 async def close_open_studies_for_patient(
-    db: AsyncSession, patient: Patient, actor_id: uuid.UUID | None, reason: str
+    db: AsyncSession,
+    patient: Patient,
+    actor_id: uuid.UUID | None,
+    reason: str,
+    background: BackgroundTasks | None = None,
 ) -> int:
     """Cierra todos los estudios abiertos del paciente. **No commitea.**
 
@@ -1223,6 +1347,7 @@ async def close_open_studies_for_patient(
     studies = await repo.list_open_for_patient(db, patient.id)
     for study in studies:
         _close(study, StudyStatus.CANCELLED)
+        _schedule_study_finalization(background, study)
         await auth_repo.log_audit_event(
             db,
             AuditEventType.STUDY_CANCELLED,
@@ -1256,7 +1381,9 @@ async def list_study_patient_reports(
     # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún
     # lado. La ubicación de un registro se decide en un solo lugar.
     event_offsets = _event_offset_map(study, await repo.list_ecg_events(db, study.id))
-    placements = _report_placements(study, reports, event_offsets)
+    placements = _report_placements(
+        study, reports, event_offsets, await repo.list_timeline_segments(db, study.id)
+    )
 
     items: list[StudyPatientReportOut] = []
     pending = 0
@@ -1472,6 +1599,7 @@ async def _clinical_report_snapshot(
         await repo.list_ecg_events(db, study.id),
         reports,
         _wall_clock_resolver(study, timeline),
+        timeline,
     )
     windows = _report_window_plans(annotations)
     doctor_info = await repo.get_responsible_doctor(db, patient.doctor_id)
@@ -1481,6 +1609,15 @@ async def _clinical_report_snapshot(
     recorded_ms = round(_recorded_ms(study))
     wall_ms = _duration_ms(study)
     interruption_ms = max(0, wall_ms - recorded_ms)
+    time_verified = study.started_at_verified and all(
+        segment.anchor_matches_boot is True for segment in timeline
+    )
+    time_uncertainties = [segment.anchor_uncertainty_ms for segment in timeline]
+    max_time_uncertainty = (
+        max(value for value in time_uncertainties if value is not None)
+        if time_uncertainties and all(value is not None for value in time_uncertainties)
+        else None
+    )
 
     snapshot: dict[str, Any] = {
         "schemaVersion": 1,
@@ -1489,6 +1626,7 @@ async def _clinical_report_snapshot(
             "id": str(study.id),
             "status": study.status.value,
             "startedAt": study.started_at.isoformat(),
+            "startedAtVerified": time_verified,
             "endedAt": study.ended_at.isoformat() if study.ended_at else None,
             "durationMs": wall_ms,
             "deviceSerial": device.serial_number,
@@ -1519,10 +1657,9 @@ async def _clinical_report_snapshot(
             "lastDataReceivedAt": (
                 last_data_received_at.isoformat() if last_data_received_at else None
             ),
+            "timeVerified": time_verified,
             "synchronizationSources": sorted({item.anchor_source.value for item in timeline}),
-            "maxSynchronizationUncertaintyMs": max(
-                (item.anchor_uncertainty_ms or 0 for item in timeline), default=0
-            ),
+            "maxSynchronizationUncertaintyMs": max_time_uncertainty,
         },
         "findings": _summarize_annotations(annotations, {"clinical", "patient_marker"}),
         "technicalEvents": _summarize_annotations(annotations, {"signal_quality", "technical"}),
@@ -1546,6 +1683,17 @@ async def _clinical_report_snapshot(
             StudyClinicalReportIssueOut(
                 code="STUDY_NOT_COMPLETED",
                 message="El estudio debe estar completado para generar una versión final.",
+                severity="blocking",
+            )
+        )
+    if not time_verified:
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="TIME_NOT_VERIFIED",
+                message=(
+                    "La hora de las muestras no está verificada para todos los tramos. "
+                    "No se puede emitir un informe final con horas estimadas."
+                ),
                 severity="blocking",
             )
         )

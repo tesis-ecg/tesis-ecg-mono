@@ -41,4 +41,12 @@ describe('routeForAlert', () => {
       }),
     ).toEqual({ pathname: '/(tabs)/device' })
   })
+
+  it('manda los avisos de batería a Dispositivo', () => {
+    for (const kind of ['battery_low', 'battery_critical']) {
+      expect(
+        routeForAlert({ ...base, kind, requiresResponse: false, needsReport: false }),
+      ).toEqual({ pathname: '/(tabs)/device' })
+    }
+  })
 })

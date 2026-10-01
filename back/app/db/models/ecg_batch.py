@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -113,6 +114,9 @@ class ECGBatch(TimestampMixin, Base):
     #: del pedido. Es una muestra de ancla: la corrección de deriva del tramo se
     #: ajusta sobre todas las del mismo arranque.
     bridge_epoch_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: None: puente anterior al header. False: ancla del boot actual aplicada
+    #: solo como hora de recepción aproximada para backlog de otro arranque.
+    anchor_matches_boot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     time_sync_source: Mapped[TimeSyncSource] = mapped_column(
         Enum(
             TimeSyncSource,

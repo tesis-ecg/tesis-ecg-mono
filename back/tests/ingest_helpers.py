@@ -34,6 +34,10 @@ def device_headers(
     loss_flags: int | None = None,
     status_flags: int | None = None,
     backlog_seconds: int | None = None,
+    boot_id: int | None = None,
+    rssi: int | None = None,
+    sqi: int | None = None,
+    battery_flags: int | None = None,
 ) -> dict[str, str]:
     """Cabeceras de un equipo de campo, con hora sincronizada.
 
@@ -70,6 +74,10 @@ def device_headers(
         ("X-Device-Loss-Flags", loss_flags),
         ("X-Device-Status-Flags", status_flags),
         ("X-Device-Backlog-Seconds", backlog_seconds),
+        ("X-Device-Boot-Id", boot_id),
+        ("X-Device-Rssi", rssi),
+        ("X-Device-Sqi", sqi),
+        ("X-Device-Battery-Flags", battery_flags),
     ):
         if value is not None:
             headers[name] = str(value)

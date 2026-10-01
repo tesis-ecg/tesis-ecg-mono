@@ -77,7 +77,15 @@ export function StudyHeader({ study }: StudyHeaderProps) {
       )}
 
       <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        <Metadata icon={Calendar} label="Inicio" value={formatDateTime(study.startedAt)} />
+        <Metadata
+          icon={Calendar}
+          label="Inicio"
+          value={
+            study.startedAtVerified === false
+              ? 'Hora no verificada'
+              : formatDateTime(study.startedAt)
+          }
+        />
         <Metadata
           icon={Calendar}
           label="Fin"

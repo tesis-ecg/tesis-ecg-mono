@@ -48,6 +48,7 @@ interface EcgTimelineSegment {
   bootId: number | null
   anchorSource: 'ntp' | 'none' | 'server_receive'
   anchorUncertaintyMs: number | null
+  anchorMatchesBoot?: boolean | null
 }
 
 interface EcgAnnotation {
@@ -81,9 +82,11 @@ interface EcgManifest {
   sampleRate: number
   sampleCount: number
   startTimestamp: number
+  startTimeVerified?: boolean
   durationMs: number
   status?: string
   isSimulated?: boolean
+  viewKind?: 'raw' | 'filtered_visualization'
   raw: EcgObject | null
   levels: EcgLevel[]
   segments?: EcgSegment[]
@@ -104,7 +107,7 @@ export interface EcgReportWindow {
   timestampsMs: number[]
   samplesMv: number[]
   gapIndices: number[]
-  source: 'raw' | 'envelope'
+  source: 'raw' | 'envelope' | 'filtered_visualization'
 }
 
 const MAX_INITIAL_POINTS = 20_000
@@ -163,26 +166,21 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
   const timeline = [...(manifest.timeline ?? [])].sort((a, b) => a.ordinal - b.ordinal)
   const { timestampsMs, gapIndices } = buildTimestamps(
     samples.length,
-    manifest.sampleCount,
     manifest.sampleRate,
     manifest.startTimestamp,
     timeline,
+    level?.samplesPerBucket ?? null,
   )
   const startTimestamp = timestampsMs.length > 0 ? timestampsMs[0] : manifest.startTimestamp
 
   return {
     sampleRate: manifest.sampleRate,
-    // El largo del eje, medido sobre el eje mismo: la hora del último punto menos
-    // la del primero. Incluye los huecos, que es lo que hace que un corte se vea
-    // como un corte, pero además **coincide** con lo que dibuja `buildXAxis`.
-    //
-    // Sumar los huecos al tiempo grabado daba otro número: la duración de un
-    // tramo en hora de pared también lleva adentro los milisegundos que faltan
-    // DENTRO de una trama (`FrameInfo.internal_gap_ms`) y la corrección de
-    // deriva, y ninguna de las dos cosas está en el recuento de muestras. El
-    // visor clampea el scroll a `durationMs`, así que quedarse corto dejaba el
-    // final del estudio fuera de alcance.
-    durationMs: wallClockSpanMs(timestampsMs, manifest),
+    // El eje cubre todo el estudio. Si el nivel descargado está incompleto,
+    // sus puntos quedan en su posición real y el tramo restante se ve vacío.
+    durationMs:
+      timeline.length > 0
+        ? timeline[timeline.length - 1].endEpochMs - startTimestamp
+        : recordingDurationMs(manifest.sampleCount, manifest.sampleRate),
     samples,
     startTimestamp,
     timestampsMs,
@@ -208,6 +206,13 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       sampleCount: manifest.sampleCount,
       isSimulated: Boolean(manifest.isSimulated),
       overviewSamplesPerBucket: level?.samplesPerBucket ?? null,
+      processedSampleCount: level
+        ? Math.min(manifest.sampleCount, (samples.length / 2) * level.samplesPerBucket)
+        : samples.length,
+      startTimeVerified:
+        (manifest.startTimeVerified ?? true) &&
+        timeline.every((segment) => segment.anchorMatchesBoot === true),
+      viewKind: manifest.viewKind ?? 'raw',
     },
   }
 }
@@ -229,25 +234,23 @@ export async function getStudyEcgReportWindows(
  * Hora de pared de cada punto dibujado, y dónde se corta la traza.
  *
  * El array descargado puede ser la señal cruda o un nivel de la pirámide, así
- * que un punto no es necesariamente una muestra: se reparten uniformemente sobre
- * el espacio de muestras del estudio y de ahí se traduce a hora con la línea de
- * tiempo. Sin línea de tiempo —estudio seedeado o legacy— se cae al eje
- * uniforme de siempre, que para una grabación sin cortes es correcto.
+ * que un punto no es necesariamente una muestra: cada par min/max ocupa un
+ * bucket fijo. El índice de ese bucket se traduce a hora con la línea de tiempo.
  */
 function buildTimestamps(
   pointCount: number,
-  sampleCount: number,
   sampleRate: number,
   fallbackStartMs: number,
   timeline: EcgTimelineSegment[],
+  samplesPerBucket: number | null,
 ): { timestampsMs: Float64Array; gapIndices: number[] } {
   const timestampsMs = new Float64Array(pointCount)
   const gapIndices: number[] = []
   if (pointCount === 0) return { timestampsMs, gapIndices }
 
-  const samplesPerPoint = pointCount > 0 ? sampleCount / pointCount : 1
+  const samplesPerPoint = samplesPerBucket === null ? 1 : samplesPerBucket / 2
   if (timeline.length === 0 || sampleRate <= 0) {
-    const dt = pointCount > 0 ? recordingDurationMs(sampleCount, sampleRate) / pointCount : 0
+    const dt = sampleRate > 0 ? (samplesPerPoint * 1000) / sampleRate : 0
     for (let i = 0; i < pointCount; i++) timestampsMs[i] = fallbackStartMs + i * dt
     return { timestampsMs, gapIndices }
   }
@@ -271,7 +274,11 @@ function buildTimestamps(
     // y asume que está ordenado: un solo punto fuera de orden le rompe el cursor
     // y el dibujo. Que dos tramos se solapen unos milisegundos es ruido del
     // ancla, no señal, y aplastarlo es preferible a un gráfico roto.
-    previousMs = Math.max(segment.startEpochMs + (within * 1000) / sampleRate, previousMs)
+    previousMs = Math.max(
+      segment.startEpochMs +
+        (within * (segment.endEpochMs - segment.startEpochMs)) / Math.max(segment.sampleCount, 1),
+      previousMs,
+    )
     timestampsMs[i] = previousMs
     if (segment.ordinal !== previousOrdinal) {
       gapIndices.push(i)
@@ -342,16 +349,6 @@ export function uniformTimeline(
  * grabado, que es lo que valía antes, y uno con tramos da el tiempo grabado más
  * los huecos.
  */
-function wallClockSpanMs(
-  timestampsMs: Float64Array,
-  manifest: { sampleCount: number; sampleRate: number },
-): number {
-  const recordedMs = recordingDurationMs(manifest.sampleCount, manifest.sampleRate)
-  if (timestampsMs.length === 0) return recordedMs
-  const perPointMs = recordedMs / timestampsMs.length
-  return timestampsMs[timestampsMs.length - 1] - timestampsMs[0] + perPointMs
-}
-
 export function recordingDurationMs(sampleCount: number, sampleRate: number): number {
   return sampleRate > 0 ? (sampleCount / sampleRate) * 1000 : 0
 }

@@ -262,7 +262,12 @@ async def test_a_long_silence_opens_a_new_segment(
     now = _now_ms()
 
     first = await _ingest(
-        client, db, device, api_key, build_frames(1500, boot_id=1), bridge_epoch_ms=now
+        client,
+        db,
+        device,
+        api_key,
+        build_frames(1500, boot_id=1),
+        bridge_epoch_ms=now - 5 * HOUR_MS,
     )
     # Cuatro horas después, mismo arranque, sin nada grabado en el medio.
     await _ingest(
@@ -271,8 +276,8 @@ async def test_a_long_silence_opens_a_new_segment(
         device,
         api_key,
         build_frames(1500, boot_id=1, first_seq=first["lastAcceptedSeq"] + 1, t0_ms=4 * HOUR_MS),
-        uptime_ms=3_600_000 + 4 * HOUR_MS,
-        bridge_epoch_ms=now + 4 * HOUR_MS,
+        uptime_ms=5 * HOUR_MS,
+        bridge_epoch_ms=now - HOUR_MS,
     )
 
     segments = await _segments(db, first["studyId"])
@@ -367,7 +372,12 @@ async def test_the_backfill_rebuilds_the_timeline_of_an_existing_study(
     now = _now_ms()
 
     body = await _ingest(
-        client, db, device, api_key, build_frames(1500, boot_id=1), bridge_epoch_ms=now
+        client,
+        db,
+        device,
+        api_key,
+        build_frames(1500, boot_id=1),
+        bridge_epoch_ms=now - 5 * HOUR_MS,
     )
     study_id = body["studyId"]
     await _ingest(
@@ -376,8 +386,8 @@ async def test_the_backfill_rebuilds_the_timeline_of_an_existing_study(
         device,
         api_key,
         build_frames(1500, boot_id=1, first_seq=body["lastAcceptedSeq"] + 1, t0_ms=4 * HOUR_MS),
-        uptime_ms=3_600_000 + 4 * HOUR_MS,
-        bridge_epoch_ms=now + 4 * HOUR_MS,
+        uptime_ms=5 * HOUR_MS,
+        bridge_epoch_ms=now - HOUR_MS,
     )
     live = await _segments(db, study_id)
     assert len(live) == 2, "la ingesta en vivo ya vio el hueco"

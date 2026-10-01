@@ -43,6 +43,12 @@ describe('routeForNotification', () => {
     })
   })
 
+  it('el push de batería lleva al estado del dispositivo', () => {
+    expect(routeForNotification({ type: 'battery_alert', alertId: 'alert-3' })).toEqual({
+      pathname: '/(tabs)/device',
+    })
+  })
+
   it('manda payloads incompletos o futuros al centro de avisos', () => {
     const fallback = { pathname: '/notifications' }
     expect(routeForNotification(null)).toEqual(fallback)

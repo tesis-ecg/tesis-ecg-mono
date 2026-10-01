@@ -54,6 +54,7 @@ class Study(TimestampMixin, Base):
         UUID(as_uuid=True), ForeignKey("device.id"), nullable=False
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at_verified: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[StudyStatus] = mapped_column(
         Enum(StudyStatus, name="study_status", values_callable=lambda obj: [e.value for e in obj]),
@@ -94,6 +95,19 @@ class Study(TimestampMixin, Base):
     #: esto, escribir los niveles por chunks dejaría un bucket corto por lote y
     #: los niveles gruesos se despegarían de la grilla del estudio.
     ecg_level_carry: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict, nullable=False)
+    #: Generated only for studies started after the visualization filter rollout.
+    filter_view_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    ecg_filtered_segments: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, nullable=False
+    )
+    ecg_filtered_pyramid_levels: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, nullable=False
+    )
+    ecg_filtered_envelope_carry: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    ecg_filtered_level_carry: Mapped[dict[str, str]] = mapped_column(
+        JSONB, default=dict, nullable=False
+    )
+    filtered_samples_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: Cursor del ACK go-back-N: la última `seq` confirmada de forma contigua.
     last_ingested_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: `bootId` de esa última trama. Un cambio de bootId invalida la comparación

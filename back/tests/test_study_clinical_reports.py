@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
 from app.db.models.study import StudyStatus
+from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User, UserRole
 from app.modules.studies import studies_service
 from app.modules.studies.studies_schemas import StudyEcgAnnotationOut
@@ -171,6 +172,61 @@ async def test_final_report_is_immutable_versioned_and_downloads_exact_pdf(
     assert downloaded.content == pdf
     assert downloaded.headers["content-type"] == "application/pdf"
     assert downloaded.headers["content-disposition"].startswith("attachment;")
+
+
+async def test_unverified_study_cannot_be_finalized(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    doctor, study = await _completed_study(make_doctor, make_patient, make_device, make_study)
+    study.started_at_verified = False
+    await db.commit()
+    client = as_user(await _doctor_user(db, doctor))
+    await client.put(
+        f"/studies/{study.id}/clinical-report/draft",
+        json={"revision": 0, "indication": "Palpitaciones", "conclusion": "Conclusión"},
+    )
+    preview = await client.get(f"/studies/{study.id}/clinical-report/preview")
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["canFinalize"] is False
+    assert body["snapshot"]["quality"]["timeVerified"] is False
+    assert any(issue["code"] == "TIME_NOT_VERIFIED" for issue in body["issues"])
+
+
+async def test_unknown_anchor_in_later_segment_blocks_final_report(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    doctor, study = await _completed_study(make_doctor, make_patient, make_device, make_study)
+    started_ms = int(study.started_at.timestamp() * 1000)
+    for ordinal, matches_boot in enumerate((True, None)):
+        start_ms = started_ms + ordinal * 1_000
+        db.add(
+            StudyTimelineSegment(
+                study_id=study.id,
+                ordinal=ordinal,
+                boot_id=ordinal,
+                start_sample_index=ordinal * 50,
+                sample_count=50,
+                start_epoch_ms=start_ms,
+                end_epoch_ms=start_ms + 100,
+                boot_epoch_ms=start_ms,
+                anchor_matches_boot=matches_boot,
+            )
+        )
+    await db.commit()
+    client = as_user(await _doctor_user(db, doctor))
+    await client.put(
+        f"/studies/{study.id}/clinical-report/draft",
+        json={"revision": 0, "indication": "Palpitaciones", "conclusion": "Conclusión"},
+    )
+
+    preview = await client.get(f"/studies/{study.id}/clinical-report/preview")
+
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["canFinalize"] is False
+    assert body["snapshot"]["quality"]["timeVerified"] is False
+    assert any(issue["code"] == "TIME_NOT_VERIFIED" for issue in body["issues"])
 
 
 async def test_finalization_rejects_open_simulated_invalid_and_stale_reports(

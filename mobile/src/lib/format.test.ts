@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { calculateAge, formatRelativeTime } from './format'
+import { calculateAge, formatDateTime, formatRelativeTime, formatTime } from './format'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -59,5 +59,13 @@ describe('calculateAge', () => {
 
   it('devuelve null sin fecha de nacimiento', () => {
     expect(calculateAge(null)).toBeNull()
+  })
+})
+
+describe('hora de Buenos Aires', () => {
+  it('convierte un instante UTC sin depender del huso del teléfono', () => {
+    const instant = '2026-10-02T02:30:00Z'
+    expect(formatDateTime(instant)).toContain('23:30')
+    expect(formatTime(instant)).toBe('23:30')
   })
 })

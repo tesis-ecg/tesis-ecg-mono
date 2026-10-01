@@ -147,6 +147,7 @@ def _running_study_out(study: Study, patient: Patient, device: Device) -> Runnin
         id=study.id,
         patientName=_patient_name(patient),
         startedAt=study.started_at,
+        startedAtVerified=study.started_at_verified,
         durationMs=_duration_ms(study),
         deviceSerial=device.serial_number,
     )

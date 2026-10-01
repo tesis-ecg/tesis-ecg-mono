@@ -1,3 +1,5 @@
+import { CLINICAL_TIME_ZONE } from '@/lib/time'
+
 /**
  * Formato de timestamp para el ECG: `HH:MM:SS.mmm`. Acepta cualquier
  * timestamp en ms (relativo al estudio o absoluto epoch).
@@ -29,11 +31,11 @@ export function formatTimestampShort(ms: number): string {
 /**
  * Hora de pared local, `HH:MM:SS`. Para el eje del ECG.
  *
- * El backend manda todo en UTC; la conversión a la zona del médico la hace el
- * navegador. No se fuerza ninguna zona: un estudio se lee donde se lee.
+ * El backend manda epoch UTC; el portal clínico muestra hora de Buenos Aires.
  */
 export function formatWallClockShort(epochMs: number): string {
   return new Date(epochMs).toLocaleTimeString(undefined, {
+    timeZone: CLINICAL_TIME_ZONE,
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -50,6 +52,7 @@ export function formatWallClock(epochMs: number): string {
 /** Fecha y hora completas, para tooltips donde el día importa. */
 export function formatWallClockDateTime(epochMs: number): string {
   return new Date(epochMs).toLocaleString(undefined, {
+    timeZone: CLINICAL_TIME_ZONE,
     day: '2-digit',
     month: '2-digit',
     hour: '2-digit',

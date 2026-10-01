@@ -188,6 +188,7 @@ export function StudyDetail() {
         patientId={study.patientId}
         patientName={study.patientName}
         startedAt={study.startedAt}
+        startedAtVerified={study.startedAtVerified}
       />
       <StudyHeader study={study} />
 
@@ -260,6 +261,11 @@ export function StudyDetail() {
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <h2 className="text-h6 text-gray-900">Señal ECG</h2>
+                      {ecgQ.data.metadata?.viewKind === 'filtered_visualization' && (
+                        <span className="text-body3 text-gray-600">
+                          Filtrada para visualización · 0,05–40 Hz, notch 50 Hz
+                        </span>
+                      )}
                       {isInProgress && (
                         <span className="flex items-center gap-1.5 rounded-full bg-primary-50 px-2 py-0.5 text-body3 text-primary-500">
                           <span className="size-1.5 animate-pulse rounded-full bg-primary-500" />
@@ -274,6 +280,18 @@ export function StudyDetail() {
                       onFullscreen={handleFullscreen}
                     />
                   </div>
+                  {ecgQ.data.metadata?.startTimeVerified === false && (
+                    <p className="text-body3 text-amber-700">
+                      Hora de pared no verificada: faltó un ancla del mismo arranque del Holter.
+                    </p>
+                  )}
+                  {(ecgQ.data.metadata?.processedSampleCount ??
+                    ecgQ.data.metadata?.sampleCount ??
+                    0) < (ecgQ.data.metadata?.sampleCount ?? 0) && (
+                    <p className="text-body3 text-amber-700">
+                      Sin datos procesados en el tramo final.
+                    </p>
+                  )}
                   <ECGPaperControls
                     paperSpeed={scale.paperSpeed}
                     amplitude={scale.amplitude}

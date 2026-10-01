@@ -258,6 +258,7 @@ async def get_study_ecg(
 @router.get("/{study_id}/ecg/manifest", response_model=StudyEcgManifestOut)
 async def get_study_ecg_manifest(
     study_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyEcgManifestOut:
@@ -268,6 +269,7 @@ async def get_study_ecg_manifest(
             actor_id=scope.user.id,
         ),
         db,
+        background,
     )
 
 

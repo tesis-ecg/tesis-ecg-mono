@@ -55,11 +55,11 @@ export function StudiesTable({ studies }: StudiesTableProps) {
               }}
               tabIndex={0}
               role="button"
-              aria-label={`Abrir estudio del ${formatDateTime(s.startedAt)}`}
+              aria-label={`Abrir estudio del ${s.startedAtVerified === false ? 'inicio sin hora verificada' : formatDateTime(s.startedAt)}`}
               className="cursor-pointer focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500 focus-visible:outline-none"
             >
               <TableCell className="font-medium text-gray-900">
-                {formatDateTime(s.startedAt)}
+                {s.startedAtVerified === false ? 'Hora no verificada' : formatDateTime(s.startedAt)}
               </TableCell>
               <TableCell className="hidden md:table-cell">
                 {s.durationHours ? `${s.durationHours} h` : '—'}

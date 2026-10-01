@@ -196,10 +196,10 @@ async def test_a_rewound_batch_that_crosses_the_cursor_opens_a_new_study(
     assert batch.last_seq == len(rewound) - 1
 
 
-async def test_a_crossing_retransmission_with_an_archived_prefix_stays_in_the_study(
+async def test_a_crossing_retransmission_with_changed_bytes_starts_a_new_study(
     client, s3, db, make_patient, make_device
 ) -> None:
-    """El prefijo ya archivado se confirma aunque el lote también traiga señal nueva."""
+    """Un prefijo con bytes distintos nunca se confirma como ya archivado."""
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
 
@@ -210,15 +210,15 @@ async def test_a_crossing_retransmission_with_an_archived_prefix_stays_in_the_st
     assert len(crossing) > len(archived)
     second = (await post_frames(client, device, api_key, crossing)).json()
 
-    assert second["studyId"] == first["studyId"]
-    assert second["framesDuplicate"] == len(archived)
+    assert second["studyId"] != first["studyId"]
+    assert second["framesDuplicate"] == 0
     assert second["framesAccepted"] == len(crossing)
     assert second["lastAcceptedSeq"] == len(crossing) - 1
 
     batch = await db.get(ECGBatch, second["batchId"])
     assert batch is not None
-    assert batch.first_seq == len(archived)
-    assert batch.frames_count == len(crossing) - len(archived)
+    assert batch.first_seq == 0
+    assert batch.frames_count == len(crossing)
 
 
 async def test_a_rewind_does_not_open_a_study_per_post(
@@ -250,7 +250,7 @@ async def test_a_rewind_does_not_open_a_study_per_post(
 async def test_a_rewound_seq_that_IS_archived_is_still_a_duplicate(
     client, s3, db, make_patient, make_device
 ) -> None:
-    """La retransmisión legítima bajo otro `bootId` se sigue re-confirmando.
+    """Los mismos 256 bytes bajo el cursor se vuelven a confirmar.
 
     Es el caso que hay que no romper al cerrar el de arriba: mirando solo los
     números los dos son idénticos. Lo que los separa es si las tramas están
@@ -263,7 +263,7 @@ async def test_a_rewound_seq_that_IS_archived_is_still_a_duplicate(
 
     first = (await post_frames(client, device, api_key, frames)).json()
 
-    replay = build_frames(1800, boot_id=5, first_seq=0, t0_ms=0)
+    replay = frames
     second = (await post_frames(client, device, api_key, replay)).json()
 
     assert second["framesDuplicate"] == len(replay)

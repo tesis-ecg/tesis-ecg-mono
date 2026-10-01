@@ -78,6 +78,7 @@ export interface PatientStudy {
   id: string
   patientId: string
   startedAt: string
+  startedAtVerified: boolean
   endedAt: string | null
   durationHours: number | null
   status: PatientStudySessionStatus

@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf'
 
 import type { StudyClinicalReportFindingSummary } from '@/features/studies/types'
+import { CLINICAL_TIME_ZONE } from '@/lib/time'
 
 import { annotationLabel } from './annotationMeta'
 import type { EcgReportWindow } from './api/ecgApi'
@@ -93,7 +94,12 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
       : '—',
   )
   row('Sexo', snapshot.patient.sex)
-  row('Inicio', formatDate(snapshot.study.startedAt))
+  row(
+    'Inicio',
+    snapshot.study.startedAtVerified === false
+      ? 'Hora no verificada'
+      : formatDate(snapshot.study.startedAt),
+  )
   row('Fin', snapshot.study.endedAt ? formatDate(snapshot.study.endedAt) : 'Estudio en curso')
   row(
     'Duración / dispositivo',
@@ -115,6 +121,12 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   row('Observaciones clínicas', snapshot.clinicalContext.clinicalObservations)
 
   heading('Calidad de adquisición')
+  if (snapshot.quality.timeVerified === false) {
+    row(
+      'Hora de muestras',
+      'No verificada: las fechas de hallazgos y tiras son estimaciones y no deben usarse como hora clínica.',
+    )
+  }
   row(
     'Tiempo grabado / lapso',
     `${formatDuration(snapshot.quality.recordedMs)} / ${formatDuration(snapshot.quality.wallClockMs)}`,
@@ -126,7 +138,7 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   row('Segmentos / cortes', `${snapshot.quality.segments} / ${snapshot.quality.cuts}`)
   row(
     'Sincronización',
-    `${snapshot.quality.synchronizationSources.join(', ') || 'No disponible'} · incertidumbre máxima ${snapshot.quality.maxSynchronizationUncertaintyMs} ms`,
+    `${snapshot.quality.synchronizationSources.join(', ') || 'No disponible'} · incertidumbre máxima ${snapshot.quality.maxSynchronizationUncertaintyMs == null ? 'no determinada' : `${snapshot.quality.maxSynchronizationUncertaintyMs} ms`}`,
   )
   row(
     'Última recepción',
@@ -167,6 +179,14 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
     row('Duración total', formatDuration(plan.findingDurationMs))
     row('Bloque', `${plan.blockIndex} de ${plan.blockCount}`)
     row(
+      'Señal',
+      window.source === 'filtered_visualization'
+        ? 'Filtrada para visualización (0,05–40 Hz, notch 50 Hz); no usar para amplitud diagnóstica de QRS'
+        : window.source === 'envelope'
+          ? 'Envolvente de visualización'
+          : 'Señal sin filtrar',
+    )
+    row(
       'Confianza',
       plan.confidenceScore === null
         ? 'No informada'
@@ -176,7 +196,7 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
       'Síntomas / detalle relacionado',
       [...plan.relatedSymptoms, plan.description].filter(Boolean).join(' · '),
     )
-    drawTrace(doc, window, y)
+    drawTrace(doc, window, y, snapshot.quality.timeVerified !== false)
   }
 
   const pages = doc.getNumberOfPages()
@@ -196,7 +216,7 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   return doc.output('arraybuffer')
 }
 
-function drawTrace(doc: jsPDF, detail: EcgReportWindow, top: number) {
+function drawTrace(doc: jsPDF, detail: EcgReportWindow, top: number, timeVerified: boolean) {
   const left = MARGIN + 15
   const width = CONTENT_WIDTH - 15
   const height = 88
@@ -241,7 +261,7 @@ function drawTrace(doc: jsPDF, detail: EcgReportWindow, top: number) {
   doc.text(`${max.toFixed(2)} mV`, left - 2, top + 2, { align: 'right' })
   doc.text(`${min.toFixed(2)} mV`, left - 2, top + height, { align: 'right' })
   doc.text(
-    `Eje temporal real · amplitud en mV · ${detail.gapIndices.length} hueco${detail.gapIndices.length === 1 ? '' : 's'}`,
+    `${timeVerified ? 'Hora de Buenos Aires' : 'Hora estimada, no verificada'} · amplitud en mV · ${detail.gapIndices.length} hueco${detail.gapIndices.length === 1 ? '' : 's'}`,
     left,
     top + height + 8,
   )
@@ -295,7 +315,11 @@ function mergeWindowPieces(windows: EcgReportWindow[]): Map<string, EcgReportWin
           samplesMv,
           timestampsMs,
           gapIndices,
-          source: ordered.some((piece) => piece.source === 'envelope') ? 'envelope' : 'raw',
+          source: ordered.some((piece) => piece.source === 'envelope')
+            ? 'envelope'
+            : ordered.some((piece) => piece.source === 'filtered_visualization')
+              ? 'filtered_visualization'
+              : 'raw',
         },
       ]
     }),
@@ -353,24 +377,30 @@ function severityLabel(severity: string): string {
 }
 
 function formatDate(value: string | number): string {
-  return new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'medium' }).format(
-    new Date(value),
-  )
+  return new Intl.DateTimeFormat('es-AR', {
+    dateStyle: 'short',
+    timeStyle: 'medium',
+    timeZone: CLINICAL_TIME_ZONE,
+    hour12: false,
+  }).format(new Date(value))
 }
 
 function formatAxisTime(value: number): string {
   return new Intl.DateTimeFormat('es-AR', {
+    timeZone: CLINICAL_TIME_ZONE,
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    hour12: false,
   }).format(new Date(value))
 }
 
 function formatCalendarDate(value: string): string {
   const [year, month, day] = value.split('-').map(Number)
-  return new Intl.DateTimeFormat('es-AR', { dateStyle: 'short' }).format(
-    new Date(year, month - 1, day),
-  )
+  return new Intl.DateTimeFormat('es-AR', {
+    dateStyle: 'short',
+    timeZone: CLINICAL_TIME_ZONE,
+  }).format(new Date(Date.UTC(year, month - 1, day, 12)))
 }
 
 function formatDuration(ms: number): string {

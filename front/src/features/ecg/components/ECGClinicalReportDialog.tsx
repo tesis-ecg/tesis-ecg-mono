@@ -106,10 +106,13 @@ export function ECGClinicalReportDialog({
         detailWindows.push(...batch)
         setProgress({ completed: Math.floor(index / 25) + 1, total: batchTotal + 1 })
       }
-      if (status === 'final' && detailWindows.some((window) => window.source !== 'raw')) {
+      if (status === 'final' && detailWindows.some((window) => window.source === 'envelope')) {
         throw new Error(
           'No se puede finalizar: al menos una tira sólo está disponible como envolvente y no como señal cruda.',
         )
+      }
+      if (status === 'final' && detailWindows.some((window) => window.samplesMv.length === 0)) {
+        throw new Error('No se puede finalizar: una tira todavía no tiene datos procesados.')
       }
       const input: ClinicalReportInput = {
         snapshot: preview.snapshot,

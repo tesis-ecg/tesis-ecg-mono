@@ -18,6 +18,7 @@ dependencies = [
     # min/max del ECG corren en el camino de ingesta (app/ml/decompression.py,
     # app/modules/ingest/processing.py).
     "numpy>=2.0",
+    "scipy>=1.15,<2",
 ]
 
 [dependency-groups]
