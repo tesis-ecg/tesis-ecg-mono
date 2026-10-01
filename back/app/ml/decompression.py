@@ -220,6 +220,10 @@ def _unzigzag(u: int) -> int:
     return (u >> 1) ^ -(u & 1)
 
 
+def _sat32(value: int) -> int:
+    return max(-(1 << 31), min(value, (1 << 31) - 1))
+
+
 def decode_frame(frame: bytes) -> DecodedFrame:
     """Decodifica una trama de 256 bytes.
 
@@ -259,7 +263,7 @@ def decode_frame(frame: bytes) -> DecodedFrame:
                 rem = reader.read_bits(k) if k > 0 else 0
                 u = (q << k) | rem
 
-            value = stream.predict() + _unzigzag(u)
+            value = _sat32(_sat32(stream.predict()) + _unzigzag(u))
             # Espejo EXACTO del codificador: la primera muestra de la trama NO
             # alimenta la media adaptativa — su "residuo" es en realidad el valor
             # absoluto de la señal y no dice nada sobre la actividad del tramo.
@@ -273,7 +277,7 @@ def decode_frame(frame: bytes) -> DecodedFrame:
             if j < info.n_channels:
                 raw[j, i] = value
             else:
-                diagnostic[j - info.n_channels, i] = value
+                diagnostic[j - info.n_channels, i] = ((value + 32768) & 0xFFFF) - 32768
 
         # Flags desde las corridas RLE.
         while run_remaining == 0 and run_idx + 1 < run_count:

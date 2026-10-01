@@ -206,6 +206,7 @@ def open_segment(
         anchor_slope_ppm=0,
         anchor_source=batch.time_sync_source or TimeSyncSource.SERVER_RECEIVE,
         anchor_uncertainty_ms=batch.time_sync_uncertainty_ms,
+        anchor_matches_boot=batch.anchor_matches_boot,
         start_epoch_ms=boot_epoch_ms + timing.first_t0_ms,
         end_epoch_ms=boot_epoch_ms + timing.last_end_t0_ms,
     )
@@ -228,9 +229,11 @@ def extend_segment(
     """
     if anchors:
         segment.boot_epoch_ms, segment.anchor_slope_ppm = fit_anchor(anchors)
-    if batch.time_sync_source is not None:
+        segment.anchor_matches_boot = True
+    if batch.time_sync_source is not None and batch.anchor_matches_boot is not False:
         segment.anchor_source = batch.time_sync_source
-    segment.anchor_uncertainty_ms = batch.time_sync_uncertainty_ms
+    if batch.anchor_matches_boot is not False:
+        segment.anchor_uncertainty_ms = batch.time_sync_uncertainty_ms
     segment.last_seq = timing.last_seq
     segment.last_t0_ms = timing.last_t0_ms
     segment.sample_count += sample_count

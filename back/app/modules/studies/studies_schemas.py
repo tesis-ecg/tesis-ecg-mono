@@ -14,6 +14,7 @@ class PatientStudyOut(CamelModel):
     id: uuid.UUID
     patientId: uuid.UUID
     startedAt: datetime
+    startedAtVerified: bool
     endedAt: datetime | None
     durationHours: float | None
     status: StudyStatus
@@ -33,6 +34,7 @@ class StudyDetailOut(CamelModel):
     patientName: str
     deviceId: uuid.UUID
     startedAt: datetime
+    startedAtVerified: bool = True
     endedAt: datetime | None
     durationMs: int
     deviceSerial: str
@@ -81,8 +83,8 @@ class StudyEcgLevelOut(CamelModel):
     """Un nivel de la pirámide, repartido en chunks.
 
     Antes era un objeto único que se reescribía entero en cada lote. Eso crecía
-    con el estudio y corría con la fila del estudio bloqueada, que es lo que
-    producía los `500` bajo ingesta sostenida. Ahora cada lote anexa lo suyo y
+    con el estudio y corría con la fila del estudio bloqueada, una fuente de
+    contención bajo ingesta sostenida. Ahora cada lote anexa lo suyo y
     los chunks se compactan de a ratos, así que el trabajo por lote es constante.
 
     El cliente concatena `chunks` en orden — es la misma mecánica que ya usa con
@@ -188,6 +190,7 @@ class StudyEcgTimelineSegmentOut(CamelModel):
     #: latencia del pedido adentro. El visor lo usa para avisar cuánto vale.
     anchorSource: Literal["ntp", "none", "server_receive"]
     anchorUncertaintyMs: int | None
+    anchorMatchesBoot: bool | None = None
 
 
 class StudyEcgManifestOut(CamelModel):
@@ -211,9 +214,11 @@ class StudyEcgManifestOut(CamelModel):
     sampleRate: int
     sampleCount: int
     startTimestamp: int
+    startTimeVerified: bool = True
     durationMs: int
     status: StudyStatus
     isSimulated: bool
+    viewKind: Literal["raw", "filtered_visualization"] = "raw"
     raw: StudyEcgObjectOut | None
     levels: list[StudyEcgLevelOut]
     segments: list[StudyEcgSegmentOut] = Field(default_factory=list)
@@ -246,7 +251,7 @@ class StudyEcgReportWindowOut(CamelModel):
     gapIndices: list[int]
     #: `raw` hoy es el camino normal. Se deja explícito para que la UI nunca
     #: presente una envolvente futura como si fuera la señal cruda.
-    source: Literal["raw", "envelope"] = "raw"
+    source: Literal["raw", "envelope", "filtered_visualization"] = "raw"
 
 
 class StudyEcgReportWindowsResponse(CamelModel):

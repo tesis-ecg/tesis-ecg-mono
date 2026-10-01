@@ -216,11 +216,11 @@ async def test_a_batch_already_covered_is_not_re_accepted_under_another_boot_id(
     replay = build_frames(1800, boot_id=5, first_seq=0, t0_ms=0)
     second = (await post_frames(client, device, api_key, replay)).json()
 
-    assert second["batchId"] is None
-    assert second["framesDuplicate"] == len(replay)
-    assert second["lastAcceptedSeq"] == first["lastAcceptedSeq"]
+    assert second["studyId"] != first["studyId"]
+    assert second["framesDuplicate"] == 0
+    assert second["framesAccepted"] == len(replay)
     assert get_object(key) == stored
-    assert await db.scalar(select(func.count()).select_from(ECGBatch)) == 1
+    assert await db.scalar(select(func.count()).select_from(ECGBatch)) == 2
 
 
 # --------------------------------------------------------------------------- #

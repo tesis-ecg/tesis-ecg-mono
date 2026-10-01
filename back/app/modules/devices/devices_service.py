@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,11 +92,16 @@ def holter_health_out(device: Device) -> HolterHealthOut:
         model=device.model,
         firmwareVersion=device.firmware_version,
         telemetryAvailable=any(
-            value is not None for value in (device.last_battery_pct, device.last_sd_free_mb)
+            value is not None
+            for value in (device.last_battery_pct, device.last_rssi_dbm, device.last_sqi)
         ),
         batteryPercent=device.last_battery_pct,
-        signalDbm=None,
-        signalQuality=None,
+        signalDbm=device.last_rssi_dbm,
+        signalQuality=(
+            {1: "poor", 2: "fair", 3: "good"}.get(device.last_sqi)
+            if device.last_sqi is not None
+            else None
+        ),
         lastPingAt=device.last_seen_at,
         nextScheduledUploadAt=None,
         uploadsToday=None,
@@ -290,13 +295,17 @@ async def update_holter(input_data: HolterUpdateInput, db: AsyncSession) -> Holt
     return await _holter_out_resolved(db, device, doctor_name)
 
 
-async def delete_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
+async def delete_holter(
+    input_data: HolterIdInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> HolterOut:
     device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
     # Antes de `retire_device`, que borra el `patient_id`: después ya no habría
     # forma de saber de qué paciente era el estudio abierto.
-    await studies.close_open_studies_for_device(db, device, input_data.actor_id, "device_retired")
+    await studies.close_open_studies_for_device(
+        db, device, input_data.actor_id, "device_retired", background
+    )
     await repo.retire_device(db, device)
     await _audit_device(db, AuditEventType.DEVICE_RETIRED, input_data.actor_id, device.id)
     await db.commit()
@@ -407,7 +416,9 @@ async def assign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Holt
     return await _holter_out_resolved(db, device, doctor_name)
 
 
-async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> HolterOut:
+async def unassign_holter(
+    input_data: HolterIdInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> HolterOut:
     device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
@@ -424,7 +435,7 @@ async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> Holter
     # Sacarle el chaleco al paciente es la forma normal en que termina un
     # Holter: el estudio abierto se cierra acá, antes de soltar el `patient_id`.
     await studies.close_open_studies_for_device(
-        db, device, input_data.actor_id, "device_unassigned"
+        db, device, input_data.actor_id, "device_unassigned", background
     )
     await repo.unassign_device(db, device)
     await _audit_device(
@@ -439,7 +450,9 @@ async def unassign_holter(input_data: HolterIdInput, db: AsyncSession) -> Holter
     return await _holter_out_resolved(db, device, doctor_name)
 
 
-async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> HolterOut:
+async def reassign_holter(
+    input_data: AssignHolterInput, db: AsyncSession, background: BackgroundTasks | None = None
+) -> HolterOut:
     device = await repo.get_device_by_id_for_update(db, input_data.device_id)
     if device is None:
         raise _not_found()
@@ -476,7 +489,7 @@ async def reassign_holter(input_data: AssignHolterInput, db: AsyncSession) -> Ho
     # el mismo paciente no se cierra nada: es un no-op, no una interrupción.
     if device.patient_id is not None and device.patient_id != patient.id:
         await studies.close_open_studies_for_device(
-            db, device, input_data.actor_id, "device_reassigned"
+            db, device, input_data.actor_id, "device_reassigned", background
         )
 
     try:

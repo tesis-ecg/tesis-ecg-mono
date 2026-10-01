@@ -440,6 +440,7 @@ export interface PatientStudyOut {
   "id": string
   "patientId": string
   "startedAt": string
+  "startedAtVerified": boolean
   "endedAt": string | null
   "durationHours": number | null
   "status": StudyStatus
@@ -488,6 +489,7 @@ export interface RunningStudyOut {
   "id": string
   "patientName": string
   "startedAt": string
+  "startedAtVerified": boolean
   "durationMs": number
   "deviceSerial": string
 }
@@ -593,6 +595,7 @@ export interface StudyDetailOut {
   "patientName": string
   "deviceId": string
   "startedAt": string
+  "startedAtVerified"?: boolean
   "endedAt": string | null
   "durationMs": number
   "deviceSerial": string
@@ -639,9 +642,11 @@ export interface StudyEcgManifestOut {
   "sampleRate": number
   "sampleCount": number
   "startTimestamp": number
+  "startTimeVerified"?: boolean
   "durationMs": number
   "status": StudyStatus
   "isSimulated": boolean
+  "viewKind"?: "raw" | "filtered_visualization"
   "raw": StudyEcgObjectOut | null
   "levels": Array<StudyEcgLevelOut>
   "segments"?: Array<StudyEcgSegmentOut>
@@ -672,7 +677,7 @@ export interface StudyEcgReportWindowOut {
   "timestampsMs": Array<number>
   "samplesMv": Array<number>
   "gapIndices": Array<number>
-  "source"?: "raw" | "envelope"
+  "source"?: "raw" | "envelope" | "filtered_visualization"
 }
 
 export interface StudyEcgReportWindowRequest {
@@ -707,6 +712,7 @@ export interface StudyEcgTimelineSegmentOut {
   "bootId": number | null
   "anchorSource": "ntp" | "none" | "server_receive"
   "anchorUncertaintyMs": number | null
+  "anchorMatchesBoot"?: boolean | null
 }
 
 export interface StudyListResponse {

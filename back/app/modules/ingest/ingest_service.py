@@ -21,7 +21,7 @@ from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.s3 import put_object
+from app.core.s3 import get_object, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.patient import Patient, PatientStudyStatus
@@ -42,9 +42,48 @@ from app.modules.ingest.ingest_schemas import (
     IngestFramesInput,
     VestStatusEvent,
 )
-from app.modules.patient_app.notifications_service import notify_patient_task, vest_message
+from app.modules.patient_app.notifications_service import (
+    battery_message,
+    notify_patient_task,
+    vest_message,
+)
 
 logger = structlog.get_logger(__name__)
+
+
+def _battery_alert(ctx: DeviceContext) -> Alert | None:
+    """Create one alert per low/critical episode, under the device row lock."""
+    device = ctx.device
+    if ctx.rssi_dbm is not None:
+        device.last_rssi_dbm = ctx.rssi_dbm
+    if ctx.sqi is not None:
+        device.last_sqi = ctx.sqi
+    flags = ctx.battery_flags
+    if flags is None:
+        return None
+    device.last_battery_flags = flags
+    # Bit 0 validates the verdict; 0 means an older firmware did not report it.
+    if not flags & 0x01:
+        return None
+    level = "critical" if flags & 0x04 else "low" if flags & 0x02 else None
+    if level is None:
+        device.battery_alert_level = None
+        return None
+    if level == device.battery_alert_level or device.patient_id is None:
+        return None
+    device.battery_alert_level = level
+    alert = Alert(
+        patient_id=device.patient_id,
+        event_id=None,
+        kind=f"battery_{level}",
+        severity=AlertSeverity.CRITICAL if level == "critical" else AlertSeverity.HIGH,
+        message=(
+            "La batería del chaleco está en nivel crítico; cargarlo ahora."
+            if level == "critical"
+            else "La batería del chaleco está baja; cargarlo pronto."
+        ),
+    )
+    return alert
 
 
 def frames_key(study_id: uuid.UUID, first_seq: int) -> str:
@@ -63,7 +102,8 @@ class _Anchor:
 
     epoch_ms: int
     source: TimeSyncSource
-    uncertainty_ms: int
+    uncertainty_ms: int | None
+    matches_boot: bool | None
 
 
 @dataclass(frozen=True)
@@ -213,7 +253,7 @@ def _ack_window(frames: list[_ParsedFrame], study: Study) -> _AckWindow:
 
 
 async def _resolve_study(
-    db: AsyncSession, ctx: DeviceContext, first: FrameInfo, epoch_anchor_ms: int
+    db: AsyncSession, ctx: DeviceContext, first: FrameInfo, anchor: _Anchor
 ) -> tuple[Study, Patient]:
     """`serial → device.patient_id → estudio in_progress`, creándolo si no hay.
 
@@ -237,7 +277,7 @@ async def _resolve_study(
     if study is not None:
         return study, patient
 
-    started_at = datetime.fromtimestamp((epoch_anchor_ms + first.t0_ms) / 1000, tz=UTC)
+    started_at = datetime.fromtimestamp((anchor.epoch_ms + first.t0_ms) / 1000, tz=UTC)
     study = await repo.create_study(
         db,
         patient_id=patient.id,
@@ -245,6 +285,8 @@ async def _resolve_study(
         started_at=started_at,
         sample_rate=SAMPLE_RATE_HZ,
     )
+    study.started_at_verified = anchor.matches_boot is True
+    study.filter_view_enabled = True
     return study, patient
 
 
@@ -252,10 +294,8 @@ async def _resolve_study(
 SEQ_REWIND_ALERT_KIND = "study_seq_rewind"
 
 
-async def _is_seq_rewind(
-    db: AsyncSession, study: Study, frames: list[_ParsedFrame], boot_id: int
-) -> bool:
-    """¿El equipo rebobinó su `seq` bajo un boot nuevo? (`INTEGRACION.md` §11.6).
+async def _is_seq_rewind(db: AsyncSession, study: Study, frames: list[_ParsedFrame]) -> bool:
+    """Nunca confirmar una `seq` repetida sin comparar sus 256 bytes archivados.
 
     Los cursores del log viven en la metadata de la flash. Si cambia el formato
     de esa metadata —que es lo que pasa al actualizar el firmware— el equipo
@@ -273,20 +313,27 @@ async def _is_seq_rewind(
     archivada.
     """
     cursor = study.last_ingested_seq
-    if cursor is None or study.last_boot_id is None or study.last_boot_id == boot_id:
+    if cursor is None:
         return False
     frames_at_or_before_cursor = [frame for frame in frames if frame.info.seq <= cursor]
     if not frames_at_or_before_cursor:
         return False
-    # Retransmisión legítima: el prefijo ya está archivado, aunque haya llegado
-    # repartido entre varios batches; se lo re-confirma y el equipo puede seguir
-    # drenando. Si falta cualquier tramo del prefijo, es señal de un seq
-    # rebobinado y el estudio anterior no puede absorberla.
-    return not await repo.has_archived_seq_range(
+    archived = await repo.archived_batches_overlapping(
         db,
         study.id,
         frames_at_or_before_cursor[0].info.seq,
         frames_at_or_before_cursor[-1].info.seq,
+    )
+    original_by_seq: dict[int, bytes] = {}
+    for batch in archived:
+        if batch.frames_s3_key is None:
+            continue
+        payload = await asyncio.to_thread(get_object, batch.frames_s3_key)
+        for raw in iter_frames(payload):
+            info = read_header(raw)
+            original_by_seq[info.seq] = raw
+    return any(
+        original_by_seq.get(frame.info.seq) != frame.payload for frame in frames_at_or_before_cursor
     )
 
 
@@ -312,7 +359,10 @@ async def _recover_from_seq_rewind(db: AsyncSession, study: Study, patient: Pati
     """
     now = datetime.now(UTC)
     study.status = StudyStatus.COMPLETED
-    study.ended_at = now
+    # Una ancla vieja errónea puede haber fechado `started_at` en el futuro.
+    # La restricción de la base exige `ended_at >= started_at`; un cierre por
+    # rebobinado no debe bloquear la señal nueva por ese error previo.
+    study.ended_at = max(now, study.started_at)
 
     db.add(
         Alert(
@@ -321,10 +371,9 @@ async def _recover_from_seq_rewind(db: AsyncSession, study: Study, patient: Pati
             kind=SEQ_REWIND_ALERT_KIND,
             severity=AlertSeverity.HIGH,
             message=(
-                "El equipo reinició su numeración de tramas (habitualmente, una "
-                "actualización de firmware con el estudio abierto). El estudio en curso "
-                "se cerró y la señal nueva se archiva en uno nuevo. Lo que el equipo "
-                "tenía sin subir del estudio anterior se perdió."
+                "El equipo envió una numeración ya confirmada con bytes distintos. "
+                "Se cerró el estudio anterior y la señal nueva se archiva en otro. "
+                "Revisar la continuidad entre ambos estudios."
             ),
         )
     )
@@ -362,6 +411,7 @@ async def ingest_frames(
     # lado del enlace, así que la latencia del pedido queda afuera de la hora
     # del paciente (`docs/integracion-ingesta-con-horario.md`).
     epoch_anchor_ms, sync_source, sync_uncertainty_ms = ctx.boot_epoch_ms(input_data.received_at)
+    uncertainty_ms: int | None = sync_uncertainty_ms
 
     if not parsed:
         # Todas las tramas fallaron la validación. Igual hay que resolver el
@@ -382,6 +432,24 @@ async def ingest_frames(
     # daría horas de pared incorrectas.
     boot_id = parsed[0].info.boot_id
     frames = _dedupe_by_seq([f for f in parsed if f.info.boot_id == boot_id])
+    matches_boot = None if ctx.boot_id is None else ctx.boot_id == boot_id
+    if matches_boot is False:
+        # El par (epoch, uptime) pertenece al arranque ACTUAL del equipo. Este
+        # backlog es anterior: conservarlo sin atribuirle esa hora ajena.
+        epoch_anchor_ms = int(input_data.received_at.timestamp() * 1000) - frames[0].info.t0_ms
+        sync_source = TimeSyncSource.SERVER_RECEIVE
+        uncertainty_ms = None
+    first_sample_ms = epoch_anchor_ms + frames[0].info.t0_ms
+    received_ms = int(input_data.received_at.timestamp() * 1000)
+    if first_sample_ms > received_ms:
+        # Una muestra archivada no puede comenzar después de recibir su POST.
+        # El puente anterior no informa el bootId del ancla: ante un reinicio,
+        # mezclar su uptime actual con tramas viejas producía inicios futuros.
+        epoch_anchor_ms = received_ms - frames[0].info.t0_ms
+        sync_source = TimeSyncSource.SERVER_RECEIVE
+        uncertainty_ms = None
+        matches_boot = False
+    anchor = _Anchor(epoch_anchor_ms, sync_source, uncertainty_ms, matches_boot)
 
     # La autenticación leyó el equipo sin lock. Se vuelve a cargar dentro de la
     # transacción del caso de uso para competir de forma segura con otra ingesta
@@ -396,14 +464,19 @@ async def ingest_frames(
         )
     ctx = replace(ctx, device=locked_device)
 
-    study, patient = await _resolve_study(db, ctx, frames[0].info, epoch_anchor_ms)
-    if await _is_seq_rewind(db, study, frames, boot_id):
+    study, patient = await _resolve_study(db, ctx, frames[0].info, anchor)
+    if await _is_seq_rewind(db, study, frames):
+        previous_study_id = study.id
         await _recover_from_seq_rewind(db, study, patient)
+        if background is not None:
+            from app.modules.ingest.processing import process_study_task
+
+            background.add_task(process_study_task, previous_study_id)
         # El cerrado ya no matchea `get_open_study_for_update`, así que esto crea
         # uno nuevo. Arranca con `last_ingested_seq = None`, o sea que el lote
         # entra entero desde su primera trama, que es lo correcto: para el estudio
         # nuevo no hay nada anterior.
-        study, patient = await _resolve_study(db, ctx, frames[0].info, epoch_anchor_ms)
+        study, patient = await _resolve_study(db, ctx, frames[0].info, anchor)
     window = _ack_window(frames, study)
 
     ctx.device.last_seen_at = input_data.received_at
@@ -411,6 +484,10 @@ async def ingest_frames(
         ctx.device.last_battery_pct = ctx.battery_pct
     if ctx.firmware_version:
         ctx.device.firmware_version = ctx.firmware_version
+    battery_alert = _battery_alert(ctx)
+    if battery_alert is not None:
+        db.add(battery_alert)
+        await db.flush()
 
     # Los estados graves del equipo viajan en `X-Device-Status-Flags` del mismo
     # POST. Es una query indexada que solo corre cuando hay un bit prendido, o
@@ -437,7 +514,7 @@ async def ingest_frames(
             study,
             window,
             boot_id,
-            _Anchor(epoch_anchor_ms, sync_source, sync_uncertainty_ms),
+            anchor,
         )
         if background is not None:
             from app.modules.ingest.processing import process_batch_task
@@ -450,6 +527,13 @@ async def ingest_frames(
         study.is_simulated = True
 
     await db.commit()
+
+    if battery_alert is not None and background is not None and ctx.device.patient_id is not None:
+        background.add_task(
+            notify_patient_task,
+            ctx.device.patient_id,
+            battery_message(battery_alert.id, ctx.device.battery_alert_level or "low"),
+        )
 
     await logger.ainfo(
         "ingest_batch_received",
@@ -526,6 +610,7 @@ async def _store_batch(
         bridge_epoch_ms=ctx.bridge_epoch_ms,
         time_sync_source=anchor.source,
         time_sync_uncertainty_ms=anchor.uncertainty_ms,
+        anchor_matches_boot=anchor.matches_boot,
         first_seq=first_info.seq,
         last_seq=last_info.seq,
         frames_count=len(accepted),
@@ -660,6 +745,10 @@ async def report_device_status(
     - El push va en background. La respuesta al equipo no puede depender de que
       `exp.host` conteste, porque el chaleco tiene la radio prendida esperándola.
     """
+    locked_device = await repo.get_device_for_update(db, ctx.device.id)
+    if locked_device is None:
+        raise _conflict("DEVICE_NOT_INGESTABLE", "El dispositivo ya no está disponible.")
+    ctx = replace(ctx, device=locked_device)
     device = ctx.device
     now = input_data.received_at
     device.last_seen_at = now
@@ -671,6 +760,18 @@ async def report_device_status(
         device.firmware_version = ctx.firmware_version
     if input_data.data.sqi is not None:
         device.last_sqi = input_data.data.sqi
+    battery_alert = _battery_alert(ctx)
+    if battery_alert is not None:
+        db.add(battery_alert)
+        await db.flush()
+
+    def schedule_battery_push() -> None:
+        if battery_alert is not None and device.patient_id is not None:
+            background.add_task(
+                notify_patient_task,
+                device.patient_id,
+                battery_message(battery_alert.id, device.battery_alert_level or "low"),
+            )
 
     event = input_data.data.event
 
@@ -685,6 +786,7 @@ async def report_device_status(
     # chaleco está mal puesto cada vez que el equipo dice que está vivo.
     if event is VestStatusEvent.ALIVE:
         await db.commit()
+        schedule_battery_push()
         return DeviceStatusAckOut(notified=False, alertId=None, serverTime=now)
 
     # Se lee antes de pisarlo: es lo que distingue "sigue mal" de "se volvió a
@@ -698,6 +800,7 @@ async def report_device_status(
     # aviso anterior es ruido.
     if event is VestStatusEvent.SIGNAL_RECOVERED or device.patient_id is None:
         await db.commit()
+        schedule_battery_push()
         return DeviceStatusAckOut(notified=False, alertId=None, serverTime=now)
 
     window_start = now - timedelta(minutes=settings.vest_status_debounce_minutes)
@@ -708,6 +811,7 @@ async def report_device_status(
     )
     if recent is not None:
         await db.commit()
+        schedule_battery_push()
         await logger.ainfo(
             "vest_status_debounced",
             device_id=str(device.id),
@@ -729,6 +833,7 @@ async def report_device_status(
     patient_id = device.patient_id
     await db.commit()
 
+    schedule_battery_push()
     background.add_task(notify_patient_task, patient_id, vest_message(alert_id, now.isoformat()))
     await logger.ainfo(
         "vest_status_alert",

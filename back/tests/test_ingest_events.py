@@ -299,7 +299,7 @@ async def test_a_backlog_overflow_gap_becomes_an_event_and_an_alert(
     assert event.event_metadata["sampleCount"] == 0
 
     alert = (await db.execute(select(Alert).where(Alert.event_id == event.id))).scalar_one()
-    assert "perdió señal" in alert.message
+    assert "confirmó que sobreescribió" in alert.message
 
 
 async def test_a_gap_without_the_status_bit_is_recorded_as_inferred(
@@ -313,7 +313,9 @@ async def test_a_gap_without_the_status_bit_is_recorded_as_inferred(
     await _ingest(client, db, device, api_key, frames[:2])
     await _ingest(client, db, device, api_key, frames[4:6])
 
-    overflows = [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"]
+    overflows = [
+        e for e in await _events(db) if e.event_metadata["kind"] == "missing_frames_inferred"
+    ]
     assert len(overflows) == 1
     assert overflows[0].event_metadata["cause"] == "inferred"
 
@@ -331,7 +333,9 @@ async def test_reprocessing_does_not_duplicate_the_gap_event(
     await process_batch(db, body["batchId"])
     await process_batch(db, body["batchId"])
 
-    overflows = [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"]
+    overflows = [
+        e for e in await _events(db) if e.event_metadata["kind"] == "missing_frames_inferred"
+    ]
     assert len(overflows) == 1
 
 

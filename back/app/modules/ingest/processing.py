@@ -49,6 +49,7 @@ from app.ml.decompression import (
 from app.ml.status_flags import has_backlog_overflow, has_corrupt_frame
 from app.modules.ingest import ingest_repository as repo
 from app.modules.ingest import timeline
+from app.modules.ingest.visual_filter import CONTEXT_SECONDS, filter_visualization
 from app.modules.patient_app.notifications_service import (
     anomaly_message,
     notify_patient_task,
@@ -91,8 +92,8 @@ def level_chunk_key(study_id: uuid.UUID, bucket: int, first_seq: int) -> str:
     """Tramo de un nivel aportado por UN lote.
 
     Los niveles se escriben por chunks y no como un objeto que se reescribe
-    entero en cada lote. Reescribirlo era el origen de los `500` que reportó
-    Biomédica: `rebuild_pyramid` leía de S3 **todas** las envolventes ya
+    entero en cada lote. Esa ruta podía provocar timeouts: `rebuild_pyramid`
+    leía de S3 **todas** las envolventes ya
     archivadas del estudio en cada lote (lote 1 leía un objeto, el lote 30 leía
     treinta) mientras tenía tomada la fila del estudio, y el POST siguiente
     moría esperando ese lock a los 15 s del `statement_timeout`.
@@ -102,6 +103,22 @@ def level_chunk_key(study_id: uuid.UUID, bucket: int, first_seq: int) -> str:
 
 def level_chunk_prefix(study_id: uuid.UUID, bucket: int) -> str:
     return f"studies/{study_id}/levels/{bucket}/"
+
+
+def filtered_segment_key(study_id: uuid.UUID, start_sample: int) -> str:
+    return f"studies/{study_id}/filtered/segments/{start_sample:012d}.f32"
+
+
+def filtered_envelope_key(study_id: uuid.UUID, start_sample: int) -> str:
+    return f"studies/{study_id}/filtered/envelopes/{start_sample:012d}.f32"
+
+
+def filtered_level_key(study_id: uuid.UUID, bucket: int) -> str:
+    return f"studies/{study_id}/filtered/levels/{bucket}.f32"
+
+
+def filtered_level_chunk_key(study_id: uuid.UUID, bucket: int, start_sample: int) -> str:
+    return f"studies/{study_id}/filtered/levels/{bucket}/{start_sample:012d}.f32"
 
 
 # --------------------------------------------------------------------------- #
@@ -206,14 +223,15 @@ def _object_meta(key: str, payload: bytes, **extra: object) -> dict[str, Any]:
     }
 
 
-def _chunk_order(study: Study, bucket: int, key: str) -> tuple[int, str]:
+def _chunk_order(study: Study, bucket: int, key: str, *, filtered: bool = False) -> tuple[int, str]:
     """Posición de un chunk dentro de su nivel.
 
     El objeto compactado va primero: contiene todo lo anterior a los chunks que
     se le anexaron después. El resto ordena por su clave, que lleva la `seq` con
     ceros a la izquierda para que ordenar por texto ordene por tiempo.
     """
-    return (0, "") if key == level_key(study.id, bucket) else (1, key)
+    compacted = filtered_level_key(study.id, bucket) if filtered else level_key(study.id, bucket)
+    return (0, "") if key == compacted else (1, key)
 
 
 def _decode_carry(raw: str | None) -> np.ndarray:
@@ -223,7 +241,7 @@ def _decode_carry(raw: str | None) -> np.ndarray:
 
 
 def append_level_chunks(
-    study: Study, base_envelope: np.ndarray, first_seq: int
+    study: Study, base_envelope: np.ndarray, first_seq: int, *, filtered: bool = False
 ) -> list[dict[str, Any]]:
     """Anexa a cada nivel lo que aporta ESTE lote. Trabajo O(lote), no O(estudio).
 
@@ -236,20 +254,32 @@ def append_level_chunks(
     El nivel base (bucket 16) no escribe objeto propio: sus chunks **son** las
     envolventes que ya escribe el caller.
     """
-    levels: list[dict[str, Any]] = list(study.ecg_pyramid_levels or [])
+    levels: list[dict[str, Any]] = list(
+        study.ecg_filtered_pyramid_levels if filtered else study.ecg_pyramid_levels or []
+    )
     by_bucket = {int(level["samplesPerBucket"]): level for level in levels}
-    carry_state: dict[str, str] = dict(study.ecg_level_carry or {})
+    carry_state: dict[str, str] = dict(
+        study.ecg_filtered_level_carry if filtered else study.ecg_level_carry or {}
+    )
 
     for bucket in PYRAMID_BUCKETS:
         if bucket == BASE_BUCKET:
             chunk = base_envelope
-            key = envelope_key(study.id, first_seq)
+            key = (
+                filtered_envelope_key(study.id, first_seq)
+                if filtered
+                else envelope_key(study.id, first_seq)
+            )
         else:
             factor = bucket // BASE_BUCKET
             combined = np.concatenate([_decode_carry(carry_state.get(str(bucket))), base_envelope])
             chunk, remainder = reduce_envelope_exact(combined, factor)
             carry_state[str(bucket)] = remainder.tobytes().hex() if remainder.size else ""
-            key = level_chunk_key(study.id, bucket, first_seq)
+            key = (
+                filtered_level_chunk_key(study.id, bucket, first_seq)
+                if filtered
+                else level_chunk_key(study.id, bucket, first_seq)
+            )
 
         if chunk.size == 0:
             continue
@@ -269,16 +299,22 @@ def append_level_chunks(
         # la deduplicación de arriba y se re-anexaría al final, dejando su tramo
         # fuera de lugar dentro del nivel. Es lo mismo que ya hace `ecg_segments`
         # con `startSampleIndex`.
-        chunks.sort(key=lambda item: _chunk_order(study, bucket, str(item["key"])))
+        chunks.sort(
+            key=lambda item: _chunk_order(study, bucket, str(item["key"]), filtered=filtered)
+        )
         level["chunks"] = chunks
         level["pointCount"] = sum(int(c["pointCount"]) for c in chunks)
 
-    study.ecg_level_carry = carry_state
+    if filtered:
+        study.ecg_filtered_level_carry = carry_state
+    else:
+        study.ecg_level_carry = carry_state
     # Un nivel que no comprime no vale los objetos que ocupa en S3.
-    return [level for level in levels if int(level["pointCount"]) < max(study.samples_count, 1)]
+    total = study.filtered_samples_count if filtered else study.samples_count
+    return [level for level in levels if int(level["pointCount"]) < max(total, 1)]
 
 
-def compact_level(study: Study, level: dict[str, Any]) -> dict[str, Any]:
+def compact_level(study: Study, level: dict[str, Any], *, filtered: bool = False) -> dict[str, Any]:
     """Funde los chunks de un nivel en un objeto único.
 
     Los chunks acotan el trabajo por lote, pero acumulan objetos: un estudio de
@@ -292,7 +328,7 @@ def compact_level(study: Study, level: dict[str, Any]) -> dict[str, Any]:
     if len(chunks) <= 1:
         return level
     payload = b"".join(get_object(str(chunk["key"])) for chunk in chunks)
-    key = level_key(study.id, bucket)
+    key = filtered_level_key(study.id, bucket) if filtered else level_key(study.id, bucket)
     put_object(key, payload)
     merged = _object_meta(key, payload, pointCount=len(payload) // 4)
     return {
@@ -302,13 +338,17 @@ def compact_level(study: Study, level: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_pyramid(study: Study, *, force: bool = False) -> list[dict[str, Any]]:
+def compact_pyramid(
+    study: Study, *, force: bool = False, filtered: bool = False
+) -> list[dict[str, Any]]:
     """Compacta los niveles cuyo recuento de chunks cruzó el umbral."""
     return [
-        compact_level(study, level)
+        compact_level(study, level, filtered=filtered)
         if force or len(level.get("chunks", [])) >= LEVEL_COMPACTION_THRESHOLD
         else level
-        for level in (study.ecg_pyramid_levels or [])
+        for level in (
+            study.ecg_filtered_pyramid_levels if filtered else study.ecg_pyramid_levels or []
+        )
     ]
 
 
@@ -545,16 +585,17 @@ def signal_loss_events(batch: ECGBatch, gap_ms: int) -> list[DerivedEvent]:
         confirmed = has_backlog_overflow(batch.device_status_flags)
         events.append(
             DerivedEvent(
-                kind="backlog_overflow",
+                kind="backlog_overflow" if confirmed else "missing_frames_inferred",
                 event_type=ECGEventType.OTHER,
                 severity=ECGEventSeverity.HIGH,
                 start_sample=0,
                 length_samples=0,
                 alert_message=(
-                    "Se perdió señal del paciente: el equipo estuvo sin conexión más tiempo "
-                    "del que aguanta su memoria y sobreescribió lo que no había podido subir. "
-                    f"Faltan {_human_duration(gap_ms)} de registro."
-                ),
+                    "El Holter confirmó que sobreescribió señal sin subir. "
+                    if confirmed
+                    else "Faltan tramas del registro; la causa todavía no está confirmada. "
+                )
+                + f"Duración estimada: {_human_duration(gap_ms)}.",
                 extra_metadata={
                     "gapFrames": batch.preceding_seq_gap_frames,
                     "gapMs": gap_ms,
@@ -580,7 +621,11 @@ def signal_loss_events(batch: ECGBatch, gap_ms: int) -> list[DerivedEvent]:
 
 def _human_duration(ms: int) -> str:
     """Duración en castellano, para un mensaje que lee un médico."""
-    minutes = max(ms, 0) // 60_000
+    if ms <= 0:
+        return "no determinada"
+    if ms < 60_000:
+        return f"{max(1, round(ms / 1000))} s"
+    minutes = ms // 60_000
     if minutes < 60:
         return f"{minutes} min"
     hours, rest = divmod(minutes, 60)
@@ -632,7 +677,93 @@ async def _place_on_timeline(
         for row in await repo.list_boot_anchors(db, study.id, batch.boot_id, current.first_seq)
     ]
     timeline.extend_segment(current, batch, timing, decoded.n_samples, anchors)
+    if (
+        current.ordinal == 0
+        and current.anchor_matches_boot is True
+        and study.status is StudyStatus.IN_PROGRESS
+        and current.start_epoch_ms <= int(batch.received_at.timestamp() * 1000)
+    ):
+        study.started_at = datetime.fromtimestamp(current.start_epoch_ms / 1000, tz=UTC)
+        study.started_at_verified = True
     return 0
+
+
+def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
+    """Read a bounded contiguous range from immutable decoded raw segments."""
+    parts: list[np.ndarray] = []
+    cursor = start
+    for segment in study.ecg_segments:
+        segment_start = int(segment["startSampleIndex"])
+        segment_end = segment_start + int(segment["sampleCount"])
+        if segment_end <= cursor or segment_start >= end:
+            continue
+        if segment_start > cursor:
+            raise RuntimeError("La vista filtrada encontró un hueco de segmentos crudos.")
+        payload = get_object(str(segment["key"]))
+        raw = np.frombuffer(payload, dtype="<f4")
+        if raw.size != segment_end - segment_start:
+            raise RuntimeError("Segmento crudo incompleto durante el filtrado.")
+        stop = min(end, segment_end)
+        parts.append(raw[cursor - segment_start : stop - segment_start])
+        cursor = stop
+        if cursor == end:
+            break
+    if cursor != end:
+        raise RuntimeError("Faltan muestras crudas para la vista filtrada.")
+    return np.concatenate(parts) if parts else np.empty(0, dtype="<f4")
+
+
+async def append_filtered_view(db: AsyncSession, study: Study) -> None:
+    """Commit the safe prefix of every continuous run, with symmetric context."""
+    if not study.filter_view_enabled:
+        return
+    segments = await repo.list_timeline_segments(db, study.id)
+    if not segments:
+        return
+    rate = study.sample_rate or 500
+    context = CONTEXT_SECONDS * rate
+    cursor = study.filtered_samples_count
+    for index, run in enumerate(segments):
+        run_start = run.start_sample_index
+        run_end = run_start + run.sample_count
+        if cursor >= run_end:
+            continue
+        if cursor < run_start:
+            raise RuntimeError("La vista filtrada dejó muestras sin procesar entre tramos.")
+        is_active_run = index == len(segments) - 1 and study.status is StudyStatus.IN_PROGRESS
+        safe_end = max(run_start, run_end - context) if is_active_run else run_end
+        if safe_end <= cursor:
+            break
+        read_start = max(run_start, cursor - context)
+        read_end = min(run_end, safe_end + context)
+        raw = _raw_signal_range(study, read_start, read_end)
+        filtered = filter_visualization(raw, rate)[cursor - read_start : safe_end - read_start]
+        if filtered.size != safe_end - cursor:
+            raise RuntimeError("La vista filtrada no cubre el tramo esperado.")
+        key = filtered_segment_key(study.id, cursor)
+        payload = filtered.tobytes()
+        put_object(key, payload)
+        filtered_segments = [item for item in study.ecg_filtered_segments if item.get("key") != key]
+        filtered_segments.append(
+            _object_meta(key, payload, startSampleIndex=cursor, sampleCount=int(filtered.size))
+        )
+        filtered_segments.sort(key=lambda item: int(item["startSampleIndex"]))
+        study.ecg_filtered_segments = filtered_segments
+        old_carry = (
+            np.frombuffer(study.ecg_filtered_envelope_carry, dtype="<f4")
+            if study.ecg_filtered_envelope_carry
+            else np.empty(0, dtype="<f4")
+        )
+        envelope, remainder = build_envelope(np.concatenate((old_carry, filtered)))
+        if envelope.size:
+            put_object(filtered_envelope_key(study.id, cursor), envelope.tobytes())
+        study.ecg_filtered_envelope_carry = remainder.tobytes() if remainder.size else None
+        study.filtered_samples_count = safe_end
+        study.ecg_filtered_pyramid_levels = append_level_chunks(
+            study, envelope, cursor, filtered=True
+        )
+        study.ecg_filtered_pyramid_levels = compact_pyramid(study, filtered=True)
+        cursor = safe_end
 
 
 async def _process_one_batch(
@@ -677,13 +808,14 @@ async def _process_one_batch(
         put_object(envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
     study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
     # Antes acá se llamaba `rebuild_pyramid`, que releía de S3 TODAS las
-    # envolventes del estudio en cada lote. Es la causa de los `500` del informe
-    # de Biomédica: crecía con el estudio y corría con la fila bloqueada.
+    # envolventes del estudio en cada lote. Era una fuente de contención que
+    # crecía con el estudio y corría con la fila bloqueada.
     study.ecg_pyramid_levels = append_level_chunks(study, envelope, batch.first_seq or 0)
     study.ecg_pyramid_levels = compact_pyramid(study)
 
     # --- Línea de tiempo de pared ------------------------------------------ #
     gap_ms = await _place_on_timeline(db, study, batch, decoded, start_sample_index)
+    await append_filtered_view(db, study)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
     # perdió la carrera contra complete/cancel no puede reabrir ni reescribir el
@@ -847,3 +979,36 @@ async def process_batch_task(batch_id: uuid.UUID) -> None:
 
     async with async_session_factory() as session:
         await process_batch(session, batch_id)
+
+
+async def process_study_task(study_id: uuid.UUID) -> None:
+    """Retry archived batches and finish the filtered tail after study close.
+
+    The study row lock and DONE status keep concurrent retries idempotent. This
+    also gives a failed final background job a recovery path through the
+    manifest request or an explicit study close.
+    """
+    from app.db.session import async_session_factory
+
+    async with async_session_factory() as session:
+        pending = await repo.list_batches_to_process(session, study_id)
+        if pending:
+            await process_batch(session, pending[0].id)
+        await session.rollback()
+        try:
+            study = await _lock_study(session, study_id)
+            if study is None:
+                return
+            await append_filtered_view(session, study)
+            if study.status is not StudyStatus.IN_PROGRESS:
+                study.ecg_pyramid_levels = await asyncio.to_thread(
+                    compact_pyramid, study, force=True
+                )
+                if study.filter_view_enabled:
+                    study.ecg_filtered_pyramid_levels = await asyncio.to_thread(
+                        compact_pyramid, study, force=True, filtered=True
+                    )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.exception("process_study_recovery_failed", study_id=str(study_id))

@@ -18,6 +18,7 @@ import { useDashboardActivity } from '@/features/dashboard/hooks/useDashboardAct
 import { useDashboardAlerts } from '@/features/dashboard/hooks/useDashboardAlerts'
 import { useDashboardKpis } from '@/features/dashboard/hooks/useDashboardKpis'
 import { useAuth } from '@/features/auth/AuthContext'
+import { CLINICAL_TIME_ZONE } from '@/lib/time'
 
 /** Altas de la semana, en palabras: un "0" suelto abajo del número confunde. */
 function altasLabel(count: number): string {
@@ -33,6 +34,7 @@ function greeting(hour: number): string {
 }
 
 const TODAY = new Intl.DateTimeFormat('es-AR', {
+  timeZone: CLINICAL_TIME_ZONE,
   weekday: 'long',
   day: 'numeric',
   month: 'long',
@@ -77,7 +79,15 @@ export function Dashboard() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col gap-1">
           <h1 className="text-h4 text-gray-900">
-            {greeting(new Date().getHours())}
+            {greeting(
+              Number(
+                new Intl.DateTimeFormat('en-GB', {
+                  timeZone: CLINICAL_TIME_ZONE,
+                  hour: '2-digit',
+                  hour12: false,
+                }).format(new Date()),
+              ),
+            )}
             {firstName ? `, ${firstName}` : ''}
           </h1>
           <p className="text-body2 text-gray-600 first-letter:uppercase">

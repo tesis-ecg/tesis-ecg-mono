@@ -97,6 +97,19 @@ def vest_message(alert_id: uuid.UUID, occurred_at_iso: str) -> PushMessage:
     )
 
 
+def battery_message(alert_id: uuid.UUID, level: str) -> PushMessage:
+    critical = level == "critical"
+    return PushMessage(
+        title="Batería crítica del chaleco" if critical else "Batería baja del chaleco",
+        body=(
+            "Cargá el chaleco ahora para evitar que se interrumpa el registro."
+            if critical
+            else "Cargá el chaleco pronto para mantener el registro."
+        ),
+        data={"type": "battery_alert", "alertId": str(alert_id)},
+    )
+
+
 async def notify_patient_task(patient_id: uuid.UUID, message: PushMessage) -> None:
     """Entrypoint del `BackgroundTasks`: abre su propia sesión.
 

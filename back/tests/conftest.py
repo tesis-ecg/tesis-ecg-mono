@@ -244,6 +244,7 @@ def scheduled_batches(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
         scheduled.append(batch_id)
 
     monkeypatch.setattr("app.modules.ingest.processing.process_batch_task", _spy)
+    monkeypatch.setattr("app.modules.ingest.processing.process_study_task", _spy)
     return scheduled
 
 

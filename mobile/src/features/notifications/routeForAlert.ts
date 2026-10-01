@@ -19,6 +19,8 @@ export function routeForAlert(alert: PatientAlert): AlertRoute {
   if (alert.requiresResponse && alert.reportId) {
     return { pathname: '/report-response', params: { reportId: alert.reportId } }
   }
-  if (alert.kind === 'vest_misplaced') return { pathname: '/(tabs)/device' }
+  if (['vest_misplaced', 'battery_low', 'battery_critical'].includes(alert.kind)) {
+    return { pathname: '/(tabs)/device' }
+  }
   return null
 }

@@ -18,6 +18,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { formatDateTime } from '@/lib/time'
 import { downloadStudyClinicalReport } from '@/features/studies/api/studiesApi'
 import {
   useStudyClinicalReportDraft,
@@ -428,9 +429,7 @@ async function downloadVersion(studyId: string, reportId: string, version: numbe
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat('es-AR', { dateStyle: 'short', timeStyle: 'short' }).format(
-    new Date(value),
-  )
+  return formatDateTime(value)
 }
 
 function formatDuration(ms: number) {

@@ -74,6 +74,10 @@ app.add_middleware(
         "X-Device-Loss-Flags",
         "X-Device-Status-Flags",
         "X-Device-Backlog-Seconds",
+        "X-Device-Boot-Id",
+        "X-Device-Rssi",
+        "X-Device-Sqi",
+        "X-Device-Battery-Flags",
     ],
 )
 
@@ -96,7 +100,7 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # celular adjunte solo. Y tampoco manda `Origin` — React Native no es un
 # navegador —, así que sin la excepción todo POST del paciente daría 403 en
 # preview y producción.
-_ORIGIN_EXEMPT_PREFIXES = ("/ingest/", "/mobile/")
+_ORIGIN_EXEMPT_PREFIXES = ("/ingest/", "/mobile/", "/api/ingest/", "/api/mobile/")
 _CLINICAL_REPORT_FINALIZE_PATH = re.compile(r"^/studies/[^/]+/clinical-report/finalize$")
 
 

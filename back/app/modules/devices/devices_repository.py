@@ -262,6 +262,8 @@ async def retire_device(db: AsyncSession, device: Device) -> None:
 
 
 async def assign_device(db: AsyncSession, device: Device, patient: Patient) -> None:
+    if device.patient_id != patient.id:
+        device.battery_alert_level = None
     device.patient_id = patient.id
     # Invariante: un device con paciente pertenece al médico de ese paciente. Para el
     # médico es un no-op (ya coincidían); para el admin evita dejar el device en manos
@@ -273,6 +275,7 @@ async def assign_device(db: AsyncSession, device: Device, patient: Patient) -> N
 
 async def unassign_device(db: AsyncSession, device: Device) -> None:
     device.patient_id = None
+    device.battery_alert_level = None
     device.status = DeviceStatus.AVAILABLE
     await db.flush()
 

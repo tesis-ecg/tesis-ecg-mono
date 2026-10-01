@@ -15,6 +15,7 @@ export interface Study {
   patientName: string
   deviceId: string
   startedAt: string
+  startedAtVerified?: boolean
   endedAt: string | null
   durationMs: number
   deviceSerial: string
@@ -155,6 +156,7 @@ export interface StudyClinicalReportSnapshot {
     id: string
     status: PatientStudySessionStatus
     startedAt: string
+    startedAtVerified?: boolean
     endedAt: string | null
     durationMs: number
     deviceSerial: string
@@ -183,8 +185,9 @@ export interface StudyClinicalReportSnapshot {
     segments: number
     cuts: number
     lastDataReceivedAt: string | null
+    timeVerified?: boolean
     synchronizationSources: string[]
-    maxSynchronizationUncertaintyMs: number
+    maxSynchronizationUncertaintyMs: number | null
   }
   findings: StudyClinicalReportFindingSummary[]
   technicalEvents: StudyClinicalReportFindingSummary[]

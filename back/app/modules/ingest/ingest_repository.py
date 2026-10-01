@@ -210,6 +210,7 @@ async def list_boot_anchors(
         ECGBatch.study_id == study_id,
         ECGBatch.boot_id == boot_id,
         ECGBatch.bridge_epoch_ms.is_not(None),
+        ECGBatch.anchor_matches_boot.is_(True),
         # Un ancla es la pareja (uptime, epoch): sin el uptime no hay punto que
         # poner en la recta. Dejar entrar la fila y leer el uptime como 0 metería
         # un `(0, epoch)` entre anclas que están a horas de uptime, y un solo
@@ -222,23 +223,12 @@ async def list_boot_anchors(
     return list(result.scalars().all())
 
 
-async def has_archived_seq_range(
+async def archived_batches_overlapping(
     db: AsyncSession, study_id: uuid.UUID, first_seq: int, last_seq: int
-) -> bool:
-    """¿Está archivado, sin huecos, todo un rango de `seq` del estudio?
-
-    Es lo que distingue una retransmisión legítima de un `seq` que rebobinó.
-    Cuando un lote llega entero por debajo del cursor bajo otro `bootId`, los dos
-    casos son idénticos mirando solo los números (`INTEGRACION.md` §11.6) — la
-    diferencia es que la retransmisión ya está archivada y el rebobinado no. Sin
-    este chequeo, el rebobinado se confirmaba como duplicado y el equipo borraba
-    de su flash señal que nunca llegó a existir de nuestro lado.
-    """
-    if last_seq < first_seq:
-        return True
-
+) -> list[ECGBatch]:
+    """Lotes crudos que pueden contener una retransmisión bajo el cursor."""
     result = await db.execute(
-        select(ECGBatch.first_seq, ECGBatch.last_seq)
+        select(ECGBatch)
         .where(
             ECGBatch.study_id == study_id,
             ECGBatch.first_seq.is_not(None),
@@ -248,13 +238,4 @@ async def has_archived_seq_range(
         )
         .order_by(ECGBatch.first_seq, ECGBatch.last_seq)
     )
-    expected_seq = first_seq
-    for batch_first, batch_last in result.all():
-        if batch_first is None or batch_last is None:  # para el type checker
-            continue
-        if batch_first > expected_seq:
-            return False
-        expected_seq = max(expected_seq, batch_last + 1)
-        if expected_seq > last_seq:
-            return True
-    return False
+    return list(result.scalars().all())

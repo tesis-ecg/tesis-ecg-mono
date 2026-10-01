@@ -86,6 +86,8 @@ export const DEVICE_AURA: Record<DeviceState, VestAuraTone> = {
 /** Los tipos de aviso que puede recibir el paciente, en su idioma. */
 export const ALERT_KIND_LABEL: Record<string, string> = {
   vest_misplaced: 'Chaleco mal colocado',
+  battery_low: 'Batería baja del chaleco',
+  battery_critical: 'Batería crítica del chaleco',
   tachycardia: 'Latidos más rápidos de lo habitual',
   bradycardia: 'Latidos más lentos de lo habitual',
   afib: 'Ritmo irregular',
@@ -117,6 +119,8 @@ interface AlertMeta {
 
 const ALERT_TONE: Record<string, AlertMeta['tone']> = {
   vest_misplaced: 'danger',
+  battery_low: 'danger',
+  battery_critical: 'danger',
 }
 
 /** Cómo se dibuja un aviso: su texto, su color y su ícono. */

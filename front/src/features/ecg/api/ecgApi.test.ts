@@ -68,6 +68,59 @@ describe('getStudyEcg', () => {
     expect(signal.durationMs).toBe(2000)
   })
 
+  it('no estira un nivel incompleto hasta el final del estudio', async () => {
+    installDecoderWorker()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 1600,
+        levels: [level({ samplesPerBucket: 16, pointCount: 100, byteLength: 400 })],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse(Array(100).fill(1))) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.metadata?.processedSampleCount).toBe(800)
+    expect(signal.durationMs).toBe(3200)
+    expect(signal.timestampsMs[99] - signal.timestampsMs[0]).toBe(1584)
+  })
+
+  it('marca la hora como no verificada si un tramo posterior no tiene bootId del ancla', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        startTimestamp: start,
+        startTimeVerified: true,
+        levels: [level({ pointCount: 4 })],
+        timeline: [
+          {
+            ordinal: 0,
+            startSampleIndex: 0,
+            sampleCount: 2,
+            startEpochMs: start,
+            endEpochMs: start + 4,
+            anchorMatchesBoot: true,
+          },
+          {
+            ordinal: 1,
+            startSampleIndex: 2,
+            sampleCount: 2,
+            startEpochMs: start + 1000,
+            endEpochMs: start + 1004,
+            anchorMatchesBoot: null,
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.metadata?.startTimeVerified).toBe(false)
+  })
+
   it('concatena en orden los segmentos de un estudio demasiado corto para la pirámide', async () => {
     installDecoderWorker()
     vi.spyOn(api, 'get').mockResolvedValue({
@@ -228,7 +281,7 @@ describe('línea de tiempo de pared', () => {
         sampleCount: 4,
         sampleRate: 500,
         startTimestamp: start,
-        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        segments: [object({ startSampleIndex: 0, sampleCount: 4 })],
         // El chaleco grabó dos muestras, estuvo una hora apagado y grabó dos más.
         timeline: [
           {
@@ -278,7 +331,7 @@ describe('línea de tiempo de pared', () => {
         sampleCount: 4,
         sampleRate: 500,
         startTimestamp: start,
-        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        segments: [object({ startSampleIndex: 0, sampleCount: 4 })],
         timeline: [
           {
             ordinal: 0,
@@ -326,7 +379,7 @@ describe('línea de tiempo de pared', () => {
         sampleCount: 4,
         sampleRate: 500,
         startTimestamp: start,
-        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        segments: [object({ startSampleIndex: 0, sampleCount: 4 })],
         timeline: [
           {
             ordinal: 0,

@@ -253,6 +253,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     const tokens = readEcgTokens()
     const initialWidth = Math.max(container.clientWidth, 600)
     const startTimestamp = signal.startTimestamp
+    const timeVerified = signal.metadata?.startTimeVerified !== false
 
     const syncPlotArea = (inst: uPlot) => {
       const next = {
@@ -322,7 +323,11 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           // haciendo. `v` es segundos desde el inicio del eje, que arranca en
           // `startTimestamp`.
           values: (_self, splits) =>
-            splits.map((v) => formatWallClockShort(startTimestamp + v * 1000)),
+            splits.map((v) =>
+              timeVerified
+                ? formatWallClockShort(startTimestamp + v * 1000)
+                : formatRelativeSeconds(v),
+            ),
           size: 30,
         },
         {
@@ -336,7 +341,12 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       series: [
         {
           label: 'Tiempo',
-          value: (_self, v) => (v == null ? '—' : formatWallClock(startTimestamp + v * 1000)),
+          value: (_self, v) =>
+            v == null
+              ? '—'
+              : timeVerified
+                ? formatWallClock(startTimestamp + v * 1000)
+                : formatRelativeSeconds(v),
         },
         {
           label: 'ECG',
@@ -840,6 +850,14 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
  * rato, el buffer de muestras pega los dos bordes y el eje uniforme corre la
  * hora de todo lo que viene después del hueco.
  */
+function formatRelativeSeconds(value: number): string {
+  const seconds = Math.max(0, Math.floor(value))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const rest = seconds % 60
+  return `+${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${rest.toString().padStart(2, '0')}`
+}
+
 function buildXAxis(signal: ECGSignal): Float64Array {
   const n = signal.samples.length
   const xs = new Float64Array(n)

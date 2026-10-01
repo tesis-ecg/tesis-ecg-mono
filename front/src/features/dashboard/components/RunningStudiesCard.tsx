@@ -46,7 +46,7 @@ export function RunningStudiesCard() {
             >
               <TableCell className="font-medium text-gray-900">{s.patientName}</TableCell>
               <TableCell className="hidden sm:table-cell text-gray-600">
-                {formatDateTime(s.startedAt)}
+                {s.startedAtVerified === false ? 'Hora no verificada' : formatDateTime(s.startedAt)}
               </TableCell>
               <TableCell>{formatDurationMs(s.durationMs)}</TableCell>
               <TableCell className="hidden 2xl:table-cell text-gray-600">

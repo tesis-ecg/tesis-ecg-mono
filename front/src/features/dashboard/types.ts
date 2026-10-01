@@ -68,6 +68,7 @@ export interface RunningStudy {
   id: string
   patientName: string
   startedAt: string
+  startedAtVerified: boolean
   durationMs: number
   deviceSerial: string
 }

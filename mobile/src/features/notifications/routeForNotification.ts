@@ -27,7 +27,9 @@ export type NotificationRoute =
  *   un push futuro tampoco puede mandar a una ruta inexistente.
  */
 export function routeForNotification(data: NotificationData | null | undefined): NotificationRoute {
-  if (data?.type === 'vest_misplaced') return { pathname: '/(tabs)/device' }
+  if (data?.type === 'vest_misplaced' || data?.type === 'battery_alert') {
+    return { pathname: '/(tabs)/device' }
+  }
   if (data?.type === 'report_request' && data.alertId && data.occurredAt) {
     return {
       pathname: '/report',

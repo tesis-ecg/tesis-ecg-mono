@@ -1,4 +1,5 @@
 const LOCALE = 'es-AR'
+const TIME_ZONE = 'America/Argentina/Buenos_Aires'
 
 /**
  * `mié 30 ago, 23:37` — el formato que el paciente lee de un vistazo.
@@ -12,6 +13,7 @@ export function formatDateTime(iso: string | null | undefined): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat(LOCALE, {
+    timeZone: TIME_ZONE,
     weekday: 'short',
     day: 'numeric',
     month: 'short',
@@ -26,6 +28,7 @@ export function formatTime(iso: string | null | undefined): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
   return new Intl.DateTimeFormat(LOCALE, {
+    timeZone: TIME_ZONE,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,

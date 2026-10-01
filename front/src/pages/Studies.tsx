@@ -252,7 +252,9 @@ export function Studies() {
                     <StudyStatusBadge status={s.status} />
                   </TableCell>
                   <TableCell className="hidden sm:table-cell">
-                    {formatDateTime(s.startedAt)}
+                    {s.startedAtVerified === false
+                      ? 'Hora de inicio no verificada'
+                      : formatDateTime(s.startedAt)}
                   </TableCell>
                   <TableCell className="hidden lg:table-cell">
                     {formatDateTime(s.endedAt)}

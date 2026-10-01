@@ -93,6 +93,9 @@ class Device(TimestampMixin, Base):
     #: El campo ya venía en el cuerpo de `POST /ingest/device-status` y se
     #: validaba, pero se descartaba sin escribirlo en ningún lado.
     last_sqi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_rssi_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_battery_flags: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    battery_alert_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     #: Última colocación reportada por el equipo (`POST /ingest/device-status`).
     #: `None` no es "está bien": es que todavía no reportó ninguna de las dos
     #: cosas. La app lo dibuja como estado desconocido y no como correcto.
