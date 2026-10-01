@@ -94,5 +94,17 @@ class Study(TimestampMixin, Base):
     #: de `seq` y de `t0Ms`: el equipo se reinició y su reloj volvió a cero.
     last_boot_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
+    # --- Motor de detección --------------------------------------------------- #
+    #: Estado acumulado del banco de plantillas y las métricas del pipeline.
+    #: `{schemaVersion, modelVersion, templatesKey, templates[], beatsSeen,
+    #:   unmatchedBeats, nextClusterId, consumedBatchIds[], scoreFloor, metrics{}}`.
+    #:
+    #: Los **centroides** no viven acá sino en S3 (`templatesKey`): `select(Study)`
+    #: trae todas las columnas, y 40 KB de vectores TOASTeados se leerían en cada
+    #: listado y cada detalle de estudio. Acá queda solo la metadata liviana.
+    ml_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+
     patient: Mapped[Patient] = relationship()
     device: Mapped[Device] = relationship()

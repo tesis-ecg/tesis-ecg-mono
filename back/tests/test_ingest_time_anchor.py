@@ -97,6 +97,12 @@ async def test_a_reboot_does_not_let_the_cursor_go_backwards(
     Un lote que arranca antes del cursor con otro `bootId` solo puede ser un
     error, y aceptarlo sobreescribiría en S3 los objetos del estudio, que se
     nombran con el `first_seq` del lote.
+
+    Antes se contestaba 202 re-confirmando el cursor "para que el equipo no
+    cicle". Eso era el bug: el número devuelto pertenece a la numeración vieja y
+    el equipo lo interpreta en la nueva, borrando de su flash miles de tramas que
+    el backend nunca archivó. Visto en producción con las dos partes sanas. Ahora
+    se corta con 409 y el equipo conserva su señal.
     """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
@@ -106,17 +112,13 @@ async def test_a_reboot_does_not_let_the_cursor_go_backwards(
     ).json()
     cursor = first["lastAcceptedSeq"]
 
-    second = (
-        await post_frames(
-            client, device, api_key, build_frames(1500, boot_id=4, first_seq=0, t0_ms=0)
-        )
-    ).json()
+    response = await post_frames(
+        client, device, api_key, build_frames(1500, boot_id=4, first_seq=0, t0_ms=0)
+    )
 
-    assert second["framesAccepted"] > 0  # se re-confirman, para que el equipo no cicle
-    assert second["framesDuplicate"] == second["framesAccepted"]
-    assert second["batchId"] is None  # nada nuevo se archivó
-    assert second["lastAcceptedSeq"] == cursor
-    study = await db.get(Study, second["studyId"])
+    assert response.status_code == 409
+    assert response.json()["code"] == "INGEST_SEQ_RENUMBERED"
+    study = await db.get(Study, first["studyId"])
     assert study is not None
     assert study.last_ingested_seq == cursor
 

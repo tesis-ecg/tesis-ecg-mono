@@ -112,7 +112,7 @@ class _AckWindow:
 def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckWindow:
     """Ventana confirmable, con la semántica go-back-N de `INTEGRACION.md` §4.6.
 
-    Tres reglas:
+    Cuatro reglas:
 
     1. **Solo contiguo desde el cursor.** Si llegan la 10, la 11 y la 13 con el
        cursor en 9, se confirman 2: la 12 falta y el cursor de lectura del
@@ -138,6 +138,15 @@ def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckW
        `segment_key`, `envelope_key`), eso **sobreescribía en S3** señal ya
        archivada mientras `samples_count` seguía creciendo: el estudio perdía
        muestras en silencio y quedaba contando las que ya no estaban.
+
+    4. **Un lote entero por debajo del cursor con `bootId` nuevo no es un
+       duplicado: es una renumeración**, y se rechaza con 409. Ver el comentario
+       en el cuerpo — es el único camino por el que se podía confirmar una `seq`
+       de una numeración que el equipo ya no usa.
+
+    Con la regla 4, `lastAcceptedSeq` no puede salir del lote que el equipo
+    acaba de mandar: o hay tramas aceptadas y el número sale de ellas, o el
+    `bootId` es el mismo y el cursor está en la numeración del equipo.
     """
     cursor = study.last_ingested_seq
     rebooted = study.last_boot_id is not None and study.last_boot_id != boot_id
@@ -149,7 +158,35 @@ def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckW
     else:
         already = [f for f in frames if f.info.seq <= cursor]
         fresh = [f for f in frames if f.info.seq > cursor]
-        expected = fresh[0].info.seq if (rebooted and fresh) else cursor + 1
+        if rebooted and not fresh:
+            # El equipo reempezó a numerar. Visto en producción: llegaron 247
+            # tramas con seq 0-246 estando el cursor en 13826, y la respuesta
+            # las contó como duplicadas y confirmó `lastAcceptedSeq: 13826` —
+            # un número de OTRA numeración. El equipo lo lee en la suya y borra
+            # de su flash 13826 tramas que nunca guardamos: pérdida de señal de
+            # un paciente, con las dos partes sanas y sin un solo error.
+            #
+            # No alcanza con no confirmar: hay que cortar. Aceptarlas
+            # sobreescribiría en S3 los objetos que ya se nombran con el
+            # `first_seq` (ver regla 3), y tratarlas como duplicadas es
+            # justamente la confusión que causó el incidente. Se pide una
+            # decisión humana: el estudio abierto pertenece a la numeración
+            # vieja y hay que cerrarlo antes de seguir.
+            #
+            # El precio es un caso legítimo raro: si nuestra respuesta se perdió
+            # Y el equipo se reinició antes de reintentar, ese lote se rechaza
+            # en vez de re-confirmarse. Se elige así a propósito — el equipo
+            # conserva sus tramas y alguien mira el error, que es infinitamente
+            # más barato que borrar señal que no está archivada.
+            raise _conflict(
+                "INGEST_SEQ_RENUMBERED",
+                (
+                    f"El lote termina en seq {frames[-1].info.seq} con un bootId nuevo, "
+                    f"por debajo del cursor {cursor}: el equipo reempezó a numerar y no "
+                    "se puede saber a qué numeración pertenecen estas tramas."
+                ),
+            )
+        expected = fresh[0].info.seq if rebooted else cursor + 1
 
     accepted: list[_ParsedFrame] = []
     for frame in fresh:

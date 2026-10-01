@@ -18,6 +18,9 @@ dependencies = [
     # min/max del ECG corren en el camino de ingesta (app/ml/decompression.py,
     # app/modules/ingest/processing.py).
     "numpy>=2.0",
+    "neurokit2>=0.2.13,<0.3",
+    "scipy>=1.14",
+    "scikit-learn>=1.5",
 ]
 
 [dependency-groups]
@@ -30,6 +33,9 @@ dev = [
     "mypy",
     "faker",
     "moto[s3]>=5.0",
+    # Solo para `tools/physionet/evaluate.py`: baja y lee los registros de
+    # MIT-BIH con los que se calibró el motor. No entra en la imagen.
+    "wfdb>=4.1",
 ]
 
 [tool.ruff]

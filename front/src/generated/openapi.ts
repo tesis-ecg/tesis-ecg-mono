@@ -553,6 +553,48 @@ export interface StudyEcgSegmentOut {
   "sampleCount": number
 }
 
+export interface StudyFindingGroupOut {
+  "key": string
+  "kind": string
+  "category": "signal_quality" | "clinical" | "patient_marker" | "technical"
+  "severity": "low" | "medium" | "high" | "critical"
+  "occurrences": number
+  "beatCount"?: number | null
+  "burdenPct"?: number | null
+  "meanIntraCorrelation"?: number | null
+  "firstOffsetMs": number
+  "lastOffsetMs": number
+  "items"?: Array<StudyFindingOut>
+}
+
+export interface StudyFindingOut {
+  "id": string
+  "kind": string
+  "category": "signal_quality" | "clinical" | "patient_marker" | "technical"
+  "severity": "low" | "medium" | "high" | "critical"
+  "startOffsetMs": number
+  "endOffsetMs": number
+  "confidenceScore": number | null
+  "modelVersion": string | null
+  "validationStatus": "pending" | "confirmed" | "rejected" | "uncertain"
+  "clusterId"?: number | null
+  "beatCount"?: number | null
+  "description"?: string | null
+}
+
+export interface StudyFindingsOut {
+  "studyId": string
+  "sampleRate": number
+  "sampleCount": number
+  "durationMs": number
+  "modelVersion": string | null
+  "quality": StudyQualitySummaryOut
+  "groups"?: Array<StudyFindingGroupOut>
+  "ungrouped"?: Array<StudyFindingOut>
+  "totals"?: Record<string, number>
+  "truncated"?: boolean
+}
+
 export interface StudyListResponse {
   "items": Array<StudyDetailOut>
   "total": number
@@ -582,6 +624,22 @@ export interface StudyPatientReportsResponse {
   "items": Array<StudyPatientReportOut>
   "total": number
   "pendingSignalTotal": number
+}
+
+export interface StudyQualityIntervalOut {
+  "startOffsetMs": number
+  "endOffsetMs": number
+  "level": "good" | "marginal" | "bad" | "unknown"
+  "reason": string
+}
+
+export interface StudyQualitySummaryOut {
+  "analyzableRatio": number
+  "goodRatio": number
+  "marginalRatio": number
+  "badRatio": number
+  "evaluatedMs": number
+  "intervals"?: Array<StudyQualityIntervalOut>
 }
 
 export type StudyStatus = "in_progress" | "completed" | "cancelled" | "scheduled"

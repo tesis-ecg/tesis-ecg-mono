@@ -50,6 +50,15 @@ export function loadFleet(): VestConfig[] {
     return parsed.filter(isVestConfig).map((config) => ({
       ...config,
       placementOk: config.placementOk ?? true,
+      signal: {
+        ...config.signal,
+        // Guardadas antes de que el simulador supiera inyectar arritmias. Sin
+        // esto, `generateSignal` haría `.find` sobre `undefined` y el chaleco
+        // quedaría muerto después de una actualización.
+        ectopicSpans: config.signal.ectopicSpans ?? [],
+        pauseSpans: config.signal.pauseSpans ?? [],
+        rateSpans: config.signal.rateSpans ?? [],
+      },
     }))
   } catch {
     // localStorage puede fallar entero (modo privado de Safari, cuota llena).

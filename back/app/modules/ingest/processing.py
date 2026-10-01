@@ -17,18 +17,20 @@ bucket=16 — no hay que volver a decodificar nada para rehacerlos.
 
 import hashlib
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 import numpy as np
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.s3 import get_object, list_keys, put_object
-from app.db.models.alert import Alert, AlertSeverity
+from app.core.workers import run_cpu, run_io
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
-from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
+from app.db.models.ecg_event import ECGEventSeverity, ECGEventType
 from app.db.models.study import Study, StudyStatus
+from app.ml.contracts import Finding
 from app.ml.decompression import (
     FLAG_ADC_SATURATED,
     FLAG_EVENT_MARKER,
@@ -42,7 +44,10 @@ from app.ml.decompression import (
     decode_frame,
     iter_frames,
 )
+from app.ml.pipeline import PIPELINE_VERSION, PipelineResult, analyze_batch, build_config
+from app.ml.quality import sample_runs
 from app.modules.ingest import ingest_repository as repo
+from app.modules.ingest import ml_persistence
 from app.modules.patient_app.notifications_service import (
     anomaly_message,
     notify_patient_task,
@@ -155,17 +160,23 @@ def _object_meta(key: str, payload: bytes, **extra: object) -> dict[str, object]
     }
 
 
-def rebuild_pyramid(study: Study) -> list[dict[str, object]]:
+def rebuild_pyramid(study_id: uuid.UUID, total_samples: int) -> list[dict[str, object]]:
     """Rehace los niveles gruesos leyendo las envolventes, no la señal.
 
     Para 24 h son ~21 MB de envolventes contra ~173 MB de señal, y evita volver
     a decodificar tramas que ya se decodificaron una vez.
+
+    Recibe el id y el total de muestras y **no el objeto `Study`**: esto corre en
+    un hilo, y tocar un atributo de una entidad expirada ahí dispara un refresh
+    lazy de SQLAlchemy fuera del greenlet — `MissingGreenlet`, un error que
+    aparece recién cuando la sesión decidió expirar el objeto y por eso pasa los
+    tests unitarios y falla en la suite completa. La regla es simple y vale para
+    todo lo que cruza a `run_cpu`/`run_io`: **nada de ORM del otro lado.**
     """
-    parts = [get_object(key) for key in list_keys(envelope_prefix(study.id))]
+    parts = [get_object(key) for key in list_keys(envelope_prefix(study_id))]
     if not parts:
         return []
     base = np.frombuffer(b"".join(parts), dtype="<f4")
-    total_samples = study.samples_count
 
     levels: list[dict[str, object]] = []
     for bucket in PYRAMID_BUCKETS:
@@ -173,7 +184,7 @@ def rebuild_pyramid(study: Study) -> list[dict[str, object]]:
         if envelope.size == 0 or envelope.size >= total_samples:
             continue  # un nivel que no comprime no vale el objeto en S3
         payload = envelope.tobytes()
-        key = level_key(study.id, bucket)
+        key = level_key(study_id, bucket)
         put_object(key, payload)
         levels.append(
             _object_meta(
@@ -191,13 +202,10 @@ def rebuild_pyramid(study: Study) -> list[dict[str, object]]:
 # --------------------------------------------------------------------------- #
 
 
-def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
-    """Tramos `(inicio, largo)` donde `mask` es verdadera."""
-    if mask.size == 0 or not mask.any():
-        return []
-    padded = np.concatenate(([False], mask, [False]))
-    edges = np.flatnonzero(padded[1:] != padded[:-1])
-    return [(int(s), int(e - s)) for s, e in zip(edges[0::2], edges[1::2], strict=True)]
+#: Vive en `app/ml/quality.py`: el gate de calidad hace exactamente el mismo
+#: run-length sobre máscaras, y dos copias que se desincronizan producirían
+#: bandas distintas para el mismo tramo según quién las calculó.
+_runs = sample_runs
 
 
 @dataclass(frozen=True)
@@ -213,6 +221,11 @@ class DerivedEvent:
 #: Umbral para no inundar la base con eventos de un electrodo que rebota. Medio
 #: segundo a 500 SPS.
 MIN_RUN_SAMPLES = 250
+
+#: Hueco mínimo entre dos tramas para contarlo. `durationMs` viaja en enteros de
+#: milisegundo y una muestra son 2 ms: por debajo de esto es redondeo, no señal
+#: que falte.
+MIN_FRAME_GAP_MS = 20
 
 
 def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
@@ -284,7 +297,31 @@ def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
     # Huecos internos: la trama declara más duración de la que tendría si no
     # faltara ninguna muestra. Un hueco no es una línea isoeléctrica.
     offset = 0
+    previous_end_ms: int | None = None
     for frame in batch.frames:
+        # Hueco ENTRE tramas. El `internal_gap_ms` de abajo solo ve lo que falta
+        # *adentro* de una trama; lo que el equipo dejó de adquirir entre el
+        # final de una y el arranque de la siguiente no lo miraba nadie. Las
+        # tramas de un lote son contiguas por `seq` y de un solo `bootId` (el
+        # filtro está en `ingest_service`), así que un salto de `t0Ms` acá es
+        # adquisición perdida de verdad, no un corte de enlace: si se cae el
+        # enlace el equipo sigue grabando en su flash y el lote llega tarde pero
+        # entero. Importa el doble con un modelo de detección atrás — un tramo
+        # isoeléctrico sintético es indistinguible de una asistolia.
+        if previous_end_ms is not None:
+            between_ms = frame.info.t0_ms - previous_end_ms
+            if between_ms >= MIN_FRAME_GAP_MS:
+                events.append(
+                    DerivedEvent(
+                        kind="frame_gap",
+                        event_type=ECGEventType.OTHER,
+                        severity=ECGEventSeverity.MEDIUM,
+                        start_sample=offset,
+                        length_samples=int(between_ms * sample_rate / 1000),
+                    )
+                )
+        previous_end_ms = frame.info.t0_ms + frame.info.duration_ms
+
         gap_ms = frame.info.internal_gap_ms
         if gap_ms > 0:
             events.append(
@@ -311,63 +348,26 @@ def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
     return events
 
 
-#: Severidades que despiertan al paciente. Una `LOW` (medio segundo de un
-#: electrodo que rebotó) no justifica una notificación, y la app la muestra
-#: igual en Inicio cuando el paciente la abre.
-_PUSHABLE = {ECGEventSeverity.HIGH: 1, ECGEventSeverity.CRITICAL: 2}
+def _to_finding(derived: DerivedEvent, start_sample_index: int) -> Finding:
+    """Un evento de la Capa A visto como hallazgo del motor.
 
-
-async def _persist_events(
-    db: AsyncSession,
-    batch: ECGBatch,
-    study: Study,
-    events: list[DerivedEvent],
-    start_sample_index: int,
-    sample_rate: int,
-) -> tuple[int, tuple[int, uuid.UUID] | None]:
-    """Persiste los eventos y devuelve `(cuántos, la alerta más severa a notificar)`.
-
-    La alerta viaja hacia arriba en vez de notificarse acá porque todavía no se
-    commiteó: mandarle al paciente un push con un `alertId` que después la
-    transacción descarta lo dejaría tocando una notificación rota.
+    La Capa A —los bits de electrodo y saturación del AFE— **es parte del gate de
+    calidad**, no algo aparte: `derive_events` implementa exactamente la primera
+    capa de la estrategia. Convertirla acá hace que todo lo que se escribe pase
+    por un solo camino de persistencia, con las mismas garantías de idempotencia,
+    en vez de tener dos escritores con reglas distintas sobre la misma tabla.
     """
-    pushable: tuple[int, uuid.UUID] | None = None
-    for derived in events:
-        absolute = start_sample_index + derived.start_sample
-        event = ECGEvent(
-            batch_id=batch.id,
-            event_type=derived.event_type,
-            severity=derived.severity,
-            timestamp_in_recording=absolute / sample_rate,
-            duration_seconds=derived.length_samples / sample_rate,
-            event_metadata={
-                "kind": derived.kind,
-                "studyId": str(study.id),
-                "startSampleIndex": absolute,
-                "sampleCount": derived.length_samples,
-                "bootId": batch.boot_id,
-            },
-        )
-        db.add(event)
-        await db.flush()
-
-        if derived.alert_message is not None:
-            alert = Alert(
-                patient_id=study.patient_id,
-                event_id=event.id,
-                kind=derived.kind,
-                severity=AlertSeverity[derived.severity.name],
-                message=derived.alert_message,
-            )
-            db.add(alert)
-            await db.flush()
-            rank = _PUSHABLE.get(derived.severity)
-            # Un lote de 1 h puede traer varias anomalías. Se notifica una sola
-            # —la más severa— para no vaciar la batería del celular ni saturar
-            # al paciente con avisos que va a terminar silenciando.
-            if rank is not None and (pushable is None or rank > pushable[0]):
-                pushable = (rank, alert.id)
-    return len(events), pushable
+    absolute = start_sample_index + derived.start_sample
+    return Finding(
+        kind=derived.kind,
+        event_type=derived.event_type,
+        severity=derived.severity,
+        start_sample=absolute,
+        length_samples=derived.length_samples,
+        dedupe_key=f"{derived.kind}:{absolute}",
+        alert_message=derived.alert_message,
+        metadata={"source": "firmware_flags"},
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -384,14 +384,25 @@ async def _process_one_batch(
     batch.processing_status = ProcessingStatus.PROCESSING
     await db.flush()
 
-    decoded = decode_batch(get_object(batch.frames_s3_key))
+    payload_in = await run_io(get_object, batch.frames_s3_key)
+    decoded = await run_cpu(decode_batch, payload_in)
     sample_rate = study.sample_rate or 500
 
     # --- Segmento ---------------------------------------------------------- #
-    start_sample_index = study.samples_count
     payload = decoded.signal_mV.tobytes()
     key = segment_key(study.id, batch.first_seq or 0)
-    put_object(key, payload)
+    await run_io(put_object, key, payload)
+
+    previous = next((item for item in study.ecg_segments if item.get("key") == key), None)
+    # **Reprocesar un lote conserva sus coordenadas.** Tomar siempre
+    # `samples_count` funciona para un lote nuevo, pero en un reproceso ese
+    # contador ya avanzó: el mismo lote quedaría anclado una hora más adelante,
+    # sus `startSampleIndex` cambiarían, y con ellos el `dedupe_key` de cada
+    # hallazgo — con lo cual nada deduplicaría y el estudio terminaría con dos
+    # copias de todo y dos alertas por la misma pausa.
+    start_sample_index = (
+        int(previous["startSampleIndex"]) if previous is not None else study.samples_count
+    )
 
     segments = [segment for segment in study.ecg_segments if segment.get("key") != key]
     segments.append(
@@ -404,19 +415,25 @@ async def _process_one_batch(
     )
     segments.sort(key=lambda item: int(item["startSampleIndex"]))
     study.ecg_segments = segments
-    study.samples_count = start_sample_index + decoded.n_samples
+    # `max` y no asignación: un reproceso de un lote intermedio no puede achicar
+    # el estudio a lo que había cuando ese lote llegó.
+    study.samples_count = max(study.samples_count, start_sample_index + decoded.n_samples)
 
     # --- Envolvente con carry de alineación -------------------------------- #
+    # En un reproceso el carry ya avanzó con los lotes siguientes: anteponerlo
+    # otra vez desalinearía la envolvente. Se arranca limpio para este lote; la
+    # pirámide se rehace igual a partir de todas las envolventes de S3.
     carry = (
         np.frombuffer(study.ecg_envelope_carry, dtype="<f4")
-        if study.ecg_envelope_carry
+        if study.ecg_envelope_carry and previous is None
         else np.empty(0, dtype="<f4")
     )
     envelope, remainder = build_envelope(np.concatenate([carry, decoded.signal_mV]))
     if envelope.size:
-        put_object(envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
-    study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
-    study.ecg_pyramid_levels = rebuild_pyramid(study)
+        await run_io(put_object, envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
+    if previous is None:
+        study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
+    study.ecg_pyramid_levels = await run_io(rebuild_pyramid, study.id, study.samples_count)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
     # perdió la carrera contra complete/cancel no puede reabrir ni reescribir el
@@ -434,19 +451,61 @@ async def _process_one_batch(
     if any(frame.info.simulated for frame in decoded.frames):
         study.is_simulated = True
 
-    created, pushable = await _persist_events(
-        db,
-        batch,
-        study,
-        derive_events(decoded, sample_rate),
-        start_sample_index,
-        sample_rate,
-    )
-    study.events_count += created
+    result = await _analyze(db, study, batch, decoded, start_sample_index, sample_rate)
+    created, pushable = await ml_persistence.persist_analysis(db, study, batch, result, sample_rate)
+    await ml_persistence.recount_events(db, study)
     batch.num_samples = decoded.n_samples
     batch.processing_status = ProcessingStatus.DONE
     batch.processing_error = None
     return decoded.n_samples, created, pushable
+
+
+async def _analyze(
+    db: AsyncSession,
+    study: Study,
+    batch: ECGBatch,
+    decoded: _DecodedBatch,
+    start_sample_index: int,
+    sample_rate: int,
+) -> PipelineResult:
+    """Capa A siempre; el motor completo solo si está habilitado.
+
+    Con `ml_enabled` en falso el sistema sigue funcionando exactamente como antes
+    de que el motor existiera —los avisos por bits del hardware se escriben
+    igual—, que es lo que permite apagarlo en producción sin desplegar código si
+    algo sale mal.
+    """
+    capa_a = tuple(
+        _to_finding(derived, start_sample_index) for derived in derive_events(decoded, sample_rate)
+    )
+    if not settings.ml_enabled:
+        return PipelineResult(
+            quality_intervals=(),
+            findings=capa_a,
+            bank=ml_persistence.load_bank(
+                study.ml_state or {}, build_config(settings, sample_rate)
+            ),
+            metrics={},
+            model_version=PIPELINE_VERSION,
+        )
+
+    state = study.ml_state or {}
+    config = build_config(settings, sample_rate, score_floor=float(state.get("scoreFloor", 0.0)))
+    bank = await run_io(ml_persistence.load_bank, state, config)
+    existing = await ml_persistence.count_anomalies(db, study.id)
+    # LA frontera. Todo el análisis —4-5 s de CPU para un lote de 1 h— corre acá
+    # adentro, fuera del event loop, en una sola llamada auditable.
+    result = await run_cpu(
+        analyze_batch,
+        decoded.signal_mV,
+        decoded.flags,
+        start_sample_index=start_sample_index,
+        bank=bank,
+        config=config,
+        batch_id=str(batch.id),
+        existing_anomalies=existing,
+    )
+    return replace(result, findings=capa_a + result.findings)
 
 
 async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:

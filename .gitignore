@@ -44,3 +44,8 @@ __pycache__/
 .coverage
 htmlcov/
 coverage.xml
+
+# Registros de PhysioNet (MIT-BIH). No se commitean: son de terceros, están bajo
+# ODC-By 1.0 y pesan cientos de MB. Se bajan con
+# `uv run --with wfdb python -m tools.physionet.evaluate --download`.
+back/tools/physionet/data/

@@ -125,6 +125,21 @@ function Toggle({
 }
 
 /** Un solo tramo por anomalía: alcanza para probar y mantiene la UI legible. */
+/**
+ * Perfil del latido ectópico. Los valores son los de una extrasístole
+ * ventricular típica: llega al 60 % del R-R esperado, QRS tres veces más ancho
+ * (~180 ms) y onda T de polaridad opuesta. El formulario deja elegir cada
+ * cuántos latidos aparece, que es lo que cambia la carga; el resto define "qué
+ * es un ectópico" y no hace falta tocarlo para probar el motor.
+ */
+const ECTOPIC_DEFAULTS = {
+  everyNBeats: 12,
+  coupling: 0.6,
+  widthFactor: 3,
+  amplitudeFactor: 1.4,
+  invertT: true,
+} as const
+
 function SpanField({
   label,
   spans,
@@ -434,6 +449,67 @@ export function ScenarioForm({
                 }
               />
             </div>
+          </Section>
+
+          <Section
+            title="Arritmias"
+            hint="Lo que ejercita el motor de detección: morfología atípica, pausas y cambios de ritmo."
+          >
+            <SpanField
+              label="Foco ectópico"
+              spans={draft.signal.ectopicSpans}
+              onChange={(spans) =>
+                setSignal({
+                  ectopicSpans: spans.map((span, index) => ({
+                    ...ECTOPIC_DEFAULTS,
+                    ...draft.signal.ectopicSpans[index],
+                    ...span,
+                  })),
+                })
+              }
+            />
+            <NumberField
+              label="Un ectópico cada N latidos"
+              value={draft.signal.ectopicSpans[0]?.everyNBeats ?? ECTOPIC_DEFAULTS.everyNBeats}
+              min={2}
+              max={60}
+              onChange={(everyNBeats) =>
+                setSignal({
+                  ectopicSpans: draft.signal.ectopicSpans.map((span) => ({
+                    ...span,
+                    everyNBeats,
+                  })),
+                })
+              }
+              hint="2 = bigeminismo. 12 ≈ 8 % de carga ectópica."
+            />
+            <SpanField
+              label="Pausa (se saltea un latido)"
+              spans={draft.signal.pauseSpans}
+              onChange={(pauseSpans) => setSignal({ pauseSpans })}
+            />
+            <SpanField
+              label="Cambio de frecuencia"
+              spans={draft.signal.rateSpans}
+              onChange={(spans) =>
+                setSignal({
+                  rateSpans: spans.map((span, index) => ({
+                    bpm: draft.signal.rateSpans[index]?.bpm ?? 130,
+                    ...span,
+                  })),
+                })
+              }
+            />
+            <NumberField
+              label="FC del tramo (lpm)"
+              value={draft.signal.rateSpans[0]?.bpm ?? 130}
+              min={30}
+              max={220}
+              onChange={(bpm) =>
+                setSignal({ rateSpans: draft.signal.rateSpans.map((span) => ({ ...span, bpm })) })
+              }
+              hint="Sobre 100 dispara taquicardia; bajo 50, bradicardia."
+            />
           </Section>
 
           <Section title="Anomalías de trama y protocolo">

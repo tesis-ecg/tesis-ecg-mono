@@ -43,8 +43,17 @@ const KIND_LABEL: Record<string, string> = {
   sqi_unanalyzable: 'Señal inanalizable',
   adc_saturated: 'Saturación del ADC',
   internal_gap: 'Hueco de datos',
+  frame_gap: 'Hueco entre tramas',
   symptom_marker: 'Síntoma marcado por el paciente',
   patient_report: 'Registro del paciente',
+  // Motor de detección (`back/app/ml`). El nombre no menciona ninguna
+  // enfermedad a propósito: el motor es no supervisado y lo único que puede
+  // afirmar es que ese latido no se parece a los del propio paciente. Llamarlo
+  // "extrasístole" sería un diagnóstico que ningún dato del sistema respalda.
+  morphology_anomaly: 'Latido de morfología atípica',
+  recurrent_morphology: 'Morfología recurrente',
+  flatline: 'Señal plana',
+  noise_burst: 'Ruido en la señal',
   other: 'Hallazgo',
 }
 

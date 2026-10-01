@@ -1,7 +1,6 @@
-import math
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 import structlog
 from fastapi import BackgroundTasks, HTTPException
@@ -18,10 +17,15 @@ from app.db.models.patient_report import PatientReport
 from app.db.models.study import Study, StudyStatus
 from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
+from app.modules.ingest import ml_persistence
 from app.modules.patient_app import patient_app_repository as patient_app_repo
 from app.modules.patient_app import patient_app_service
 from app.modules.patient_app.catalogs import activity_label, symptom_label
 from app.modules.studies import studies_repository as repo
+from app.modules.studies.annotations import (
+    STUDY_SCOPE,
+    event_view,
+)
 from app.modules.studies.studies_schemas import (
     PatientStudiesInput,
     PatientStudiesResponse,
@@ -46,26 +50,6 @@ from app.modules.studies.studies_schemas import (
 logger = structlog.get_logger(__name__)
 
 MAX_LEGACY_ECG_BYTES = 5 * 1024 * 1024
-
-_SIGNAL_QUALITY_KINDS = {
-    "noise",
-    "lead_off",
-    "sqi_unanalyzable",
-    "adc_saturated",
-}
-_CLINICAL_EVENT_TYPES = {
-    ECGEventType.TACHYCARDIA,
-    ECGEventType.BRADYCARDIA,
-    ECGEventType.AFIB,
-    ECGEventType.PVC,
-    ECGEventType.PAUSE,
-}
-_ANNOTATION_SEVERITY: dict[ECGEventSeverity, Literal["low", "medium", "high", "critical"]] = {
-    ECGEventSeverity.LOW: "low",
-    ECGEventSeverity.MEDIUM: "medium",
-    ECGEventSeverity.HIGH: "high",
-    ECGEventSeverity.CRITICAL: "critical",
-}
 
 
 def _duration_ms(study: Study) -> int:
@@ -147,60 +131,6 @@ def _not_started() -> HTTPException:
             "message": "Un estudio programado todavía no grabó nada: solo se puede cancelar.",
         },
     )
-
-
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
-def _event_offsets_ms(event: ECGEvent, study: Study) -> tuple[int, int] | None:
-    """Normaliza coordenadas nuevas y legacy al eje comprimido de muestras."""
-    metadata: dict[str, Any] = event.event_metadata or {}
-    start_sample = _finite_number(metadata.get("startSampleIndex"))
-    sample_count = _finite_number(metadata.get("sampleCount"))
-    duration_seconds = _finite_number(event.duration_seconds)
-
-    if start_sample is not None:
-        start_ms = start_sample * 1000 / study.sample_rate
-        if sample_count is not None:
-            end_ms = (start_sample + max(sample_count, 0)) * 1000 / study.sample_rate
-        else:
-            end_ms = start_ms + max(duration_seconds or 0, 0) * 1000
-    else:
-        offset_seconds = _finite_number(metadata.get("offsetInStudySeconds"))
-        if offset_seconds is None:
-            offset_seconds = _finite_number(event.timestamp_in_recording)
-        if offset_seconds is None:
-            return None
-        start_ms = offset_seconds * 1000
-        end_ms = start_ms + max(duration_seconds or 0, 0) * 1000
-
-    recording_duration_ms = study.samples_count * 1000 / study.sample_rate
-    clipped_start = min(max(start_ms, 0), recording_duration_ms)
-    clipped_end = min(max(end_ms, clipped_start), recording_duration_ms)
-    return round(clipped_start), round(clipped_end)
-
-
-def _annotation_kind(event: ECGEvent) -> str:
-    kind = (event.event_metadata or {}).get("kind")
-    if isinstance(kind, str) and kind.strip():
-        return kind.strip().lower()
-    return event.event_type.value.lower()
-
-
-def _annotation_category(
-    event: ECGEvent, kind: str
-) -> Literal["signal_quality", "clinical", "patient_marker", "technical"]:
-    if kind == "symptom_marker":
-        return "patient_marker"
-    if kind in _SIGNAL_QUALITY_KINDS or event.event_type is ECGEventType.NOISE:
-        return "signal_quality"
-    if event.event_type in _CLINICAL_EVENT_TYPES:
-        return "clinical"
-    return "technical"
 
 
 def _recorded_ms(study: Study) -> float:
@@ -343,23 +273,28 @@ def _report_annotations(
 def _event_annotations(
     study: Study, events: list[ECGEvent]
 ) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, tuple[int, int]]]:
-    """Los hallazgos dibujables, con sus offsets indexados por id de evento."""
+    """Los hallazgos dibujables, con sus offsets indexados por id de evento.
+
+    Los de alcance de estudio quedan afuera: un `recurrent_morphology` abarca del
+    primer al último latido de su morfología, o sea horas, y pintarlo sería una
+    banda sobre todo el ECG. Se ven en `/findings`, agrupando a los episodios que
+    sí están sobre la traza.
+    """
     annotations: list[StudyEcgAnnotationOut] = []
     offsets_by_event: dict[uuid.UUID, tuple[int, int]] = {}
     for event in events:
-        offsets = _event_offsets_ms(event, study)
-        if offsets is None:
+        view = event_view(event, study)
+        if view is None or view.scope == STUDY_SCOPE:
             continue
-        kind = _annotation_kind(event)
-        offsets_by_event[event.id] = offsets
+        offsets_by_event[event.id] = (view.start_ms, view.end_ms)
         annotations.append(
             StudyEcgAnnotationOut(
                 id=event.id,
-                kind=kind,
-                category=_annotation_category(event, kind),
-                severity=_ANNOTATION_SEVERITY[event.severity],
-                startOffsetMs=offsets[0],
-                endOffsetMs=offsets[1],
+                kind=view.kind,
+                category=view.category,
+                severity=view.severity,
+                startOffsetMs=view.start_ms,
+                endOffsetMs=view.end_ms,
                 confidenceScore=event.confidence_score,
             )
         )
@@ -584,6 +519,12 @@ async def _transition(
         raise _not_started()
 
     _close(study, target)
+    if target is StudyStatus.COMPLETED:
+        # El estudio ya no va a recibir más lotes: es el único momento en que se
+        # puede ver el banco de morfologías completo y fundir las plantillas que
+        # el algoritmo greedy abrió de más. Antes sería prematuro; después ya no
+        # hay quién lo dispare.
+        await ml_persistence.consolidate_morphologies(db, study)
     await _sync_patient_status(db, patient, target)
     await auth_repo.log_audit_event(
         db,

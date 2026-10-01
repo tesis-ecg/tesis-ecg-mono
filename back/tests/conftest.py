@@ -98,6 +98,30 @@ def migrated_database() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture(autouse=True)
+def ml_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El motor de detección está apagado salvo que el test lo pida.
+
+    La mayoría de la suite ingiere señales de prueba de unos segundos —ondas
+    cuadradas, rampas, sinusoides— que no son ECG. El motor las evalúa
+    correctamente como `flatline` o `noise_burst`, y eso llenaría de hallazgos
+    reales tests que están midiendo otra cosa: segmentos, pirámide, duración,
+    manifest. Dejarlo prendido los volvería frágiles ante cualquier recalibración
+    de un umbral clínico.
+
+    Los tests del motor lo prenden con la fixture `ml_engine`, y ejercitan el
+    mismo `process_batch` de producción — así que el camino integrado sí se
+    prueba, con señal que sí es ECG.
+    """
+    monkeypatch.setattr(settings, "ml_enabled", False)
+
+
+@pytest.fixture
+def ml_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prende el motor para este test."""
+    monkeypatch.setattr(settings, "ml_enabled", True)
+
+
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"

@@ -184,11 +184,14 @@ async def test_a_batch_already_covered_is_not_re_accepted_under_another_boot_id(
     stored = get_object(key)
 
     replay = build_frames(1800, boot_id=5, first_seq=0, t0_ms=0)
-    second = (await post_frames(client, device, api_key, replay)).json()
+    second = await post_frames(client, device, api_key, replay)
 
-    assert second["batchId"] is None
-    assert second["framesDuplicate"] == len(replay)
-    assert second["lastAcceptedSeq"] == first["lastAcceptedSeq"]
+    # 409 y no un 202 con `framesDuplicate`: un lote entero por debajo del
+    # cursor con `bootId` nuevo es una renumeración, no un reintento. Contarlo
+    # como duplicado obligaba a devolver un `lastAcceptedSeq` de la numeración
+    # vieja, que el equipo lee en la nueva y usa para borrar su flash.
+    assert second.status_code == 409
+    assert second.json()["code"] == "INGEST_SEQ_RENUMBERED"
     assert get_object(key) == stored
     assert await db.scalar(select(func.count()).select_from(ECGBatch)) == 1
 

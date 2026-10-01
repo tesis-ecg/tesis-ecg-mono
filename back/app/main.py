@@ -17,6 +17,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from app.core.config import settings as _settings
 from app.core.logging import setup_logging
+from app.core.workers import shutdown_workers, warmup_ml
 from app.db.session import engine
 from app.modules.alerts import router as alerts_router
 from app.modules.auth import router as auth_router
@@ -33,7 +34,12 @@ from app.modules.users import router as users_router
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     setup_logging()
+    # En un hilo y sin await del resultado: el proceso queda listo para atender
+    # requests mientras carga el motor. Lo importante es que el costo del import
+    # no lo pague el primer lote que llegue.
+    asyncio.get_running_loop().run_in_executor(None, warmup_ml)
     yield
+    shutdown_workers()
     await engine.dispose()
 
 

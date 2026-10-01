@@ -8,6 +8,7 @@ from app.db.models.doctor import Doctor
 from app.db.models.ecg_batch import ECGBatch
 from app.db.models.ecg_event import ECGEvent
 from app.db.models.patient import Patient
+from app.db.models.signal_quality import SignalQualityInterval
 from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User
 
@@ -293,3 +294,23 @@ async def get_patient_for_update(db: AsyncSession, patient_id: uuid.UUID) -> Pat
         .with_for_update()
     )
     return result.scalar_one_or_none()
+
+
+async def list_quality_intervals(
+    db: AsyncSession, study_id: uuid.UUID
+) -> list[SignalQualityInterval]:
+    """Intervalos de calidad del estudio, en orden de grabación.
+
+    Vienen troceados por lote —un intervalo nunca cruza el borde de uno, para que
+    reprocesar sea un DELETE por `batch_id`—, así que la fusión entre lotes
+    contiguos se hace al leer. Son unos cientos de filas: una pasada lineal.
+    """
+    result = await db.scalars(
+        select(SignalQualityInterval)
+        .where(
+            SignalQualityInterval.study_id == study_id,
+            SignalQualityInterval.deleted_at.is_(None),
+        )
+        .order_by(SignalQualityInterval.start_sample_index.asc())
+    )
+    return list(result.all())
