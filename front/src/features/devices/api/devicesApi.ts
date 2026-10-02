@@ -3,9 +3,11 @@ import { api } from '@/lib/api'
 import type {
   AssignHolterInput,
   AssignHolterToDoctorInput,
+  CreatedHolter,
   CreateHolterInput,
   DoctorOption,
   Holter,
+  HolterApiKey,
   HolterHealth,
   HolterListParams,
   HolterListResponse,
@@ -23,8 +25,20 @@ export async function getHolter(id: string): Promise<Holter> {
   return data
 }
 
-export async function createHolter(input: CreateHolterInput): Promise<Holter> {
-  const { data } = await api.post<Holter>('/devices', input)
+export async function createHolter(input: CreateHolterInput): Promise<CreatedHolter> {
+  const { data } = await api.post<CreatedHolter>('/devices', input)
+  return data
+}
+
+/** La API key en claro del equipo. Solo admin; el backend audita cada lectura. */
+export async function getHolterApiKey(id: string): Promise<HolterApiKey> {
+  const { data } = await api.get<HolterApiKey>(`/devices/${id}/api-key`)
+  return data
+}
+
+/** Genera una key nueva y deja la anterior inútil en el acto. Solo admin. */
+export async function rotateHolterApiKey(id: string): Promise<HolterApiKey> {
+  const { data } = await api.post<HolterApiKey>(`/devices/${id}/api-key`)
   return data
 }
 

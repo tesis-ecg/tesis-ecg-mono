@@ -5,4 +5,4 @@ VEST_MISPLACED_KIND = "vest_misplaced"
 
 def requires_patient_response(kind: str) -> bool:
     """Solo los avisos clínicos se responden con la bitácora."""
-    return kind != VEST_MISPLACED_KIND
+    return kind not in {VEST_MISPLACED_KIND, "battery_low", "battery_critical"}

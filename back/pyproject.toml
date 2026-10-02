@@ -19,7 +19,7 @@ dependencies = [
     # app/modules/ingest/processing.py).
     "numpy>=2.0",
     "neurokit2>=0.2.13,<0.3",
-    "scipy>=1.14",
+    "scipy>=1.15,<2",
     "scikit-learn>=1.5",
 ]
 

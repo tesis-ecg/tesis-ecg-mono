@@ -49,6 +49,22 @@ export interface CatalogOptionOut {
   "label": string
 }
 
+export interface DashboardActivityOut {
+  "days": Array<DashboardActivityPointOut>
+  "alertsTrend": DashboardTrendOut
+  "studiesTrend": DashboardTrendOut
+  "patientsTrend": DashboardTrendOut
+  "pendingBySeverity": Array<DashboardSeverityBucketOut>
+  "fleet": DashboardFleetOut
+}
+
+export interface DashboardActivityPointOut {
+  "date": string
+  "alerts": number
+  "reports": number
+  "studies": number
+}
+
 export interface DashboardAlertOut {
   "id": string
   "patientId": string
@@ -57,6 +73,11 @@ export interface DashboardAlertOut {
   "severity": string
   "detectedAt": string
   "studyId": string | null
+}
+
+export interface DashboardFleetOut {
+  "assigned": number
+  "transmitting": number
 }
 
 export interface DashboardKpisOut {
@@ -74,6 +95,17 @@ export interface DashboardOverviewOut {
   "attentionPatients": Array<AttentionPatientOut>
   "runningStudies": Array<RunningStudyOut>
   "deviceWatchdog": Array<DeviceWatchdogOut>
+  "activity": DashboardActivityOut
+}
+
+export interface DashboardSeverityBucketOut {
+  "severity": string
+  "count": number
+}
+
+export interface DashboardTrendOut {
+  "current": number
+  "previous": number
 }
 
 export type DeviceStatus = "available" | "assigned" | "maintenance" | "retired"
@@ -252,7 +284,7 @@ export interface MobileAlertOut {
   "answeredAt": string | null
 }
 
-export type MobileAlertStatus = "all" | "pending" | "answered"
+export type MobileAlertStatus = "all" | "pending" | "answered" | "actionable"
 
 export interface MobileCatalogsOut {
   "symptoms": Array<CatalogOptionOut>
@@ -408,6 +440,7 @@ export interface PatientStudyOut {
   "id": string
   "patientId": string
   "startedAt": string
+  "startedAtVerified": boolean
   "endedAt": string | null
   "durationHours": number | null
   "status": StudyStatus
@@ -456,6 +489,7 @@ export interface RunningStudyOut {
   "id": string
   "patientName": string
   "startedAt": string
+  "startedAtVerified": boolean
   "durationMs": number
   "deviceSerial": string
 }
@@ -477,14 +511,96 @@ export interface SimulateAnomalyRequest {
 
 export type SimulatedAnomalyType = "tachycardia" | "bradycardia" | "afib" | "pvc" | "pause"
 
+export interface StudyClinicalReportDraftOut {
+  "studyId": string
+  "revision": number
+  "indication": string | null
+  "medications": string | null
+  "referringProfessional": string | null
+  "technician": string | null
+  "clinicalObservations": string | null
+  "conclusion": string | null
+  "updatedAt": string | null
+  "updatedBy": string | null
+  "updatedByName": string | null
+  "updatedByRole": string | null
+}
+
+export interface StudyClinicalReportDraftUpdate {
+  "revision": number
+  "indication"?: string | null
+  "medications"?: string | null
+  "referringProfessional"?: string | null
+  "technician"?: string | null
+  "clinicalObservations"?: string | null
+  "conclusion"?: string | null
+}
+
+export interface StudyClinicalReportIssueOut {
+  "code": string
+  "message": string
+  "severity": "warning" | "blocking"
+}
+
+export interface StudyClinicalReportPreviewOut {
+  "draft": StudyClinicalReportDraftOut
+  "snapshot": Record<string, unknown>
+  "snapshotHash": string
+  "windows": Array<StudyClinicalReportWindowPlanOut>
+  "nextVersion": number
+  "canGenerateDraft": boolean
+  "canFinalize": boolean
+  "blockingReasons": Array<string>
+  "issues": Array<StudyClinicalReportIssueOut>
+}
+
+export interface StudyClinicalReportVersionOut {
+  "id": string
+  "studyId": string
+  "version": number
+  "finalizedAt": string
+  "finalizedBy": string
+  "finalizedByName": string
+  "finalizedByRole": string
+  "pdfByteLength": number
+  "pdfSha256": string
+  "snapshotSha256": string
+}
+
+export interface StudyClinicalReportVersionsOut {
+  "items": Array<StudyClinicalReportVersionOut>
+}
+
+export interface StudyClinicalReportWindowPlanOut {
+  "id": string
+  "findingId": string
+  "kind": string
+  "category": "clinical" | "patient_marker"
+  "severity": "low" | "medium" | "high" | "critical"
+  "findingStartEpochMs": number
+  "findingEndEpochMs": number
+  "findingDurationMs": number
+  "startEpochMs": number
+  "endEpochMs": number
+  "blockIndex": number
+  "blockCount": number
+  "confidenceScore": number | null
+  "description": string | null
+  "relatedSymptoms": Array<string>
+}
+
 export interface StudyDetailOut {
   "id": string
   "patientId": string
   "patientName": string
+  "deviceId": string
   "startedAt": string
+  "startedAtVerified"?: boolean
   "endedAt": string | null
   "durationMs": number
   "deviceSerial": string
+  "canAccessDevice": boolean
+  "lastDataReceivedAt": string | null
   "status": StudyStatus
   "doctorId": string | null
   "doctorName": string | null
@@ -497,19 +613,26 @@ export interface StudyEcgAnnotationOut {
   "severity": "low" | "medium" | "high" | "critical"
   "startOffsetMs": number
   "endOffsetMs": number
+  "startEpochMs": number
+  "endEpochMs": number
   "confidenceScore": number | null
   "linkedAnnotationId"?: string | null
   "description"?: string | null
 }
 
-export interface StudyEcgLevelOut {
+export interface StudyEcgLevelChunkOut {
   "url": string
   "expiresAt": string
   "byteLength": number
   "sha256": string | null
+  "pointCount": number
+}
+
+export interface StudyEcgLevelOut {
   "samplesPerBucket": number
   "pointCount": number
   "encoding"?: string
+  "chunks": Array<StudyEcgLevelChunkOut>
 }
 
 export interface StudyEcgManifestOut {
@@ -519,12 +642,15 @@ export interface StudyEcgManifestOut {
   "sampleRate": number
   "sampleCount": number
   "startTimestamp": number
+  "startTimeVerified"?: boolean
   "durationMs": number
   "status": StudyStatus
   "isSimulated": boolean
+  "viewKind"?: "raw" | "filtered_visualization"
   "raw": StudyEcgObjectOut | null
   "levels": Array<StudyEcgLevelOut>
   "segments"?: Array<StudyEcgSegmentOut>
+  "timeline"?: Array<StudyEcgTimelineSegmentOut>
   "annotations"?: Array<StudyEcgAnnotationOut>
 }
 
@@ -544,6 +670,30 @@ export interface StudyEcgOut {
   "expiresAt": string
 }
 
+export interface StudyEcgReportWindowOut {
+  "id": string
+  "startEpochMs": number
+  "endEpochMs": number
+  "timestampsMs": Array<number>
+  "samplesMv": Array<number>
+  "gapIndices": Array<number>
+  "source"?: "raw" | "envelope" | "filtered_visualization"
+}
+
+export interface StudyEcgReportWindowRequest {
+  "id": string
+  "startEpochMs": number
+  "endEpochMs": number
+}
+
+export interface StudyEcgReportWindowsRequest {
+  "windows": Array<StudyEcgReportWindowRequest>
+}
+
+export interface StudyEcgReportWindowsResponse {
+  "windows": Array<StudyEcgReportWindowOut>
+}
+
 export interface StudyEcgSegmentOut {
   "url": string
   "expiresAt": string
@@ -551,6 +701,18 @@ export interface StudyEcgSegmentOut {
   "sha256": string | null
   "startSampleIndex": number
   "sampleCount": number
+}
+
+export interface StudyEcgTimelineSegmentOut {
+  "ordinal": number
+  "startSampleIndex": number
+  "sampleCount": number
+  "startEpochMs": number
+  "endEpochMs": number
+  "bootId": number | null
+  "anchorSource": "ntp" | "none" | "server_receive"
+  "anchorUncertaintyMs": number | null
+  "anchorMatchesBoot"?: boolean | null
 }
 
 export interface StudyFindingGroupOut {
@@ -564,6 +726,8 @@ export interface StudyFindingGroupOut {
   "meanIntraCorrelation"?: number | null
   "firstOffsetMs": number
   "lastOffsetMs": number
+  "firstEpochMs": number
+  "lastEpochMs": number
   "items"?: Array<StudyFindingOut>
 }
 
@@ -574,6 +738,8 @@ export interface StudyFindingOut {
   "severity": "low" | "medium" | "high" | "critical"
   "startOffsetMs": number
   "endOffsetMs": number
+  "startEpochMs": number
+  "endEpochMs": number
   "confidenceScore": number | null
   "modelVersion": string | null
   "validationStatus": "pending" | "confirmed" | "rejected" | "uncertain"
@@ -682,4 +848,4 @@ export interface ValidationError {
   "ctx"?: Record<string, unknown>
 }
 
-export type VestStatusEvent = "signal_quality_bad" | "lead_off" | "signal_recovered"
+export type VestStatusEvent = "signal_quality_bad" | "lead_off" | "signal_recovered" | "alive"

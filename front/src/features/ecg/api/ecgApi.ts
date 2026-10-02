@@ -18,15 +18,37 @@ interface EcgObject {
   sha256: string | null
 }
 
-interface EcgLevel extends EcgObject {
+interface EcgLevelChunk extends EcgObject {
+  pointCount: number
+}
+
+interface EcgLevel {
   samplesPerBucket: number
   pointCount: number
   encoding: 'minmax-float32-le'
+  /**
+   * Un nivel llega en chunks: cada lote del chaleco anexa el suyo. Antes era un
+   * objeto único que el backend reescribía entero en cada lote, y eso crecía con
+   * el estudio hasta tumbar la ingesta. Concatenados en orden dan el nivel.
+   */
+  chunks: EcgLevelChunk[]
 }
 
 interface EcgSegment extends EcgObject {
   startSampleIndex: number
   sampleCount: number
+}
+
+interface EcgTimelineSegment {
+  ordinal: number
+  startSampleIndex: number
+  sampleCount: number
+  startEpochMs: number
+  endEpochMs: number
+  bootId: number | null
+  anchorSource: 'ntp' | 'none' | 'server_receive'
+  anchorUncertaintyMs: number | null
+  anchorMatchesBoot?: boolean | null
 }
 
 interface EcgAnnotation {
@@ -36,6 +58,8 @@ interface EcgAnnotation {
   severity: ECGAnnotationSeverity
   startOffsetMs: number
   endOffsetMs: number
+  startEpochMs?: number
+  endEpochMs?: number
   confidenceScore: number | null
   linkedAnnotationId?: string | null
   description?: string | null
@@ -53,18 +77,37 @@ interface EcgAnnotation {
  * generó ningún nivel de pirámide.
  */
 interface EcgManifest {
-  formatVersion: 1 | 2
+  formatVersion: 1 | 2 | 3
   encoding: 'float32-le'
   sampleRate: number
   sampleCount: number
   startTimestamp: number
+  startTimeVerified?: boolean
   durationMs: number
   status?: string
   isSimulated?: boolean
+  viewKind?: 'raw' | 'filtered_visualization'
   raw: EcgObject | null
   levels: EcgLevel[]
   segments?: EcgSegment[]
+  timeline?: EcgTimelineSegment[]
   annotations?: EcgAnnotation[]
+}
+
+export interface EcgReportWindowRequest {
+  id: string
+  startEpochMs: number
+  endEpochMs: number
+}
+
+export interface EcgReportWindow {
+  id: string
+  startEpochMs: number
+  endEpochMs: number
+  timestampsMs: number[]
+  samplesMv: number[]
+  gapIndices: number[]
+  source: 'raw' | 'envelope' | 'filtered_visualization'
 }
 
 const MAX_INITIAL_POINTS = 20_000
@@ -91,11 +134,11 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     .sort((a, b) => b.pointCount - a.pointCount)
   const level =
     eligibleLevels[0] ?? [...manifest.levels].sort((a, b) => a.pointCount - b.pointCount)[0]
-  const source = level ?? manifest.raw
+  const source = level ? null : manifest.raw
   const segments = [...(manifest.segments ?? [])].sort(
     (a, b) => a.startSampleIndex - b.startSampleIndex,
   )
-  if (!source && segments.length === 0) {
+  if (!level && !source && segments.length === 0) {
     // Estudio ingestado cuyo primer lote todavía no terminó de procesarse: hay
     // fila pero no hay ni pirámide ni blob completo. No es un error del cliente.
     throw createApiError({
@@ -114,26 +157,135 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     })
   }
 
-  const samples = source
-    ? await downloadEcgObject(source, signal)
-    : await downloadSegments(segments, signal)
+  const samples = level
+    ? await downloadLevel(level, signal)
+    : source
+      ? await downloadEcgObject(source, signal)
+      : await downloadSegments(segments, signal)
+
+  const timeline = [...(manifest.timeline ?? [])].sort((a, b) => a.ordinal - b.ordinal)
+  const { timestampsMs, gapIndices } = buildTimestamps(
+    samples.length,
+    manifest.sampleRate,
+    manifest.startTimestamp,
+    timeline,
+    level?.samplesPerBucket ?? null,
+  )
+  const startTimestamp = timestampsMs.length > 0 ? timestampsMs[0] : manifest.startTimestamp
+
   return {
     sampleRate: manifest.sampleRate,
-    durationMs: recordingDurationMs(manifest.sampleCount, manifest.sampleRate),
+    // El eje cubre todo el estudio. Si el nivel descargado está incompleto,
+    // sus puntos quedan en su posición real y el tramo restante se ve vacío.
+    durationMs:
+      timeline.length > 0
+        ? timeline[timeline.length - 1].endEpochMs - startTimestamp
+        : recordingDurationMs(manifest.sampleCount, manifest.sampleRate),
     samples,
-    startTimestamp: manifest.startTimestamp,
+    startTimestamp,
+    timestampsMs,
+    gapIndices,
+    timeline,
     annotations: (manifest.annotations ?? []).map((annotation) => ({
       id: annotation.id,
       kind: annotation.kind,
       category: annotation.category,
       severity: annotation.severity,
-      startMs: manifest.startTimestamp + annotation.startOffsetMs,
-      endMs: manifest.startTimestamp + annotation.endOffsetMs,
+      // El backend resuelve la hora real contra la línea de tiempo. El fallback
+      // por offset es para los estudios legacy, que no tienen huecos y donde las
+      // dos cuentas dan lo mismo.
+      startMs: annotation.startEpochMs ?? manifest.startTimestamp + annotation.startOffsetMs,
+      endMs: annotation.endEpochMs ?? manifest.startTimestamp + annotation.endOffsetMs,
       confidenceScore: annotation.confidenceScore,
       linkedAnnotationId: annotation.linkedAnnotationId ?? null,
       description: annotation.description ?? null,
     })),
+    metadata: {
+      formatVersion: manifest.formatVersion,
+      encoding: manifest.encoding,
+      sampleCount: manifest.sampleCount,
+      isSimulated: Boolean(manifest.isSimulated),
+      overviewSamplesPerBucket: level?.samplesPerBucket ?? null,
+      processedSampleCount: level
+        ? Math.min(manifest.sampleCount, (samples.length / 2) * level.samplesPerBucket)
+        : samples.length,
+      startTimeVerified:
+        (manifest.startTimeVerified ?? true) &&
+        timeline.every((segment) => segment.anchorMatchesBoot === true),
+      viewKind: manifest.viewKind ?? 'raw',
+    },
   }
+}
+
+export async function getStudyEcgReportWindows(
+  studyId: string,
+  windows: EcgReportWindowRequest[],
+  signal?: AbortSignal,
+): Promise<EcgReportWindow[]> {
+  const { data } = await api.post<{ windows: EcgReportWindow[] }>(
+    `/studies/${studyId}/ecg/report-windows`,
+    { windows },
+    { signal },
+  )
+  return data.windows
+}
+
+/**
+ * Hora de pared de cada punto dibujado, y dónde se corta la traza.
+ *
+ * El array descargado puede ser la señal cruda o un nivel de la pirámide, así
+ * que un punto no es necesariamente una muestra: cada par min/max ocupa un
+ * bucket fijo. El índice de ese bucket se traduce a hora con la línea de tiempo.
+ */
+function buildTimestamps(
+  pointCount: number,
+  sampleRate: number,
+  fallbackStartMs: number,
+  timeline: EcgTimelineSegment[],
+  samplesPerBucket: number | null,
+): { timestampsMs: Float64Array; gapIndices: number[] } {
+  const timestampsMs = new Float64Array(pointCount)
+  const gapIndices: number[] = []
+  if (pointCount === 0) return { timestampsMs, gapIndices }
+
+  const samplesPerPoint = samplesPerBucket === null ? 1 : samplesPerBucket / 2
+  if (timeline.length === 0 || sampleRate <= 0) {
+    const dt = sampleRate > 0 ? (samplesPerPoint * 1000) / sampleRate : 0
+    for (let i = 0; i < pointCount; i++) timestampsMs[i] = fallbackStartMs + i * dt
+    return { timestampsMs, gapIndices }
+  }
+
+  let cursor = 0
+  let previousOrdinal = timeline[0].ordinal
+  let previousMs = -Infinity
+  for (let i = 0; i < pointCount; i++) {
+    const sample = i * samplesPerPoint
+    while (
+      cursor + 1 < timeline.length &&
+      sample >= timeline[cursor].startSampleIndex + timeline[cursor].sampleCount
+    ) {
+      cursor++
+    }
+    const segment = timeline[cursor]
+    const within = Math.max(sample - segment.startSampleIndex, 0)
+    // Nunca hacia atrás. Cada tramo trae su propia ancla, y dos anclas contiguas
+    // pueden discrepar por su incertidumbre — con `anchorSource: 'server_receive'`
+    // esa incertidumbre son segundos. uPlot hace búsqueda binaria sobre el eje X
+    // y asume que está ordenado: un solo punto fuera de orden le rompe el cursor
+    // y el dibujo. Que dos tramos se solapen unos milisegundos es ruido del
+    // ancla, no señal, y aplastarlo es preferible a un gráfico roto.
+    previousMs = Math.max(
+      segment.startEpochMs +
+        (within * (segment.endEpochMs - segment.startEpochMs)) / Math.max(segment.sampleCount, 1),
+      previousMs,
+    )
+    timestampsMs[i] = previousMs
+    if (segment.ordinal !== previousOrdinal) {
+      gapIndices.push(i)
+      previousOrdinal = segment.ordinal
+    }
+  }
+  return { timestampsMs, gapIndices }
 }
 
 export async function getStudyEcgLegacy(studyId: string, signal?: AbortSignal): Promise<ECGSignal> {
@@ -160,12 +312,58 @@ export async function getStudyEcgLegacy(studyId: string, signal?: AbortSignal): 
     durationMs: recordingDurationMs(meta.sampleCount, meta.sampleRate),
     samples: await decodeEcgObject(buffer, { byteLength: expectedBytes, sha256: null }, signal),
     startTimestamp: meta.startTimestamp,
+    // El camino legacy no tiene línea de tiempo: su señal es un blob único sin
+    // huecos, así que el eje uniforme de siempre es correcto.
+    ...uniformTimeline(meta.sampleCount, meta.sampleCount, meta.sampleRate, meta.startTimestamp),
     annotations: [],
+    metadata: {
+      formatVersion: 1,
+      encoding: 'float32-le',
+      sampleCount: meta.sampleCount,
+      isSimulated: false,
+      overviewSamplesPerBucket: null,
+    },
   }
 }
 
+/** Eje uniforme para los estudios que no tienen tramos (seedeados y legacy). */
+export function uniformTimeline(
+  pointCount: number,
+  sampleCount: number,
+  sampleRate: number,
+  startMs: number,
+): { timestampsMs: Float64Array; gapIndices: number[]; timeline: [] } {
+  const timestampsMs = new Float64Array(pointCount)
+  const dt = pointCount > 0 ? recordingDurationMs(sampleCount, sampleRate) / pointCount : 0
+  for (let i = 0; i < pointCount; i++) timestampsMs[i] = startMs + i * dt
+  return { timestampsMs, gapIndices: [], timeline: [] }
+}
+
+/**
+ * Largo del eje: de la hora del primer punto a la del último, más lo que ocupa
+ * ese último punto.
+ *
+ * El `+ perPoint` no es un ajuste cosmético. N puntos que cubren D ms arrancan en
+ * 0 y terminan en `(N−1)·D/N`, no en `D`: sin él, la duración de un estudio
+ * legacy se acortaría un punto. Con él, un eje uniforme da exactamente el tiempo
+ * grabado, que es lo que valía antes, y uno con tramos da el tiempo grabado más
+ * los huecos.
+ */
 export function recordingDurationMs(sampleCount: number, sampleRate: number): number {
   return sampleRate > 0 ? (sampleCount / sampleRate) * 1000 : 0
+}
+
+/** Un nivel llega en chunks; concatenarlos en orden reconstruye el nivel. */
+async function downloadLevel(level: EcgLevel, signal?: AbortSignal): Promise<Float32Array> {
+  const parts = await Promise.all(level.chunks.map((chunk) => downloadEcgObject(chunk, signal)))
+  const total = parts.reduce((sum, part) => sum + part.length, 0)
+  const points = new Float32Array(total)
+  let offset = 0
+  for (const part of parts) {
+    points.set(part, offset)
+    offset += part.length
+  }
+  return points
 }
 
 async function downloadEcgObject(source: EcgObject, signal?: AbortSignal): Promise<Float32Array> {

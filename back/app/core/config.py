@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # refresh corto lo obligaría a re-loguearse justo cuando llega el aviso.
     mobile_refresh_expire_days: int = Field(default=60, ge=1, le=365)
     auth_rate_limit_secret: str | None = Field(default=None, min_length=32)
+    # Cifra la copia legible de la API key de cada chaleco (`app.core.device_keys`).
+    # Si no está, la clave se deriva por HKDF del `jwt_secret`: un secreto nuevo
+    # obligatorio rompería todos los .env, el compose y el deploy de una.
+    device_api_key_secret: str | None = Field(default=None, min_length=32)
     readiness_token: str | None = Field(default=None, min_length=32)
 
     frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:5173")
@@ -63,15 +67,52 @@ class Settings(BaseSettings):
     # estuvo más tiempo sin conexión tiene que trocear el envío — que es lo que
     # hace igual, porque la flash de a bordo aguanta ~9,9 h.
     ingest_max_batch_bytes: int = Field(default=8 * 1024 * 1024, ge=256, le=64 * 1024 * 1024)
+    #: Exigir las cabeceras de sincronización horaria del puente WiFi
+    #: (`X-Bridge-Epoch-Ms` y compañía, ver `docs/integracion-ingesta-con-horario.md`).
+    #: El contrato dice obligatorias, pero arranca apagado a propósito: el
+    #: firmware que hoy está en campo todavía no las manda y prenderlo antes de
+    #: que salga su versión lo dejaría sin poder subir señal. Se prende cuando
+    #: Biomédica confirma el despliegue del puente.
+    ingest_require_time_sync: bool = True
+    #: Cuánto puede alejarse `X-Bridge-Epoch-Ms` de nuestra hora antes de que el
+    #: ancla se considere basura. Cubre la deriva razonable de un puente que
+    #: propaga una sincronización vieja, y descarta el epoch 0 de un SNTP roto.
+    ingest_time_sync_max_skew_seconds: int = Field(default=6 * 3600, ge=60, le=7 * 86_400)
+    #: Salto de hora de pared entre dos tramas consecutivas que abre un tramo
+    #: nuevo en la línea de tiempo. Por debajo de esto es jitter del reloj del
+    #: equipo; por encima, el chaleco no estuvo grabando.
+    ingest_timeline_gap_tolerance_ms: int = Field(default=2_000, ge=100, le=600_000)
 
     # Dashboard / watchdog
-    dashboard_stale_hours: int = 10
+    #: Sin noticias del equipo por más de esto: **aviso**.
+    #:
+    #: Una hora son seis ventanas de envío perdidas (el puente despacha cada 10
+    #: min), así que es un corte que no dispara por ruido y avisa temprano.
+    device_stale_hours: int = Field(default=1, ge=1, le=24)
+    #: Sin noticias por más de esto: **crítico, se está por perder registro**.
+    #:
+    #: El número sale de la autonomía offline MEDIDA sobre esta placa, no de la
+    #: documentada. La flash aguanta 9,94 h con la señal de PhysioNet, pero sobre
+    #: el equipo real el ratio de compresión depende de cuánta interferencia de
+    #: red entra, y eso depende de cómo quede puesto el chaleco: 5,1 h con el
+    #: chaleco flojo, 7,1 con gel, 8,6 bien puesto (`INTEGRACION.md` §9.1).
+    #:
+    #: **Se dimensiona contra las 5,1 h**, que es el caso normal de un paciente
+    #: durante 15 días, no el extremo. Cuatro horas dejan ~1 h de margen para
+    #: intervenir antes de que el log circular empiece a pisar señal sin subir.
+    #: El valor anterior era 10 h, o sea que el sistema avisaba DESPUÉS de que ya
+    #: se había perdido registro.
+    device_critical_hours: int = Field(default=4, ge=1, le=24)
     dashboard_low_battery_pct: int = 45
+    #: Ventana de silencio del aviso de falla grave del equipo. Los bits 2, 4 y 6
+    #: de `statusFlags` son ESTADOS: el equipo los repite mientras la condición
+    #: esté, así que sin esto una flash rota alertaría en cada lote.
+    device_fault_debounce_minutes: int = Field(default=60, ge=1, le=1440)
     # Los dos límites alimentan el `default` de un Query(ge=1, le=50), y FastAPI no
     # valida el default: las cotas tienen que estar acá o un .env fuera de rango
     # pasaría sin chistar cuando el FE llama sin query params.
-    dashboard_widget_limit: int = Field(default=6, ge=1, le=50)
-    dashboard_alerts_limit: int = Field(default=10, ge=1, le=50)
+    dashboard_widget_limit: int = Field(default=4, ge=1, le=50)
+    dashboard_alerts_limit: int = Field(default=8, ge=1, le=50)
 
     # Push (Expo). Apagado por defecto: los tests y CI no salen a internet, y
     # con esto en falso el sender es un noop que igual registra qué se habría
@@ -186,6 +227,11 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET es demasiado predecible para preview/producción")
         if self.is_secure_environment and not self.readiness_token:
             raise ValueError("READINESS_TOKEN es obligatorio en preview/producción")
+        # Los dos umbrales del watchdog son escalones de la misma escala: si el
+        # crítico no queda por encima del aviso, el equipo salta a crítico sin
+        # pasar por el aviso y el escalón temprano deja de existir.
+        if self.device_critical_hours <= self.device_stale_hours:
+            raise ValueError("DEVICE_CRITICAL_HOURS tiene que ser mayor que DEVICE_STALE_HOURS")
         return self
 
 

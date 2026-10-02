@@ -29,13 +29,13 @@ export function RunningStudiesCard() {
       isEmpty={!data || data.length === 0}
       emptyTitle="No hay estudios en curso"
     >
-      <Table>
+      <Table className="[&_td]:h-14 [&_th]:h-12">
         <TableHeader>
           <TableRow>
             <TableHead>Paciente</TableHead>
             <TableHead className="hidden sm:table-cell">Inicio</TableHead>
             <TableHead>Duración</TableHead>
-            <TableHead className="hidden lg:table-cell">Holter</TableHead>
+            <TableHead className="hidden 2xl:table-cell">Holter</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -46,10 +46,12 @@ export function RunningStudiesCard() {
             >
               <TableCell className="font-medium text-gray-900">{s.patientName}</TableCell>
               <TableCell className="hidden sm:table-cell text-gray-600">
-                {formatDateTime(s.startedAt)}
+                {s.startedAtVerified === false ? 'Hora no verificada' : formatDateTime(s.startedAt)}
               </TableCell>
               <TableCell>{formatDurationMs(s.durationMs)}</TableCell>
-              <TableCell className="hidden lg:table-cell text-gray-600">{s.deviceSerial}</TableCell>
+              <TableCell className="hidden 2xl:table-cell text-gray-600">
+                {s.deviceSerial}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>

@@ -1,5 +1,25 @@
 # Backend — Endpoints de la API
 
+> ## ⚠️ ESTE DOCUMENTO ESTÁ DESACTUALIZADO. Manda el código.
+>
+> Lo señaló Biomédica en `INTEGRACION.md` §11 y es correcto: este archivo
+> describe un contrato que **no es el que corre**. Las dos divergencias que más
+> confunden:
+>
+> - **El endpoint de ingesta es `POST /ingest/ecg-frames`**, con cuerpo binario
+>   de N × 256 B y `Authorization: Bearer <api key>`. No existe
+>   `POST /devices/{id}/ecg-batch` ni se usa `X-API-Key`.
+> - **La autenticación existe**, y está implementada: bearer por equipo contra
+>   `device.api_key_hash` para el chaleco (`dependencies/device_dependencies.py`),
+>   Auth0 + cookie de sesión para el dashboard.
+>
+> El contrato vigente, verificado contra el código, es el de
+> `../Holter-ECG-System/INTEGRACION.md` §11, y la fuente de verdad ejecutable es
+> `back/openapi.json`. Para navegar el código está `docs/CODEBASE_INDEX.md`.
+>
+> Se deja el texto original abajo porque documenta el diseño con el que se
+> arrancó, no porque describa el sistema de hoy.
+
 ## Autenticación por ruta
 
 > **Estado actual: sin autenticación.** Todos los endpoints son abiertos.

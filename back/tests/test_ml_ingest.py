@@ -19,7 +19,9 @@ from app.db.models.ecg_event import ECGEvent, ECGEventType
 from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.ml.decompression import FLAG_LEAD_OFF
 from app.ml.pipeline import PIPELINE_VERSION
+from app.modules.ingest import ml_persistence
 from app.modules.ingest.processing import process_batch
+from app.modules.patient_app.notifications_service import anomaly_title
 from tests.ecg_synth import SAMPLE_RATE, synth_ecg, to_microvolts
 from tests.frame_builder import Sample, encode_samples
 from tests.ingest_helpers import STEP_MS, post_frames
@@ -138,76 +140,104 @@ async def test_el_electrodo_despegado_parte_la_calidad_en_tres_tramos(
     assert "lead_off" in _kinds(await _events(db, study.id))
 
 
-async def test_reprocesar_un_lote_no_duplica_hallazgos(
-    client, s3, db, make_patient, make_device, make_study
+async def test_un_reintento_despues_de_una_falla_no_duplica_ni_infla_el_banco(
+    client, s3, db, monkeypatch, make_patient, make_device, make_study
 ) -> None:
-    """La garantía que hace que un reintento sea seguro."""
-    _, device, api_key, study = await _world(make_patient, make_device, make_study)
+    """La garantía que hace que un reintento sea seguro.
+
+    Un lote `DONE` no se vuelve a procesar; el único reproceso real es el de un
+    lote que falló. La falla se fuerza **después** de que el motor escribió sus
+    hallazgos, su calidad y su banco: el rollback tiene que llevarse todo junto,
+    y el reintento tiene que dejar exactamente lo mismo que una pasada limpia —
+    mismas claves y mismos latidos en el banco. Contar dos veces los latidos de
+    un lote falsearía la carga (`burdenPct`) que el médico lee como "el 8 % de
+    tus latidos".
+    """
     signal = synth_ecg(duration_s=900.0, ectopic_every=12)
 
-    body = await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
-    primera = await _events(db, study.id)
-    claves = {event.dedupe_key for event in primera}
-
-    # Se fuerza el reproceso del mismo lote.
-    batch = await db.get(ECGBatch, body["batchId"])
-    assert batch is not None
-    batch.processing_status = ProcessingStatus.PENDING
-    await db.flush()
-    await process_batch(db, batch.id)
-
-    segunda = await _events(db, study.id)
-    assert len(segunda) == len(primera)
-    assert {event.dedupe_key for event in segunda} == claves
-
-
-async def test_el_banco_no_se_infla_al_reprocesar(
-    client, s3, db, make_patient, make_device, make_study
-) -> None:
-    """Contar dos veces los latidos de un lote falsearía la carga (`burdenPct`)
-    que el médico lee como "el 8 % de tus latidos"."""
-    _, device, api_key, study = await _world(make_patient, make_device, make_study)
-    signal = synth_ecg(duration_s=900.0, ectopic_every=12)
-    body = await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
-
-    await db.refresh(study)
-    vistos = study.ml_state["beatsSeen"]
+    # Referencia: el mismo lote en un estudio que nunca falló.
+    _, device, api_key, limpio = await _world(make_patient, make_device, make_study)
+    await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
+    # Valores planos: el rollback de más abajo expira las filas ORM cargadas.
+    referencia = [event.dedupe_key for event in await _events(db, limpio.id)]
+    await db.refresh(limpio)
+    vistos = limpio.ml_state["beatsSeen"]
     assert vistos > 0
 
+    _, device, api_key, study = await _world(make_patient, make_device, make_study)
+    # El rollback expira los objetos de la sesión: el id se guarda antes, porque
+    # leer `study.id` después dispararía una carga síncrona.
+    study_id = study.id
+    body = (
+        await post_frames(client, device, api_key, _frames(signal.signal_mv, signal.flags))
+    ).json()
+
+    real_recount = ml_persistence.recount_events
+    llamadas = {"n": 0}
+
+    async def _falla_una_vez(session, target) -> None:
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            raise RuntimeError("corte después de escribir los hallazgos")
+        await real_recount(session, target)
+
+    monkeypatch.setattr(ml_persistence, "recount_events", _falla_una_vez)
+    await process_batch(db, body["batchId"])
+
     batch = await db.get(ECGBatch, body["batchId"])
     assert batch is not None
-    batch.processing_status = ProcessingStatus.PENDING
-    await db.flush()
-    await process_batch(db, batch.id)
+    await db.refresh(batch)
+    assert batch.processing_status is ProcessingStatus.FAILED
+    assert await _events(db, study_id) == []
+    assert (
+        await db.scalars(
+            select(SignalQualityInterval).where(SignalQualityInterval.study_id == study_id)
+        )
+    ).all() == []
+    await db.refresh(study)
+    assert not (study.ml_state or {}).get("beatsSeen")
 
+    await process_batch(db, body["batchId"])
+
+    await db.refresh(batch)
+    assert batch.processing_status is ProcessingStatus.DONE
+    eventos = await _events(db, study_id)
+    assert len(eventos) == len(referencia)
+    assert {e.dedupe_key for e in eventos} == set(referencia)
     await db.refresh(study)
     assert study.ml_state["beatsSeen"] == vistos
 
 
-async def test_events_count_se_recalcula_y_no_se_incrementa(
+async def test_events_count_cuenta_cada_evento_una_sola_vez(
     client, s3, db, make_patient, make_device, make_study
 ) -> None:
-    """Un `+= creados` se desincroniza en el primer reproceso, porque el borrado
-    previo no lo descuenta."""
+    """Dos escritores y un upsert: `events_count` sale de contar filas.
+
+    El encabezado por morfología se upsertea en cada lote —la fila ya existe y
+    solo crece su conteo—, así que un `+= escritos` lo contaría una vez por lote.
+    """
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
     signal = synth_ecg(duration_s=900.0, ectopic_every=12)
-    body = await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
+    frames = _frames(signal.signal_mv, signal.flags)
+    mitad = len(frames) // 2
 
-    batch = await db.get(ECGBatch, body["batchId"])
-    assert batch is not None
-    batch.processing_status = ProcessingStatus.PENDING
-    await db.flush()
-    await process_batch(db, batch.id)
+    await _ingest(client, db, device, api_key, frames[:mitad])
+    await _ingest(client, db, device, api_key, frames[mitad:])
 
+    eventos = await _events(db, study.id)
+    assert "recurrent_morphology" in _kinds(eventos)
     await db.refresh(study)
-    assert study.events_count == len(await _events(db, study.id))
+    assert study.events_count == len(eventos)
 
 
-async def test_una_alerta_ya_notificada_sobrevive_al_reproceso(
-    client, s3, db, sent_pushes, make_patient, make_device, make_study, make_patient_account
+async def test_una_pausa_del_motor_notifica_con_su_kind(
+    client, s3, db, sent_pushes, make_patient, make_device, make_study
 ) -> None:
-    """Borrarla dejaría al paciente con una notificación apuntando a nada, y su
-    respuesta de la bitácora colgada de un evento inexistente."""
+    """El aviso de un hallazgo del motor es el mismo `Pushable` que el de la Capa A.
+
+    Con su `kind`, el título nombra lo que pasó ("una pausa en el ritmo") y el
+    formulario que abre lo encabeza, en vez del aviso genérico.
+    """
     patient, device, api_key, study = await _world(make_patient, make_device, make_study)
     signal = synth_ecg(duration_s=120.0)
     señal = signal.signal_mv.copy()
@@ -218,21 +248,18 @@ async def test_una_alerta_ya_notificada_sobrevive_al_reproceso(
     señal[inicio : inicio + largo] = 0.0
     flags[inicio : inicio + largo] = 0
 
-    body = await _ingest(client, db, device, api_key, _frames(señal, flags))
-    alertas = list((await db.scalars(select(Alert))).all())
-    assert alertas, "la pausa no generó alerta"
-    ids = {alert.event_id for alert in alertas}
+    await _ingest(client, db, device, api_key, _frames(señal, flags))
 
-    batch = await db.get(ECGBatch, body["batchId"])
-    assert batch is not None
-    batch.processing_status = ProcessingStatus.PENDING
-    await db.flush()
-    await process_batch(db, batch.id)
-
-    despues = list((await db.scalars(select(Alert))).all())
-    assert {alert.event_id for alert in despues} == ids
-    for event_id in ids:
-        assert await db.get(ECGEvent, event_id) is not None
+    pausa = next(e for e in await _events(db, study.id) if e.event_metadata["kind"] == "pause")
+    alerta = (await db.scalars(select(Alert).where(Alert.event_id == pausa.id))).one()
+    assert alerta.kind == "pause"
+    avisos = [item for item in sent_pushes if item[1].data.get("type") == "report_request"]
+    assert len(avisos) == 1
+    paciente, mensaje = avisos[0]
+    assert paciente == patient.id
+    assert mensaje.data["alertId"] == str(alerta.id)
+    assert mensaje.data["kind"] == "pause"
+    assert mensaje.title == anomaly_title("pause")
 
 
 async def test_con_el_motor_apagado_la_ingesta_sigue_funcionando(
@@ -277,7 +304,13 @@ async def test_los_hallazgos_del_motor_se_distinguen_de_los_manuales(
     await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
 
     events = await _events(db, study.id)
-    assert events
-    assert all(event.model_version == PIPELINE_VERSION for event in events)
+    motor = [event for event in events if event.event_metadata["source"] == "ml"]
+    assert motor
+    assert all(event.model_version == PIPELINE_VERSION for event in motor)
+    assert all(event.dedupe_key is not None for event in motor)
     assert all(event.study_id == study.id for event in events)
-    assert all(event.dedupe_key is not None for event in events)
+    # La Capa A la escribe la ingesta y no el motor: sin versión de modelo, y
+    # nada que la reescriba.
+    hardware = [event for event in events if event.event_metadata["source"] == "firmware_flags"]
+    assert all(event.model_version is None for event in hardware)
+    assert len(motor) + len(hardware) == len(events)

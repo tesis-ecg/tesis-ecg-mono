@@ -49,7 +49,15 @@ export function DeleteHolterDialog({
   const handleDelete = () => {
     deleteHolter.mutate(holter.id, {
       onSuccess: () => {
-        toast.success(`Holter ${holter.serial} retirado.`)
+        // Retirar un Holter asignado cierra el estudio abierto y deja al
+        // paciente sin equipo: sale bien, pero no es una confirmación neutra.
+        if (holter.assignedPatientId) {
+          toast.warning(
+            `Holter ${holter.serial} retirado. ${patientName} quedó sin Holter asignado.`,
+          )
+        } else {
+          toast.success(`Holter ${holter.serial} retirado.`)
+        }
         setOpen(false)
         if (navigateOnSuccess) navigate('/devices')
       },

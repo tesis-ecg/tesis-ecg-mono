@@ -81,6 +81,18 @@ async def test_el_encabezado_de_morfologia_no_se_dibuja_sobre_la_traza(
     findings = (await client.get(f"/studies/{study_id}/findings")).json()
     assert any(group["kind"] == "recurrent_morphology" for group in findings["groups"])
 
+    # El panel lleva al visor por hora de pared: tiene que ser la misma que la
+    # de la banda en el manifest, o el click cae al lado del hallazgo.
+    bandas = {item["id"]: item for item in manifest["annotations"]}
+    items = [item for group in findings["groups"] for item in group["items"]]
+    assert items
+    for item in items:
+        banda = bandas[item["id"]]
+        assert (item["startEpochMs"], item["endEpochMs"]) == (
+            banda["startEpochMs"],
+            banda["endEpochMs"],
+        )
+
 
 async def test_el_resumen_dice_que_fraccion_del_registro_no_se_pudo_evaluar(
     client, s3, db, as_user, make_user, make_patient, make_device

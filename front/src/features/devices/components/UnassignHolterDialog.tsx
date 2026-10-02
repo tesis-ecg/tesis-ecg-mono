@@ -47,7 +47,14 @@ export function UnassignHolterDialog({
   const handleUnassign = () => {
     unassign.mutate(holterId, {
       onSuccess: () => {
-        toast.success(`Holter ${serial} desasignado.`)
+        // Desasignar cierra el estudio abierto del paciente (lo hace
+        // `close_open_studies_for_device` en el backend). Salió bien, pero se
+        // llevó algo puesto: eso es una advertencia, no una confirmación a secas.
+        if (hasActiveStudy) {
+          toast.warning(`Holter ${serial} desasignado. El estudio en curso quedó finalizado.`)
+        } else {
+          toast.success(`Holter ${serial} desasignado.`)
+        }
         setOpen(false)
       },
       onError: (error) => {

@@ -1,7 +1,7 @@
 """Dashboard service."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,23 +16,39 @@ from app.modules.dashboard import dashboard_repository as repo
 from app.modules.dashboard.dashboard_schemas import (
     AttentionPatientOut,
     AttentionPatientsInput,
+    DashboardActivityInput,
+    DashboardActivityOut,
+    DashboardActivityPointOut,
     DashboardAlertOut,
     DashboardAlertsInput,
+    DashboardFleetOut,
     DashboardKpisInput,
     DashboardKpisOut,
     DashboardOverviewInput,
     DashboardOverviewOut,
+    DashboardSeverityBucketOut,
+    DashboardTrendOut,
     DeviceWatchdogInput,
     DeviceWatchdogOut,
     RunningStudiesInput,
     RunningStudyOut,
 )
+from app.modules.dashboard.dashboard_time import dashboard_date, dashboard_day_start_utc
 
 # Orden de prioridad del merge de alertas. Las 4 severities del ORM mapean 1:1
 # en minúsculas contra el SEVERITY del FE.
 _SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 _DEVICE_ALERT_SEVERITY = "medium"
+#: Severidad del mismo aviso una vez cruzado `device_critical_hours`.
+_DEVICE_CRITICAL_SEVERITY = "critical"
+
+#: Cuántos días dibuja el gráfico de actividad de la home, y el largo de la
+#: ventana con la que se compara la semana anterior.
+ACTIVITY_DAYS = 7
+
+#: De más grave a menos: el orden en que el donut y su leyenda tienen que leerse.
+_SEVERITY_ORDER = ("critical", "high", "medium", "low")
 
 
 def _patient_name(patient: Patient) -> str:
@@ -40,7 +56,25 @@ def _patient_name(patient: Patient) -> str:
 
 
 def _stale_before() -> datetime:
-    return datetime.now(UTC) - timedelta(hours=settings.dashboard_stale_hours)
+    """Corte de "hace rato que no manda nada".
+
+    El equipo despacha un lote cada 10 minutos, así que una hora ya son seis
+    ventanas perdidas. El valor anterior (10 h) estaba calcado de la autonomía
+    offline documentada de la flash, y eso lo hacía inútil: avisaba justo cuando
+    el log circular ya había empezado a pisar señal sin subir. Ver
+    `device_critical_hours` en `core/config.py`.
+    """
+    return datetime.now(UTC) - timedelta(hours=settings.device_stale_hours)
+
+
+def _critical_before() -> datetime:
+    """Corte de "se está por perder registro".
+
+    Dimensionado contra las **5,1 h** de autonomía offline medidas sobre esta
+    placa con el chaleco flojo, que es el caso normal de un paciente
+    (`INTEGRACION.md` §9.1) — no contra las 9,94 h de PhysioNet.
+    """
+    return datetime.now(UTC) - timedelta(hours=settings.device_critical_hours)
 
 
 def _duration_ms(study: Study) -> int:
@@ -73,15 +107,27 @@ def _alert_out(
     )
 
 
-def _device_alert_out(device: Device, patient: Patient) -> DashboardAlertOut:
+def _device_alert_out(
+    device: Device, patient: Patient, critical_before: datetime
+) -> DashboardAlertOut:
+    """Alerta sintética de equipo callado, con severidad en dos escalones.
+
+    Pasado `device_critical_hours` la desconexión deja de ser una molestia y pasa
+    a ser pérdida inminente de registro: al equipo le queda menos de una hora de
+    buffer antes de que el log circular empiece a pisar señal que nunca subió
+    (`INTEGRACION.md` §9.1). Que las dos cosas se vieran igual era el problema
+    del umbral único.
+    """
+    last_seen = device.last_seen_at or device.created_at
+    severity = _DEVICE_CRITICAL_SEVERITY if last_seen < critical_before else _DEVICE_ALERT_SEVERITY
     return DashboardAlertOut(
         id=f"device-{device.id}",
         patientId=patient.id,
         patientName=_patient_name(patient),
         kind="device_offline",
-        severity=_DEVICE_ALERT_SEVERITY,
+        severity=severity,
         # detectedAt es requerido por el FE: si el device nunca reportó, cae en created_at.
-        detectedAt=device.last_seen_at or device.created_at,
+        detectedAt=last_seen,
         studyId=None,
     )
 
@@ -101,6 +147,7 @@ def _running_study_out(study: Study, patient: Patient, device: Device) -> Runnin
         id=study.id,
         patientName=_patient_name(patient),
         startedAt=study.started_at,
+        startedAtVerified=study.started_at_verified,
         durationMs=_duration_ms(study),
         deviceSerial=device.serial_number,
     )
@@ -144,7 +191,10 @@ async def list_alerts(
         _alert_out(alert, patient, event_type, event_metadata, study_id)
         for alert, patient, event_type, event_metadata, study_id in rows
     ]
-    alerts.extend(_device_alert_out(device, patient) for device, patient in stale_devices)
+    critical_before = _critical_before()
+    alerts.extend(
+        _device_alert_out(device, patient, critical_before) for device, patient in stale_devices
+    )
     # Cada fuente ya viene ordenada y cortada por su propia clave final (el repo
     # ordena por severidad y después por fecha), así que el merge solo intercala.
     # Dos pasadas estables: severidad asc, y dentro de cada severidad detectedAt desc.
@@ -183,6 +233,63 @@ async def list_device_watchdog(
     return items
 
 
+async def get_activity(
+    input_data: DashboardActivityInput, db: AsyncSession
+) -> DashboardActivityOut:
+    """Series y totales de la home.
+
+    El relleno con ceros vive acá y no en el repositorio: una serie con huecos
+    hace que el gráfico dibuje siete barras cuando hubo actividad todos los días
+    y cuatro cuando no, y el eje deja de ser comparable de un vistazo.
+    """
+    now = datetime.now(UTC)
+    today = dashboard_date(now)
+    first_day = today - timedelta(days=input_data.days - 1)
+    current_since = now - timedelta(days=input_data.days)
+    previous_since = current_since - timedelta(days=input_data.days)
+
+    alerts_by_day, reports_by_day, studies_by_day = await repo.count_activity_by_day(
+        db, input_data.doctor_id, dashboard_day_start_utc(first_day)
+    )
+    alerts_window, studies_window, patients_window = await repo.count_windows(
+        db, input_data.doctor_id, current_since, previous_since
+    )
+    by_severity = await repo.count_pending_alerts_by_severity(db, input_data.doctor_id)
+    assigned, transmitting = await repo.count_fleet(db, input_data.doctor_id, _stale_before())
+
+    days = [
+        _activity_point(
+            first_day + timedelta(days=offset), alerts_by_day, reports_by_day, studies_by_day
+        )
+        for offset in range(input_data.days)
+    ]
+    return DashboardActivityOut(
+        days=days,
+        alertsTrend=DashboardTrendOut(current=alerts_window[0], previous=alerts_window[1]),
+        studiesTrend=DashboardTrendOut(current=studies_window[0], previous=studies_window[1]),
+        patientsTrend=DashboardTrendOut(current=patients_window[0], previous=patients_window[1]),
+        pendingBySeverity=[
+            DashboardSeverityBucketOut(severity=severity, count=by_severity.get(severity, 0))
+            for severity in _SEVERITY_ORDER
+        ],
+        fleet=DashboardFleetOut(assigned=assigned, transmitting=transmitting),
+    )
+
+
+def _activity_point(
+    day: date,
+    alerts: dict[date, int],
+    reports: dict[date, int],
+    studies: dict[date, int],
+) -> DashboardActivityPointOut:
+    return DashboardActivityPointOut(
+        date=day,
+        alerts=alerts.get(day, 0),
+        reports=reports.get(day, 0),
+        studies=studies.get(day, 0),
+    )
+
+
 async def get_overview(
     input_data: DashboardOverviewInput, db: AsyncSession
 ) -> DashboardOverviewOut:
@@ -200,10 +307,14 @@ async def get_overview(
     watchdog = await list_device_watchdog(
         DeviceWatchdogInput(doctor_id=input_data.doctor_id, limit=input_data.widget_limit), db
     )
+    activity = await get_activity(
+        DashboardActivityInput(doctor_id=input_data.doctor_id, days=ACTIVITY_DAYS), db
+    )
     return DashboardOverviewOut(
         kpis=kpis,
         alerts=alerts,
         attentionPatients=attention_patients,
         runningStudies=running_studies,
         deviceWatchdog=watchdog,
+        activity=activity,
     )

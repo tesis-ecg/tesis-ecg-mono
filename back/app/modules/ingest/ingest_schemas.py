@@ -43,6 +43,21 @@ class VestStatusEvent(enum.StrEnum):
     LEAD_OFF = "lead_off"
     #: El equipo volvió a medir bien. No genera alerta; cierra el episodio.
     SIGNAL_RECOVERED = "signal_recovered"
+    #: **Latido neutro: "estoy encendido", y nada más** (`INTEGRACION.md` §11.5).
+    #:
+    #: Los otros tres afirman algo sobre la señal, y por eso ninguno servía de
+    #: latido. El caso que este valor cubre es el que hoy es invisible: un equipo
+    #: que está encendido y **no produce tramas** —la flash no monta, el
+    #: front-end no inicializó— no existe para el backend, y no se distingue de
+    #: uno apagado.
+    #:
+    #: Mandar `lead_off` ahí sería inventar un diagnóstico, y usar
+    #: `signal_recovered` de latido sería peor: desde el commit `9933292` ese
+    #: valor escribe `placement_ok = true`, o sea que le estaría afirmando al
+    #: paciente que el chaleco está bien puesto cada diez minutos sin nada que lo
+    #: sostenga. `alive` solo escribe telemetría: no toca la colocación, no crea
+    #: alerta y no manda push.
+    ALIVE = "alive"
 
 
 class DeviceStatusRequest(CamelModel):

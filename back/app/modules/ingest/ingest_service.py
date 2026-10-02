@@ -11,6 +11,7 @@ Ese corte no es solo una optimización: `INTEGRACION.md` §4.6 pide confirmar
 bytes" de "los procesé" es exactamente eso.
 """
 
+import asyncio
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -20,13 +21,19 @@ from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.s3 import put_object
+from app.core.s3 import get_object, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_timeline_segment import TimeSyncSource
 from app.dependencies.device_dependencies import INGESTABLE_STATUSES, DeviceContext
-from app.ml.decompression import SAMPLE_RATE_HZ, FrameError, FrameInfo, iter_frames, read_header
+
+# `frame_header` y no `decompression`: la ruta del ACK solo valida cabeceras y
+# cuenta tramas, y ese módulo no arrastra numpy. Importarlo acá metía numpy en
+# cada arranque en frío de la función para contestar un 202 que no lo usa.
+from app.ml.frame_header import SAMPLE_RATE_HZ, FrameError, FrameInfo, iter_frames, read_header
+from app.ml.status_flags import device_faults
 from app.modules.ingest import ingest_repository as repo
 from app.modules.ingest.ingest_schemas import (
     DeviceStatusAckOut,
@@ -35,9 +42,48 @@ from app.modules.ingest.ingest_schemas import (
     IngestFramesInput,
     VestStatusEvent,
 )
-from app.modules.patient_app.notifications_service import notify_patient_task, vest_message
+from app.modules.patient_app.notifications_service import (
+    battery_message,
+    notify_patient_task,
+    vest_message,
+)
 
 logger = structlog.get_logger(__name__)
+
+
+def _battery_alert(ctx: DeviceContext) -> Alert | None:
+    """Create one alert per low/critical episode, under the device row lock."""
+    device = ctx.device
+    if ctx.rssi_dbm is not None:
+        device.last_rssi_dbm = ctx.rssi_dbm
+    if ctx.sqi is not None:
+        device.last_sqi = ctx.sqi
+    flags = ctx.battery_flags
+    if flags is None:
+        return None
+    device.last_battery_flags = flags
+    # Bit 0 validates the verdict; 0 means an older firmware did not report it.
+    if not flags & 0x01:
+        return None
+    level = "critical" if flags & 0x04 else "low" if flags & 0x02 else None
+    if level is None:
+        device.battery_alert_level = None
+        return None
+    if level == device.battery_alert_level or device.patient_id is None:
+        return None
+    device.battery_alert_level = level
+    alert = Alert(
+        patient_id=device.patient_id,
+        event_id=None,
+        kind=f"battery_{level}",
+        severity=AlertSeverity.CRITICAL if level == "critical" else AlertSeverity.HIGH,
+        message=(
+            "La batería del chaleco está en nivel crítico; cargarlo ahora."
+            if level == "critical"
+            else "La batería del chaleco está baja; cargarlo pronto."
+        ),
+    )
+    return alert
 
 
 def frames_key(study_id: uuid.UUID, first_seq: int) -> str:
@@ -48,6 +94,16 @@ def frames_key(study_id: uuid.UUID, first_seq: int) -> str:
     basura huérfana en S3.
     """
     return f"studies/{study_id}/frames/{first_seq:012d}.bin"
+
+
+@dataclass(frozen=True)
+class _Anchor:
+    """Ancla temporal de un lote, con de dónde salió y cuánto vale."""
+
+    epoch_ms: int
+    source: TimeSyncSource
+    uncertainty_ms: int | None
+    matches_boot: bool | None
 
 
 @dataclass(frozen=True)
@@ -103,16 +159,20 @@ def _dedupe_by_seq(frames: list[_ParsedFrame]) -> list[_ParsedFrame]:
 class _AckWindow:
     already_stored: list[_ParsedFrame]
     accepted: list[_ParsedFrame]
+    #: Tramas que faltan entre el cursor y la primera aceptada. Distinto de cero
+    #: es pérdida real e irrecuperable de señal del paciente: el log circular del
+    #: equipo dio la vuelta y esas tramas ya no existen.
+    gap_frames: int = 0
 
     @property
     def total_ack(self) -> int:
         return len(self.already_stored) + len(self.accepted)
 
 
-def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckWindow:
+def _ack_window(frames: list[_ParsedFrame], study: Study) -> _AckWindow:
     """Ventana confirmable, con la semántica go-back-N de `INTEGRACION.md` §4.6.
 
-    Cuatro reglas:
+    Tres reglas:
 
     1. **Solo contiguo desde el cursor.** Si llegan la 10, la 11 y la 13 con el
        cursor en 9, se confirman 2: la 12 falta y el cursor de lectura del
@@ -123,33 +183,49 @@ def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckW
        respuesta se perdió*, no que el equipo esté adelantado: si contestáramos
        0, el equipo reintentaría el mismo lote para siempre. Se cuentan aparte
        en `framesDuplicate` para que el reintento siga siendo visible.
-    3. **El cursor puede saltar hacia adelante, nunca hacia atrás.** Un reinicio
-       del equipo pone `t0Ms` en cero pero **no rebobina `seq`**: §4.3 habla de
-       "dos tramas *consecutivas por seq* con bootId distinto". Lo que el equipo
-       no alcanzó a mandar del boot anterior se perdió con él, así que ante un
-       `bootId` nuevo el cursor avanza hasta donde arranque el lote en vez de
-       esperar para siempre un hueco que nadie va a llenar (§4.6: los huecos que
-       no se llenan son pérdida real de señal).
+    3. **El cursor puede saltar hacia adelante, nunca hacia atrás.** Si la
+       primera trama del lote está por encima del cursor, el tramo arranca ahí y
+       no en `cursor + 1`, haya habido reinicio o no.
 
-       Lo que ya no se acepta es una `seq` **anterior** al cursor bajo otro
+       Esto vale porque go-back-N garantiza que **la primera trama de un lote es
+       la más vieja sin confirmar**: si el equipo la manda, es porque no tiene
+       nada anterior pendiente. El hueco que queda atrás no lo puede llenar
+       nadie, así que esperarlo es esperar para siempre.
+
+       Las dos causas de ese salto son distintas y las dos terminan acá:
+
+       - **Reinicio.** Lo que el equipo no alcanzó a mandar del boot anterior se
+         perdió con él (§4.3: "dos tramas *consecutivas por seq* con bootId
+         distinto").
+       - **Overflow del log circular** (`INTEGRACION.md` §4.6, el defecto que
+         este código tuvo hasta septiembre de 2026). Si el equipo pasa más horas
+         sin enlace que las que aguanta su flash, el log da la vuelta, el cursor
+         de lectura del equipo se adelanta y **el `bootId` no cambia**, porque no
+         hubo reinicio: solo se pisó señal. La versión anterior toleraba el salto
+         solo con `bootId` nuevo, así que con el mismo boot lo trataba como hueco,
+         cortaba, y devolvía el cursor viejo — que el equipo no podía alcanzar.
+         Resultado: `framesAccepted = 0` en todos los reintentos y el estudio
+         dejaba de archivar hasta que alguien reiniciara el equipo, sin ningún
+         síntoma visible. Lo reprodujo Biomédica en
+         `test/tools/test_overflow_deadlock.py`.
+
+       Un hueco de verdad —uno en MEDIO del lote— lo sigue cortando el bucle de
+       abajo, sin cambios.
+
+       Lo que sigue sin aceptarse es una `seq` **anterior** al cursor bajo otro
        `bootId`. Antes se aceptaba: el cursor se descartaba entero ante cualquier
        cambio de boot y el lote entraba desde su primera trama. Como los objetos
        del estudio se nombran con el `first_seq` del lote (`frames_key`,
        `segment_key`, `envelope_key`), eso **sobreescribía en S3** señal ya
        archivada mientras `samples_count` seguía creciendo: el estudio perdía
-       muestras en silencio y quedaba contando las que ya no estaban.
+       muestras en silencio y quedaba contando las que ya no estaban. Ese caso lo
+       ataja `_guard_seq_rewind`, antes de llegar acá.
 
-    4. **Un lote entero por debajo del cursor con `bootId` nuevo no es un
-       duplicado: es una renumeración**, y se rechaza con 409. Ver el comentario
-       en el cuerpo — es el único camino por el que se podía confirmar una `seq`
-       de una numeración que el equipo ya no usa.
-
-    Con la regla 4, `lastAcceptedSeq` no puede salir del lote que el equipo
-    acaba de mandar: o hay tramas aceptadas y el número sale de ellas, o el
-    `bootId` es el mismo y el cursor está en la numeración del equipo.
+    El salto se devuelve en `gap_frames` en vez de perderse: es pérdida real de
+    señal del paciente y el médico tiene que verla (§9.1, "registro de cada
+    overflow con su hora de pared").
     """
     cursor = study.last_ingested_seq
-    rebooted = study.last_boot_id is not None and study.last_boot_id != boot_id
 
     if cursor is None:
         already: list[_ParsedFrame] = []
@@ -158,35 +234,7 @@ def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckW
     else:
         already = [f for f in frames if f.info.seq <= cursor]
         fresh = [f for f in frames if f.info.seq > cursor]
-        if rebooted and not fresh:
-            # El equipo reempezó a numerar. Visto en producción: llegaron 247
-            # tramas con seq 0-246 estando el cursor en 13826, y la respuesta
-            # las contó como duplicadas y confirmó `lastAcceptedSeq: 13826` —
-            # un número de OTRA numeración. El equipo lo lee en la suya y borra
-            # de su flash 13826 tramas que nunca guardamos: pérdida de señal de
-            # un paciente, con las dos partes sanas y sin un solo error.
-            #
-            # No alcanza con no confirmar: hay que cortar. Aceptarlas
-            # sobreescribiría en S3 los objetos que ya se nombran con el
-            # `first_seq` (ver regla 3), y tratarlas como duplicadas es
-            # justamente la confusión que causó el incidente. Se pide una
-            # decisión humana: el estudio abierto pertenece a la numeración
-            # vieja y hay que cerrarlo antes de seguir.
-            #
-            # El precio es un caso legítimo raro: si nuestra respuesta se perdió
-            # Y el equipo se reinició antes de reintentar, ese lote se rechaza
-            # en vez de re-confirmarse. Se elige así a propósito — el equipo
-            # conserva sus tramas y alguien mira el error, que es infinitamente
-            # más barato que borrar señal que no está archivada.
-            raise _conflict(
-                "INGEST_SEQ_RENUMBERED",
-                (
-                    f"El lote termina en seq {frames[-1].info.seq} con un bootId nuevo, "
-                    f"por debajo del cursor {cursor}: el equipo reempezó a numerar y no "
-                    "se puede saber a qué numeración pertenecen estas tramas."
-                ),
-            )
-        expected = fresh[0].info.seq if rebooted else cursor + 1
+        expected = fresh[0].info.seq if fresh else cursor + 1
 
     accepted: list[_ParsedFrame] = []
     for frame in fresh:
@@ -195,11 +243,17 @@ def _ack_window(frames: list[_ParsedFrame], study: Study, boot_id: int) -> _AckW
         accepted.append(frame)
         expected += 1
 
-    return _AckWindow(already_stored=already, accepted=accepted)
+    # El hueco se mide contra el cursor, no contra el lote: es cuánta señal se
+    # perdió, no cuánta se salteó este envío.
+    gap_frames = 0
+    if cursor is not None and accepted:
+        gap_frames = max(accepted[0].info.seq - (cursor + 1), 0)
+
+    return _AckWindow(already_stored=already, accepted=accepted, gap_frames=gap_frames)
 
 
 async def _resolve_study(
-    db: AsyncSession, ctx: DeviceContext, first: FrameInfo, epoch_anchor_ms: int
+    db: AsyncSession, ctx: DeviceContext, first: FrameInfo, anchor: _Anchor
 ) -> tuple[Study, Patient]:
     """`serial → device.patient_id → estudio in_progress`, creándolo si no hay.
 
@@ -223,7 +277,7 @@ async def _resolve_study(
     if study is not None:
         return study, patient
 
-    started_at = datetime.fromtimestamp((epoch_anchor_ms + first.t0_ms) / 1000, tz=UTC)
+    started_at = datetime.fromtimestamp((anchor.epoch_ms + first.t0_ms) / 1000, tz=UTC)
     study = await repo.create_study(
         db,
         patient_id=patient.id,
@@ -231,7 +285,105 @@ async def _resolve_study(
         started_at=started_at,
         sample_rate=SAMPLE_RATE_HZ,
     )
+    study.started_at_verified = anchor.matches_boot is True
+    study.filter_view_enabled = True
     return study, patient
+
+
+#: Kind de la alerta que avisa que el equipo rebobinó su numeración.
+SEQ_REWIND_ALERT_KIND = "study_seq_rewind"
+
+
+async def _is_seq_rewind(db: AsyncSession, study: Study, frames: list[_ParsedFrame]) -> bool:
+    """Nunca confirmar una `seq` repetida sin comparar sus 256 bytes archivados.
+
+    Los cursores del log viven en la metadata de la flash. Si cambia el formato
+    de esa metadata —que es lo que pasa al actualizar el firmware— el equipo
+    arranca `writeSeq_` en 0. Sus tramas caen entonces enteras por debajo de
+    nuestro cursor, `_ack_window` las cuenta como ya almacenadas, y el ACK
+    devuelve el cursor viejo: el equipo daría por entregado un lote que **no se
+    archivó** y lo borraría de su flash. Pérdida permanente y silenciosa.
+
+    Mirando solo los números ese caso es idéntico a una retransmisión legítima
+    bajo otro `bootId`. Lo que los separa es si las tramas están archivadas.
+    Hay que preguntar por el prefijo que cae debajo del cursor, no solo cuando
+    el lote entero cae ahí: después de un reinicio un solo POST puede contener
+    `0..cursor` y también tramas nuevas. Si se contara ese prefijo como
+    duplicado, el ACK confirmaría y el equipo borraría señal nueva nunca
+    archivada.
+    """
+    cursor = study.last_ingested_seq
+    if cursor is None:
+        return False
+    frames_at_or_before_cursor = [frame for frame in frames if frame.info.seq <= cursor]
+    if not frames_at_or_before_cursor:
+        return False
+    archived = await repo.archived_batches_overlapping(
+        db,
+        study.id,
+        frames_at_or_before_cursor[0].info.seq,
+        frames_at_or_before_cursor[-1].info.seq,
+    )
+    original_by_seq: dict[int, bytes] = {}
+    for batch in archived:
+        if batch.frames_s3_key is None:
+            continue
+        payload = await asyncio.to_thread(get_object, batch.frames_s3_key)
+        for raw in iter_frames(payload):
+            info = read_header(raw)
+            original_by_seq[info.seq] = raw
+    return any(
+        original_by_seq.get(frame.info.seq) != frame.payload for frame in frames_at_or_before_cursor
+    )
+
+
+async def _recover_from_seq_rewind(db: AsyncSession, study: Study, patient: Patient) -> None:
+    """Cierra el estudio cuya numeración quedó atrás y deja lugar a uno nuevo.
+
+    **Por qué automático y no un `409`.** Hasta septiembre de 2026 esto devolvía
+    `409 STUDY_SEQ_REWIND` y ahí se terminaba: la señal no se perdía —un 409 no
+    es un ACK, así que el equipo no borra nada— pero el equipo reintentaba el
+    mismo lote indefinidamente y el estudio no volvía a avanzar solo. Si el corte
+    duraba lo suficiente, el backlog de esa sesión daba la vuelta y **ahí sí** se
+    perdía registro. La regla operativa ("actualizar el firmware solo con el
+    estudio cerrado") sigue siendo buena práctica, pero no puede ser lo único que
+    separe al paciente de un estudio trunco.
+
+    **Cerrar con lotes pendientes es seguro.** La guarda de estudio terminal de
+    `processing.py` solo protege `ended_at` y `duration_ms`: los lotes que
+    quedaron en `PENDING` se siguen drenando y `samples_count` sigue creciendo.
+    Nada de lo ya archivado se pierde ni queda huérfano.
+
+    El estudio nuevo lo crea `_resolve_study` en la llamada siguiente, porque
+    `get_open_study_for_update` filtra por `IN_PROGRESS` y éste ya no lo está.
+    """
+    now = datetime.now(UTC)
+    study.status = StudyStatus.COMPLETED
+    # Una ancla vieja errónea puede haber fechado `started_at` en el futuro.
+    # La restricción de la base exige `ended_at >= started_at`; un cierre por
+    # rebobinado no debe bloquear la señal nueva por ese error previo.
+    study.ended_at = max(now, study.started_at)
+
+    db.add(
+        Alert(
+            patient_id=patient.id,
+            event_id=None,
+            kind=SEQ_REWIND_ALERT_KIND,
+            severity=AlertSeverity.HIGH,
+            message=(
+                "El equipo envió una numeración ya confirmada con bytes distintos. "
+                "Se cerró el estudio anterior y la señal nueva se archiva en otro. "
+                "Revisar la continuidad entre ambos estudios."
+            ),
+        )
+    )
+    await logger.awarning(
+        "study_seq_rewind_recovered",
+        study_id=str(study.id),
+        patient_id=str(patient.id),
+        last_ingested_seq=study.last_ingested_seq,
+        last_boot_id=study.last_boot_id,
+    )
 
 
 async def ingest_frames(
@@ -254,7 +406,12 @@ async def ingest_frames(
     parsed, rejected = _parse(input_data.payload)
     received = len(input_data.payload) // 256
 
-    epoch_anchor_ms = int(input_data.received_at.timestamp() * 1000) - ctx.uptime_ms
+    # El ancla del tramo: instante UTC en que el `millis()` del equipo valía 0.
+    # Con las cabeceras del puente las dos cifras de la resta las mide el mismo
+    # lado del enlace, así que la latencia del pedido queda afuera de la hora
+    # del paciente (`docs/integracion-ingesta-con-horario.md`).
+    epoch_anchor_ms, sync_source, sync_uncertainty_ms = ctx.boot_epoch_ms(input_data.received_at)
+    uncertainty_ms: int | None = sync_uncertainty_ms
 
     if not parsed:
         # Todas las tramas fallaron la validación. Igual hay que resolver el
@@ -275,6 +432,24 @@ async def ingest_frames(
     # daría horas de pared incorrectas.
     boot_id = parsed[0].info.boot_id
     frames = _dedupe_by_seq([f for f in parsed if f.info.boot_id == boot_id])
+    matches_boot = None if ctx.boot_id is None else ctx.boot_id == boot_id
+    if matches_boot is False:
+        # El par (epoch, uptime) pertenece al arranque ACTUAL del equipo. Este
+        # backlog es anterior: conservarlo sin atribuirle esa hora ajena.
+        epoch_anchor_ms = int(input_data.received_at.timestamp() * 1000) - frames[0].info.t0_ms
+        sync_source = TimeSyncSource.SERVER_RECEIVE
+        uncertainty_ms = None
+    first_sample_ms = epoch_anchor_ms + frames[0].info.t0_ms
+    received_ms = int(input_data.received_at.timestamp() * 1000)
+    if first_sample_ms > received_ms:
+        # Una muestra archivada no puede comenzar después de recibir su POST.
+        # El puente anterior no informa el bootId del ancla: ante un reinicio,
+        # mezclar su uptime actual con tramas viejas producía inicios futuros.
+        epoch_anchor_ms = received_ms - frames[0].info.t0_ms
+        sync_source = TimeSyncSource.SERVER_RECEIVE
+        uncertainty_ms = None
+        matches_boot = False
+    anchor = _Anchor(epoch_anchor_ms, sync_source, uncertainty_ms, matches_boot)
 
     # La autenticación leyó el equipo sin lock. Se vuelve a cargar dentro de la
     # transacción del caso de uso para competir de forma segura con otra ingesta
@@ -289,14 +464,35 @@ async def ingest_frames(
         )
     ctx = replace(ctx, device=locked_device)
 
-    study, patient = await _resolve_study(db, ctx, frames[0].info, epoch_anchor_ms)
-    window = _ack_window(frames, study, boot_id)
+    study, patient = await _resolve_study(db, ctx, frames[0].info, anchor)
+    if await _is_seq_rewind(db, study, frames):
+        previous_study_id = study.id
+        await _recover_from_seq_rewind(db, study, patient)
+        if background is not None:
+            from app.modules.ingest.processing import process_study_task
+
+            background.add_task(process_study_task, previous_study_id)
+        # El cerrado ya no matchea `get_open_study_for_update`, así que esto crea
+        # uno nuevo. Arranca con `last_ingested_seq = None`, o sea que el lote
+        # entra entero desde su primera trama, que es lo correcto: para el estudio
+        # nuevo no hay nada anterior.
+        study, patient = await _resolve_study(db, ctx, frames[0].info, anchor)
+    window = _ack_window(frames, study)
 
     ctx.device.last_seen_at = input_data.received_at
     if ctx.battery_pct is not None:
         ctx.device.last_battery_pct = ctx.battery_pct
     if ctx.firmware_version:
         ctx.device.firmware_version = ctx.firmware_version
+    battery_alert = _battery_alert(ctx)
+    if battery_alert is not None:
+        db.add(battery_alert)
+        await db.flush()
+
+    # Los estados graves del equipo viajan en `X-Device-Status-Flags` del mismo
+    # POST. Es una query indexada que solo corre cuando hay un bit prendido, o
+    # sea nunca en un equipo sano.
+    await _raise_device_faults(db, ctx, input_data.received_at)
 
     # El paciente también tiene telemetría, y hasta acá nadie la escribía: su
     # `study_status` se quedaba en el valor del alta y `last_data_received_at`
@@ -311,7 +507,15 @@ async def ingest_frames(
 
     batch_id: uuid.UUID | None = None
     if window.accepted:
-        batch_id = await _store_batch(db, ctx, input_data, study, window, boot_id, epoch_anchor_ms)
+        batch_id = await _store_batch(
+            db,
+            ctx,
+            input_data,
+            study,
+            window,
+            boot_id,
+            anchor,
+        )
         if background is not None:
             from app.modules.ingest.processing import process_batch_task
 
@@ -323,6 +527,13 @@ async def ingest_frames(
         study.is_simulated = True
 
     await db.commit()
+
+    if battery_alert is not None and background is not None and ctx.device.patient_id is not None:
+        background.add_task(
+            notify_patient_task,
+            ctx.device.patient_id,
+            battery_message(battery_alert.id, ctx.device.battery_alert_level or "low"),
+        )
 
     await logger.ainfo(
         "ingest_batch_received",
@@ -354,7 +565,7 @@ async def _store_batch(
     study: Study,
     window: _AckWindow,
     boot_id: int,
-    epoch_anchor_ms: int,
+    anchor: _Anchor,
 ) -> uuid.UUID:
     """Archiva los bytes crudos y deja el lote listo para procesar.
 
@@ -369,7 +580,11 @@ async def _store_batch(
 
     key = frames_key(study.id, first_info.seq)
     body = b"".join(frame.payload for frame in accepted)
-    put_object(key, body)
+    # `put_object` es boto3 sincrónico: llamarlo derecho bloquea el event loop
+    # entero mientras dura el handshake TLS y la subida. Va a un thread y se
+    # espera antes del commit — la durabilidad antes del ACK no se toca, que es
+    # lo que hace segura esta ingesta; lo que se saca es el bloqueo.
+    await asyncio.to_thread(put_object, key, body)
 
     n_samples = sum(frame.info.n_samples for frame in accepted)
     duration_ms = (last_info.t0_ms + last_info.duration_ms) - first_info.t0_ms
@@ -378,7 +593,7 @@ async def _store_batch(
         device_id=ctx.device.id,
         study_id=study.id,
         received_at=input_data.received_at,
-        batch_timestamp=(epoch_anchor_ms + first_info.t0_ms) // 1000,
+        batch_timestamp=(anchor.epoch_ms + first_info.t0_ms) // 1000,
         duration_seconds=max(duration_ms // 1000, 0),
         sample_rate=SAMPLE_RATE_HZ,
         num_channels=first_info.n_channels,
@@ -391,12 +606,23 @@ async def _store_batch(
         firmware_version=ctx.firmware_version or ctx.device.firmware_version,
         boot_id=boot_id,
         device_uptime_ms=ctx.uptime_ms,
-        epoch_anchor_ms=epoch_anchor_ms,
+        epoch_anchor_ms=anchor.epoch_ms,
+        bridge_epoch_ms=ctx.bridge_epoch_ms,
+        time_sync_source=anchor.source,
+        time_sync_uncertainty_ms=anchor.uncertainty_ms,
+        anchor_matches_boot=anchor.matches_boot,
         first_seq=first_info.seq,
         last_seq=last_info.seq,
         frames_count=len(accepted),
         frames_rejected=0,
         frames_duplicate=len(window.already_stored),
+        # El hueco solo se conoce acá: el procesamiento ve el lote aislado y no
+        # sabe contra qué cursor entró.
+        preceding_seq_gap_frames=window.gap_frames,
+        device_lead_flags=ctx.lead_flags,
+        device_loss_flags=ctx.loss_flags,
+        device_status_flags=ctx.status_flags,
+        device_backlog_seconds=ctx.backlog_seconds,
     )
     await repo.create_batch(db, batch)
 
@@ -412,6 +638,72 @@ async def _store_batch(
 #: Tipo de alerta que produce este canal. No cuelga de ningún `ecg_event`: la
 #: señal de ese momento todavía está en la flash del chaleco.
 VEST_ALERT_KIND = "vest_misplaced"
+
+#: Falla del equipo que lo saca de servicio (`INTEGRACION.md` §3.1, `statusFlags`
+#: bits 2, 4 y 6). Es un problema de hardware o de servicio técnico, **nunca del
+#: paciente**: el mensaje tiene que decir "el equipo tiene una falla, no lo use",
+#: no "revise los electrodos".
+DEVICE_FAULT_ALERT_KIND = "device_fault"
+
+
+async def _raise_device_faults(db: AsyncSession, ctx: DeviceContext, now: datetime) -> None:
+    """Alerta los estados graves que el equipo reporta en `X-Device-Status-Flags`.
+
+    Son **estados**, no eventos: el equipo los repite en cada STATUS mientras la
+    condición esté, así que sin debounce una flash rota inundaría al médico con
+    una alerta cada diez minutos. Se emite una por ventana de
+    `device_fault_debounce_minutes` y por equipo.
+
+    Solo se mira el byte de `statusFlags`. Los bits 0 y 1 de `leadOffFlags` no se
+    leen en ninguna parte del sistema, y es a propósito: Biomédica midió que el
+    comparador del ADS1292R no funciona en esta placa —0 % de detección en los
+    dos electrodos cuya pérdida sí invalida la señal, y disparo espurio con el de
+    tierra informando el electrodo equivocado— así que usarlos mandaría a
+    recolocar el electrodo que no era.
+
+    No hay push al paciente: no hay nada que pueda hacer con esto, y decirle que
+    su equipo está roto sin poder darle un reemplazo es angustia sin acción.
+    """
+    faults = device_faults(ctx.status_flags)
+    if not faults:
+        return
+    device = ctx.device
+    if device.patient_id is None:
+        # Sin paciente no hay a quién colgarle la alerta. Igual queda en el log,
+        # que es donde lo va a ver quien prepara los equipos.
+        await logger.awarning(
+            "device_fault_unassigned",
+            device_id=str(device.id),
+            serial=device.serial_number,
+            faults=[kind.value for kind, _ in faults],
+        )
+        return
+
+    window_start = now - timedelta(minutes=settings.device_fault_debounce_minutes)
+    if await repo.get_recent_alert(db, device.patient_id, DEVICE_FAULT_ALERT_KIND, window_start):
+        return
+
+    # Una sola alerta aunque haya varios bits: los tres estados se resuelven con
+    # la misma acción (sacar el equipo de servicio) y el orden de `device_faults`
+    # ya pone primero el más grave.
+    kind, message = faults[0]
+    db.add(
+        Alert(
+            patient_id=device.patient_id,
+            event_id=None,
+            kind=DEVICE_FAULT_ALERT_KIND,
+            severity=AlertSeverity.CRITICAL,
+            message=f"{device.serial_number}: {message}",
+        )
+    )
+    await logger.awarning(
+        "device_fault",
+        device_id=str(device.id),
+        serial=device.serial_number,
+        fault=kind.value,
+        status_flags=ctx.status_flags,
+    )
+
 
 _VEST_MESSAGES = {
     VestStatusEvent.SIGNAL_QUALITY_BAD: (
@@ -453,6 +745,10 @@ async def report_device_status(
     - El push va en background. La respuesta al equipo no puede depender de que
       `exp.host` conteste, porque el chaleco tiene la radio prendida esperándola.
     """
+    locked_device = await repo.get_device_for_update(db, ctx.device.id)
+    if locked_device is None:
+        raise _conflict("DEVICE_NOT_INGESTABLE", "El dispositivo ya no está disponible.")
+    ctx = replace(ctx, device=locked_device)
     device = ctx.device
     now = input_data.received_at
     device.last_seen_at = now
@@ -462,8 +758,37 @@ async def report_device_status(
         device.last_battery_pct = ctx.battery_pct
     if ctx.firmware_version:
         device.firmware_version = ctx.firmware_version
+    if input_data.data.sqi is not None:
+        device.last_sqi = input_data.data.sqi
+    battery_alert = _battery_alert(ctx)
+    if battery_alert is not None:
+        db.add(battery_alert)
+        await db.flush()
+
+    def schedule_battery_push() -> None:
+        if battery_alert is not None and device.patient_id is not None:
+            background.add_task(
+                notify_patient_task,
+                device.patient_id,
+                battery_message(battery_alert.id, device.battery_alert_level or "low"),
+            )
 
     event = input_data.data.event
+
+    # Los estados graves del equipo van por acá también, y no solo por la
+    # ingesta: justamente el caso que importa —la flash que no monta— es uno en
+    # el que NO hay tramas, así que no hay ningún POST de ingesta donde verlo.
+    await _raise_device_faults(db, ctx, now)
+
+    # `alive` es un latido y nada más: escribe telemetría y sale antes de tocar
+    # la colocación. Si siguiera de largo, `placement_ok` quedaría en `False`
+    # —porque no es `signal_recovered`— y la app del paciente le diría que el
+    # chaleco está mal puesto cada vez que el equipo dice que está vivo.
+    if event is VestStatusEvent.ALIVE:
+        await db.commit()
+        schedule_battery_push()
+        return DeviceStatusAckOut(notified=False, alertId=None, serverTime=now)
+
     # Se lee antes de pisarlo: es lo que distingue "sigue mal" de "se volvió a
     # soltar", y de eso depende si el debounce corresponde.
     was_bad = device.placement_ok is False
@@ -475,6 +800,7 @@ async def report_device_status(
     # aviso anterior es ruido.
     if event is VestStatusEvent.SIGNAL_RECOVERED or device.patient_id is None:
         await db.commit()
+        schedule_battery_push()
         return DeviceStatusAckOut(notified=False, alertId=None, serverTime=now)
 
     window_start = now - timedelta(minutes=settings.vest_status_debounce_minutes)
@@ -485,6 +811,7 @@ async def report_device_status(
     )
     if recent is not None:
         await db.commit()
+        schedule_battery_push()
         await logger.ainfo(
             "vest_status_debounced",
             device_id=str(device.id),
@@ -506,6 +833,7 @@ async def report_device_status(
     patient_id = device.patient_id
     await db.commit()
 
+    schedule_battery_push()
     background.add_task(notify_patient_task, patient_id, vest_message(alert_id, now.isoformat()))
     await logger.ainfo(
         "vest_status_alert",

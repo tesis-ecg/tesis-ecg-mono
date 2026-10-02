@@ -9,6 +9,7 @@ export const queryKeys = {
   users: ['users'] as const,
   doctors: ['doctors'] as const,
   ecg: ['ecg'] as const,
+  clinicalReports: ['clinical-reports'] as const,
 }
 
 export async function invalidateClinicalData(queryClient: QueryClient): Promise<void> {

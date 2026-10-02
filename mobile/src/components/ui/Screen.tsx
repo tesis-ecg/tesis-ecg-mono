@@ -1,12 +1,15 @@
 import { Platform, type RefreshControlProps } from "react-native";
 import { cloneElement, useState } from "react";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import {
+  KeyboardAwareScrollView,
+  KeyboardStickyView,
+} from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScrollView, View } from "@/tw";
 import { useTabBarSpace } from "@/components/TabBar";
 import { cn } from "@/lib/cn";
-import { modalHeaderFade } from "@/lib/gradients";
+import { modalFooterFade, modalHeaderFade } from "@/lib/gradients";
 
 interface ScreenProps {
   children: React.ReactNode;
@@ -16,8 +19,12 @@ interface ScreenProps {
   contentClassName?: string;
   /**
    * Reservar el safe area de arriba. `false` en las pantallas presentadas como
-   * modal: la hoja ya arranca por debajo del notch, así que sumarle el inset
-   * del sistema deja un hueco muerto de casi 60 pt sobre el título.
+   * modal: en iOS la hoja ya arranca por debajo del notch, así que sumarle el
+   * inset del sistema deja un hueco muerto de casi 60 pt sobre el título.
+   *
+   * **En Android no aplica**: ahí un `presentation: 'modal'` se dibuja a
+   * pantalla completa, sin card ni margen, así que el inset sigue haciendo
+   * falta y `Screen` lo reserva igual. Ver `TOP_INSET` más abajo.
    */
   topInset?: boolean;
   refreshControl?: React.ReactElement<RefreshControlProps>;
@@ -29,6 +36,18 @@ interface ScreenProps {
    * la barra de estado, y en un modal no.
    */
   fixedHeader?: React.ReactNode;
+  /**
+   * Barra fija al pie: el call-to-action que no se puede perder de vista.
+   *
+   * En el formulario de la bitácora el botón de enviar vivía al final del
+   * scroll, así que apenas se desplegaba el campo de "otro" quedaba fuera de
+   * pantalla y el paciente tenía que buscarlo. Acá se queda siempre visible, y
+   * sube con el teclado en vez de quedar tapado.
+   *
+   * El contenido reserva exactamente el alto que ocupe: se mide con `onLayout`
+   * y no se asume, por lo mismo que la tab bar (ver `TabBar`).
+   */
+  fixedFooter?: React.ReactNode;
 }
 
 /** Margen lateral de todas las pantallas. */
@@ -36,6 +55,19 @@ const GUTTER = "px-5";
 
 /** Aire entre el último elemento y lo que venga abajo. */
 const BOTTOM_GAP = 24;
+
+/**
+ * Cuánto respirar arriba en una pantalla modal.
+ *
+ * En iOS la presentación modal es una card que ya arranca debajo de la barra de
+ * estado: alcanza con un margen chico. En Android la misma presentación ocupa
+ * la pantalla entera, así que ese margen dejaba el título pegado al borde
+ * superior, por debajo de la hora y la batería. Es de las pocas diferencias que
+ * se sostienen entre plataformas y no contradice la regla de paridad visual:
+ * el objetivo es que las dos se vean igual **en pantalla**, y para eso el safe
+ * area tiene que respetar lo que cada sistema reserva.
+ */
+const MODAL_TOP_GAP = 16;
 
 /**
  * Contenedor de pantalla.
@@ -65,19 +97,26 @@ export function Screen({
   refreshControl,
   keyboardAware = false,
   fixedHeader,
+  fixedFooter,
 }: ScreenProps) {
   const insets = useSafeAreaInsets();
   const tabBarSpace = useTabBarSpace();
   const [fixedHeaderHeight, setFixedHeaderHeight] = useState(112);
-  const paddingTop = fixedHeader
-    ? fixedHeaderHeight
-    : topInset
-      ? insets.top + 8
-      : 16;
+  const [fixedFooterHeight, setFixedFooterHeight] = useState(96);
+  // Cuánto queda por encima del contenido, y también dónde arranca el header
+  // fijo si lo hay.
+  const topPadding =
+    topInset || Platform.OS === "android" ? insets.top + 8 : MODAL_TOP_GAP;
+  const paddingTop = fixedHeader ? fixedHeaderHeight : topPadding;
   // La barra ya incluye el safe area de abajo en su propia separación del
-  // borde: sumar `insets.bottom` otra vez duplicaría el hueco.
+  // borde: sumar `insets.bottom` otra vez duplicaría el hueco. Con una barra
+  // fija al pie manda ella, que también se lleva puesto el safe area.
   const paddingBottom =
-    (tabBarSpace > 0 ? tabBarSpace : insets.bottom) + BOTTOM_GAP;
+    (fixedFooter
+      ? fixedFooterHeight
+      : tabBarSpace > 0
+        ? tabBarSpace
+        : insets.bottom) + BOTTOM_GAP;
 
   /*
     El spinner del "tirá para actualizar" se dibuja arriba de todo del scroll,
@@ -112,7 +151,15 @@ export function Screen({
       style={{ flex: 1, backgroundColor: "#f6f6f6" }}
       contentContainerStyle={{ paddingTop, paddingBottom }}
       keyboardShouldPersistTaps="handled"
-      bottomOffset={16}
+      // Sin esto el campo enfocado se detiene justo arriba del teclado, que es
+      // donde ahora está la barra: el `KeyboardAwareScrollView` no la conoce.
+      // Los 24 de aire son para que el campo no quede lamiendo el botón.
+      bottomOffset={fixedFooter ? fixedFooterHeight + 24 : 16}
+      // Y el espacio para llegar hasta ahí. El `paddingBottom` que reserva la
+      // barra queda por debajo del teclado cuando se abre, o sea fuera de
+      // alcance: sin este extra el scroll se termina antes de poder subir el
+      // campo por encima del botón, y el último renglón quedaba tapado.
+      extraKeyboardSpace={fixedFooter ? fixedFooterHeight : 0}
       mode="insets"
       refreshControl={scrollRefreshControl}
     >
@@ -130,25 +177,45 @@ export function Screen({
     </ScrollView>
   );
 
-  if (!fixedHeader) return content;
+  if (!fixedHeader && !fixedFooter) return content;
 
   return (
     <View className={cn("flex-1 bg-gray-50", className)}>
       {content}
-      <View
-        className="absolute inset-x-0 top-0 z-10 px-4 pb-7"
-        // El `paddingTop` va por `style` y no por `className`: es dinámico y
-        // dejarlo también en las clases haría que uno pise al otro en silencio.
-        style={[
-          modalHeaderFade,
-          { paddingTop: topInset ? insets.top + 8 : 16 },
-        ]}
-        onLayout={(event) =>
-          setFixedHeaderHeight(event.nativeEvent.layout.height)
-        }
-      >
-        {fixedHeader}
-      </View>
+      {fixedHeader ? (
+        <View
+          className="absolute inset-x-0 top-0 z-10 px-4 pb-7"
+          // El `paddingTop` va por `style` y no por `className`: es dinámico y
+          // dejarlo también en las clases haría que uno pise al otro en silencio.
+          style={[modalHeaderFade, { paddingTop: topPadding }]}
+          onLayout={(event) =>
+            setFixedHeaderHeight(event.nativeEvent.layout.height)
+          }
+        >
+          {fixedHeader}
+        </View>
+      ) : null}
+      {fixedFooter ? (
+        // `KeyboardStickyView` y no un `absolute` a secas: con el teclado
+        // abierto la barra quedaría escondida detrás justo cuando el paciente
+        // está terminando de escribir, que es cuando más falta hace verla.
+        <KeyboardStickyView
+          style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+        >
+          <View
+            className={cn("pt-6", GUTTER)}
+            style={[
+              modalFooterFade,
+              { paddingBottom: (tabBarSpace > 0 ? tabBarSpace : insets.bottom) + 12 },
+            ]}
+            onLayout={(event) =>
+              setFixedFooterHeight(event.nativeEvent.layout.height)
+            }
+          >
+            {fixedFooter}
+          </View>
+        </KeyboardStickyView>
+      ) : null}
     </View>
   );
 }

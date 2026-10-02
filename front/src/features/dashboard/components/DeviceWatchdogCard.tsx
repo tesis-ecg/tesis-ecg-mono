@@ -1,84 +1,100 @@
-import { HeartPulse } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { BatteryLow, HeartPulse, WifiOff } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
-import { HolterStatusBadge } from '@/features/devices/components/HolterStatusBadge'
-import { Badge } from '@/components/ui/badge'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+import { cn } from '@/lib/utils'
 import { formatRelativeTime } from '@/lib/time'
 
 import { useDeviceWatchdog } from '../hooks/useDeviceWatchdog'
 import type { DeviceWatchdogReason } from '../types'
-import { rowNavProps } from './rowNav'
 import { WidgetCard } from './WidgetCard'
 
-const REASON: Record<DeviceWatchdogReason, { label: string; variant: 'destructive' | 'warning' }> =
-  {
-    offline: { label: 'Sin transmitir', variant: 'destructive' },
-    low_battery: { label: 'Batería baja', variant: 'warning' },
-    poor_signal: { label: 'Señal pobre', variant: 'warning' },
-  }
+const REASON: Record<
+  DeviceWatchdogReason,
+  { label: string; icon: typeof WifiOff; className: string }
+> = {
+  offline: { label: 'Sin transmitir', icon: WifiOff, className: 'text-error-700' },
+  low_battery: { label: 'Batería baja', icon: BatteryLow, className: 'text-warning-700' },
+  poor_signal: { label: 'Señal pobre', icon: HeartPulse, className: 'text-warning-700' },
+}
 
+/** Los cortes son los mismos que usa el backend para levantar la alerta. */
+function batteryTone(percent: number): string {
+  if (percent <= 15) return 'bg-error-400'
+  if (percent <= 35) return 'bg-warning-500'
+  return 'bg-success-500'
+}
+
+/**
+ * Los chalecos que necesitan una mano.
+ *
+ * Era una tabla de cinco columnas donde la batería era un número suelto ("12%")
+ * al lado de otros cuatro datos. Un porcentaje se compara mucho más rápido como
+ * barra: en la lista se ve de un vistazo cuál está por quedarse sin carga sin
+ * leer un solo número.
+ */
 export function DeviceWatchdogCard() {
-  const navigate = useNavigate()
   const { data, isLoading, isError } = useDeviceWatchdog()
 
   return (
     <WidgetCard
-      title="Watchdog de dispositivos"
+      title="Chalecos a revisar"
       icon={HeartPulse}
       to="/devices"
       isLoading={isLoading}
       isError={isError}
       isEmpty={!data || data.length === 0}
-      emptyTitle="Todos los dispositivos están sanos"
+      emptyTitle="Todos los chalecos están sanos"
     >
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Holter</TableHead>
-            <TableHead className="hidden md:table-cell">Estado</TableHead>
-            <TableHead>Batería</TableHead>
-            <TableHead className="hidden sm:table-cell">Última conexión</TableHead>
-            <TableHead>Motivo</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {data?.map((d) => {
-            const reason = REASON[d.reason]
-            return (
-              <TableRow
-                key={d.deviceId}
-                {...rowNavProps(
-                  navigate,
-                  `/devices/${d.deviceId}`,
-                  `Abrir dispositivo ${d.serial}`,
-                )}
+      <ul className="flex flex-col gap-1">
+        {data?.map((device) => {
+          const reason = REASON[device.reason]
+          const ReasonIcon = reason.icon
+          return (
+            <li key={device.deviceId}>
+              <Link
+                to={`/devices/${device.deviceId}`}
+                aria-label={`Abrir dispositivo ${device.serial}`}
+                className="flex flex-col gap-2 rounded-lg px-2 py-2.5 transition-colors hover:bg-gray-50 focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:outline-none"
               >
-                <TableCell className="font-medium text-gray-900">{d.serial}</TableCell>
-                <TableCell className="hidden md:table-cell">
-                  <HolterStatusBadge status={d.status} />
-                </TableCell>
-                <TableCell className="text-gray-600">
-                  {d.batteryPercent !== null ? `${d.batteryPercent}%` : '—'}
-                </TableCell>
-                <TableCell className="hidden sm:table-cell text-gray-600">
-                  {formatRelativeTime(d.lastSeenAt)}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={reason.variant}>{reason.label}</Badge>
-                </TableCell>
-              </TableRow>
-            )
-          })}
-        </TableBody>
-      </Table>
+                <div className="flex items-center gap-2">
+                  <span className="text-body2 flex-1 truncate font-medium text-gray-900">
+                    {device.serial}
+                  </span>
+                  <span className={cn('text-body3 flex items-center gap-1', reason.className)}>
+                    <ReasonIcon className="size-3.5" aria-hidden />
+                    {reason.label}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div
+                    className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-100"
+                    role="img"
+                    aria-label={
+                      device.batteryPercent !== null
+                        ? `Batería ${device.batteryPercent}%`
+                        : 'Batería sin reportar'
+                    }
+                  >
+                    {device.batteryPercent !== null && (
+                      <div
+                        className={cn('h-full rounded-full', batteryTone(device.batteryPercent))}
+                        style={{ width: `${device.batteryPercent}%` }}
+                      />
+                    )}
+                  </div>
+                  <span className="text-body3 w-9 shrink-0 text-right text-gray-700">
+                    {device.batteryPercent !== null ? `${device.batteryPercent}%` : '—'}
+                  </span>
+                  <span className="text-body3 w-24 shrink-0 text-right text-gray-500">
+                    {formatRelativeTime(device.lastSeenAt)}
+                  </span>
+                </div>
+              </Link>
+            </li>
+          )
+        })}
+      </ul>
     </WidgetCard>
   )
 }

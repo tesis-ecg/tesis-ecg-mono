@@ -101,7 +101,14 @@ describe('persistencia del reloj', () => {
     stubStorage()
   })
 
-  const clock = { bootId: 3, nextSeq: 162_944, t0Ms: 1200, uptimeMs: 36_000_000, batteryPct: 72 }
+  const clock = {
+    bootId: 3,
+    nextSeq: 162_944,
+    t0Ms: 1200,
+    uptimeMs: 36_000_000,
+    bootEpochMs: 1_757_000_000_000,
+    batteryPct: 72,
+  }
 
   it('el cursor sobrevive a un F5', () => {
     // Sin esto, recargar devolvía el equipo a `seq 0 / bootId 0`. El backend lo

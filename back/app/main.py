@@ -1,22 +1,25 @@
 import asyncio
 import hmac
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
+from asyncpg.exceptions import LockNotAvailableError
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 
 from app.core.config import settings as _settings
 from app.core.logging import setup_logging
+from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
 from app.core.workers import shutdown_workers, warmup_ml
 from app.db.session import engine
 from app.modules.alerts import router as alerts_router
@@ -67,6 +70,20 @@ app.add_middleware(
         "X-Device-Uptime-Ms",
         "X-Firmware-Version",
         "X-Battery-Pct",
+        "X-Bridge-Epoch-Ms",
+        "X-Time-Sync-Source",
+        "X-Time-Sync-Uncertainty-Ms",
+        # Diagnóstico del paquete de STATUS (`INTEGRACION.md` §11.1). El equipo
+        # real no pasa por CORS —no es un navegador—, pero el simulador de
+        # chaleco del dashboard sí, y sin esto los perdería en el preflight.
+        "X-Device-Lead-Flags",
+        "X-Device-Loss-Flags",
+        "X-Device-Status-Flags",
+        "X-Device-Backlog-Seconds",
+        "X-Device-Boot-Id",
+        "X-Device-Rssi",
+        "X-Device-Sqi",
+        "X-Device-Battery-Flags",
     ],
 )
 
@@ -89,11 +106,16 @@ _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # celular adjunte solo. Y tampoco manda `Origin` — React Native no es un
 # navegador —, así que sin la excepción todo POST del paciente daría 403 en
 # preview y producción.
-_ORIGIN_EXEMPT_PREFIXES = ("/ingest/", "/mobile/")
+_ORIGIN_EXEMPT_PREFIXES = ("/ingest/", "/mobile/", "/api/ingest/", "/api/mobile/")
+_CLINICAL_REPORT_FINALIZE_PATH = re.compile(r"^/studies/[^/]+/clinical-report/finalize$")
 
 
 def _is_origin_exempt(path: str) -> bool:
     return path.startswith(_ORIGIN_EXEMPT_PREFIXES)
+
+
+def _is_clinical_report_finalize(path: str) -> bool:
+    return _CLINICAL_REPORT_FINALIZE_PATH.fullmatch(path) is not None
 
 
 @app.middleware("http")
@@ -127,6 +149,39 @@ async def request_security_and_logging(
             },
             headers={"X-Request-ID": request_id},
         )
+
+    # FastAPI materializa `Body(..., bytes)` antes de entrar al handler. Este
+    # endpoint sólo recibe un ArrayBuffer generado por el portal, por lo que
+    # exigir Content-Length evita bufferizar una carga chunked o demasiado
+    # grande antes de que el servicio pueda responder 413.
+    if request.method == "POST" and _is_clinical_report_finalize(request.url.path):
+        content_length = request.headers.get("content-length")
+        try:
+            declared_size = int(content_length) if content_length is not None else None
+        except ValueError:
+            declared_size = None
+        if declared_size is None or declared_size < 0:
+            return JSONResponse(
+                status_code=411,
+                content={
+                    "code": "CONTENT_LENGTH_REQUIRED",
+                    "message": "El informe debe indicar el tamaño del PDF.",
+                    "fields": None,
+                    "requestId": request_id,
+                },
+                headers={"X-Request-ID": request_id},
+            )
+        if declared_size > MAX_CLINICAL_REPORT_PDF_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "code": "REPORT_TOO_LARGE",
+                    "message": "El PDF supera el límite de 20 MB.",
+                    "fields": None,
+                    "requestId": request_id,
+                },
+                headers={"X-Request-ID": request_id},
+            )
 
     started_at = time.perf_counter()
     response = await call_next(request)
@@ -181,6 +236,48 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "code": "VALIDATION",
             "message": "Los datos enviados no son válidos.",
             "fields": fields,
+            "requestId": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(DBAPIError)
+async def database_contention_handler(request: Request, exc: DBAPIError) -> Response:
+    """La contención de lock es una espera, no una falla del servidor.
+
+    Dos escrituras sobre la misma fila de `study` —una ingesta y el procesamiento
+    del lote anterior— se serializan con `FOR UPDATE`. La que pierde espera hasta
+    el `lock_timeout` y Postgres la aborta. Hasta acá eso caía en el handler
+    genérico y salía como `500 INTERNAL_ERROR`: el equipo lo leía como "el
+    backend está roto" cuando en realidad solo había que reintentar. Es
+    exactamente lo que reportó Biomédica el 8/9/2026.
+
+    Un `503` con `Retry-After` dice lo que pasa de verdad. El cursor no se movió,
+    así que reintentar el mismo lote es seguro — la ingesta es idempotente por
+    `seq` y esa es justamente la propiedad que hace que no se pierda señal.
+
+    Solo `LockNotAvailableError` (SQLSTATE 55P03), que es lo que levanta el
+    `lock_timeout`. El `statement_timeout` levanta `QueryCanceledError` (57014) y
+    ese NO es contención: es una consulta que de verdad tardó 15 s. Taparlo con
+    "reintentá en unos segundos" escondería una regresión del trabajo cuadrático
+    que este cambio vino a sacar, y dejaría al equipo reintentando contra algo
+    que no se va a arreglar solo. Ese cae al handler genérico y sale como 500,
+    que es lo que hay que ver.
+    """
+    if not isinstance(getattr(exc, "orig", None), LockNotAvailableError):
+        return await unhandled_exception_handler(request, exc)
+    await logger.awarning(
+        "database_contention",
+        request_id=getattr(request.state, "request_id", None),
+        route=request.url.path,
+    )
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "5"},
+        content={
+            "code": "SERVICE_BUSY",
+            "message": "El estudio está siendo actualizado. Reintentar en unos segundos.",
+            "fields": None,
             "requestId": getattr(request.state, "request_id", None),
         },
     )

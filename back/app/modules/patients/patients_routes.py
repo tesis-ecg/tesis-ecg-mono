@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.patient import PatientStudyStatus
@@ -196,6 +196,7 @@ async def send_patient_password_reset(
 @router.delete("/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_patient(
     patient_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -206,5 +207,6 @@ async def delete_patient(
             actor_id=scope.user.id,
         ),
         db,
+        background,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

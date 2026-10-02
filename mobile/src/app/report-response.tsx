@@ -29,11 +29,7 @@ export default function ReportResponse() {
   }, [catalogs.data])
 
   const header = (
-    <ReportModalHeader
-      title="Tu respuesta"
-      subtitle={report.data ? formatDateTime(report.data.occurredAt) : 'Respuesta al aviso'}
-      onClose={() => router.back()}
-    />
+    <ReportModalHeader title="Tu respuesta" onClose={() => router.back()} />
   )
 
   if (report.isLoading) {
@@ -63,7 +59,13 @@ export default function ReportResponse() {
 
   return (
     <Screen topInset={false} fixedHeader={header} contentClassName="gap-4">
-      <Badge label="Respondida" tone="success" className="self-start" />
+      {/* El momento que se respondió bajó del header al cuerpo: sin él la
+          pantalla no dice de cuándo es la respuesta que se está leyendo, y en
+          el historial hay varias. */}
+      <View className="flex-row items-center gap-2">
+        <Badge label="Respondida" tone="success" />
+        <Caption>{formatDateTime(report.data.occurredAt)}</Caption>
+      </View>
       <Card className="gap-3">
         <View className="flex-row items-center gap-3">
           <Activity size={22} color="#0b2185" />

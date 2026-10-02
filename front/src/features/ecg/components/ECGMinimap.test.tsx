@@ -31,9 +31,29 @@ beforeEach(() => {
   }
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('ECGMinimap annotations', () => {
+  it('deja vacías las columnas del eje temporal en las que no hubo señal', () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(10)
+    const withGap = signal()
+    withGap.samples = Float32Array.from([0, 1, 0.5, 0])
+    withGap.timestampsMs = Float64Array.from([
+      withGap.startTimestamp,
+      withGap.startTimestamp + 1_000,
+      withGap.startTimestamp + 9_000,
+      withGap.startTimestamp + 10_000,
+    ])
+    withGap.gapIndices = [2]
+
+    render(<ECGMinimap signal={withGap} viewport={null} onViewportChange={() => undefined} />)
+
+    expect(canvasContext.moveTo.mock.calls.map(([x]) => x)).toEqual([0.5, 1.5, 9.5])
+  })
+
   it('renderiza un marcador accesible y notifica su selección', () => {
     const onSelect = vi.fn()
     render(
@@ -61,6 +81,20 @@ describe('ECGMinimap annotations', () => {
     expect(onSelect).toHaveBeenCalledWith(signal().annotations[0])
   })
 
+  it('ocultar los avisos también saca sus colores de la vista previa', () => {
+    const { container } = render(
+      <ECGMinimap
+        signal={signal()}
+        viewport={null}
+        onViewportChange={() => undefined}
+        showAnnotations={false}
+      />,
+    )
+
+    expect(screen.queryByTestId('timeline-annotation-range-event-1')).toBeNull()
+    expect(container.innerHTML).not.toContain('--ecg-alert-')
+  })
+
   it('asigna un fondo visible a todas las severidades y ancho mínimo a eventos puntuales', () => {
     const severities: ECGAnnotationSeverity[] = ['low', 'medium', 'high', 'critical']
     const withAllSeverities = signal()
@@ -86,6 +120,33 @@ describe('ECGMinimap annotations', () => {
       expect(marker.getAttribute('style')).toContain(`--ecg-alert-${severity}-marker-bg`)
     }
   })
+
+  it('conserva el ancho lógico de un viewport más angosto que el selector visual', () => {
+    const onViewportChange = vi.fn()
+    const longSignal = signal()
+    longSignal.durationMs = 1_000_000
+    render(
+      <ECGMinimap
+        signal={longSignal}
+        viewport={{
+          startMs: longSignal.startTimestamp,
+          endMs: longSignal.startTimestamp + 1_000,
+        }}
+        onViewportChange={onViewportChange}
+      />,
+    )
+
+    const minimap = screen.getByLabelText('Navegación general del ECG')
+    minimap.getBoundingClientRect = () =>
+      ({ left: 0, right: 1_000, top: 0, bottom: 64, width: 1_000, height: 64 }) as DOMRect
+    Object.defineProperty(minimap, 'setPointerCapture', { value: vi.fn() })
+
+    fireEvent.pointerDown(minimap, { clientX: 500, pointerId: 1 })
+
+    expect(onViewportChange).toHaveBeenCalledOnce()
+    const next = onViewportChange.mock.calls[0][0]
+    expect(next.endMs - next.startMs).toBe(1_000)
+  })
 })
 
 function severityLabel(severity: ECGAnnotationSeverity): string {
@@ -98,6 +159,10 @@ function signal(): ECGSignal {
     durationMs: 10_000,
     samples: new Float32Array([0, 1, 0]),
     startTimestamp: 1_700_000_000_000,
+    // Grabación sin cortes: un eje uniforme y ningún hueco que dibujar.
+    timestampsMs: Float64Array.from([0, 1, 2], (i) => 1_700_000_000_000 + i * 5_000),
+    gapIndices: [],
+    timeline: [],
     annotations: [
       {
         id: 'event-1',

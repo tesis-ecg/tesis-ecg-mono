@@ -32,7 +32,12 @@ class HolterCreateOut(HolterOut):
 
 
 class HolterApiKeyOut(CamelModel):
-    """La API key en claro. Se devuelve UNA vez y no se puede volver a leer."""
+    """La API key en claro de un equipo. Solo la ve un admin.
+
+    La devuelven tanto el alta y la rotación como `GET /devices/{id}/api-key`:
+    la key se guarda cifrada además de hasheada, así que se puede volver a leer.
+    `rotatedAt` es cuándo se generó la que se está devolviendo.
+    """
 
     deviceId: uuid.UUID
     serial: str

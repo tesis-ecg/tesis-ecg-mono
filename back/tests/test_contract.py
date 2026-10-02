@@ -53,17 +53,36 @@ def test_openapi_publishes_the_api_key_rotation_endpoint() -> None:
     assert "/devices/{device_id}/api-key" in app.openapi()["paths"]
 
 
-def test_ecg_manifest_schema_is_version_2_shaped() -> None:
-    """`raw` nullable + `segments`: es lo que separa un estudio ingestado de uno
-    seedeado, y el front discrimina por ahí."""
+def test_ecg_manifest_schema_is_version_3_shaped() -> None:
+    """`raw` nullable + `segments` + `timeline`.
+
+    `raw` contra `segments` es lo que separa un estudio ingestado de uno
+    seedeado, y el front discrimina por ahí. `timeline` es lo que agrega la v3:
+    sin él, el visor solo puede dibujar tiempo transcurrido sobre un buffer que
+    no deja huecos, y la hora se despega de la realidad en cuanto el chaleco deja
+    de grabar un rato.
+    """
     schema = app.openapi()["components"]["schemas"]["StudyEcgManifestOut"]
 
     properties = schema["properties"]
-    assert properties["formatVersion"]["default"] == 2
+    assert properties["formatVersion"]["default"] == 3
     assert "segments" in properties
+    assert "timeline" in properties
     assert "isSimulated" in properties
     assert "status" in properties
     assert "anyOf" in properties["raw"], "raw tiene que poder ser null"
+
+
+def test_pyramid_levels_are_chunked() -> None:
+    """Un nivel es una lista de chunks, no un objeto único.
+
+    El objeto único había que reescribirlo entero en cada lote, que es lo que
+    hacía crecer el procesamiento con el estudio y terminaba en los `500` bajo
+    ingesta sostenida.
+    """
+    schema = app.openapi()["components"]["schemas"]["StudyEcgLevelOut"]
+    assert "chunks" in schema["properties"]
+    assert "url" not in schema["properties"]
 
 
 def test_validation_errors_use_stable_envelope() -> None:

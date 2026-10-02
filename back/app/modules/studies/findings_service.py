@@ -28,7 +28,12 @@ from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLev
 from app.db.models.study import Study
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.studies import studies_repository as repo
-from app.modules.studies.annotations import STUDY_SCOPE, EventView, event_view
+from app.modules.studies.annotations import (
+    STUDY_SCOPE,
+    EventView,
+    event_view,
+    wall_clock_resolver,
+)
 from app.modules.studies.studies_schemas import (
     StudyFindingGroupOut,
     StudyFindingOut,
@@ -62,6 +67,8 @@ def _finding_out(view: EventView) -> StudyFindingOut:
         severity=view.severity,
         startOffsetMs=view.start_ms,
         endOffsetMs=view.end_ms,
+        startEpochMs=view.start_epoch_ms,
+        endEpochMs=view.end_epoch_ms,
         confidenceScore=view.event.confidence_score,
         modelVersion=view.event.model_version,
         validationStatus=view.event.validation_status.value,
@@ -108,6 +115,8 @@ def _build_group(key: str, views: list[EventView], items_per_group: int) -> Stud
         ),
         firstOffsetMs=min(view.start_ms for view in span),
         lastOffsetMs=max(view.end_ms for view in span),
+        firstEpochMs=min(view.start_epoch_ms for view in span),
+        lastEpochMs=max(view.end_epoch_ms for view in span),
         items=[_finding_out(view) for view in ranked],
     )
 
@@ -167,11 +176,19 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
     result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
     if result is None:
         raise _not_found()
-    study, _, _, _ = result
+    study, _, _, _, _ = result
 
     events = await repo.list_ecg_events(db, study.id)
     intervals = await repo.list_quality_intervals(db, study.id)
-    views = [view for view in (event_view(event, study) for event in events) if view is not None]
+    # La misma traducción a hora de pared que el manifest: el panel lleva al
+    # visor por `startEpochMs`, y si las dos resoluciones difirieran el click
+    # caería al lado de la banda en cuanto el estudio tenga un hueco.
+    to_epoch_ms = wall_clock_resolver(study, await repo.list_timeline_segments(db, study.id))
+    views = [
+        view
+        for view in (event_view(event, study, to_epoch_ms) for event in events)
+        if view is not None
+    ]
 
     grouped: dict[str, list[EventView]] = {}
     ungrouped: list[EventView] = []

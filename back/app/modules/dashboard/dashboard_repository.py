@@ -1,7 +1,7 @@
 """Dashboard repository."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import case, func, or_, select
@@ -11,8 +11,10 @@ from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
+from app.db.models.patient_report import PatientReport
 from app.db.models.study import Study, StudyStatus
 from app.modules._alert_study import alert_study_id
+from app.modules.dashboard.dashboard_time import DASHBOARD_TIMEZONE_NAME
 
 # El LIMIT tiene que cortar por la misma clave con la que el service ordena, o las
 # alertas críticas viejas quedan afuera del widget cuando hay muchas recientes leves.
@@ -295,3 +297,209 @@ async def list_watchdog_devices(
         statement = statement.where(Patient.doctor_id == doctor_id)
     result = await db.execute(statement.limit(limit))
     return [(device, str(reason_value)) for device, reason_value in result.all()]
+
+
+# --- Actividad (series y totales para los gráficos de la home) ---------------
+#
+# Nada de esto necesita histórico ni tablas nuevas: `alert`, `patient_report`,
+# `study` y `patient` ya guardan cuándo apareció cada fila. Lo que faltaba era
+# preguntárselo.
+
+
+def _pending_alert_filters(patient_scope: list[Any]) -> list[Any]:
+    """Los mismos filtros que `count_pending_alerts`.
+
+    Extraído para que el donut por severidad no pueda desviarse del KPI
+    agregado que se muestra en la misma pantalla.
+    """
+    return [
+        Alert.deleted_at.is_(None),
+        Alert.acknowledged_at.is_(None),
+        Patient.deleted_at.is_(None),
+        or_(ECGEvent.id.is_(None), ECGEvent.deleted_at.is_(None)),
+        *patient_scope,
+    ]
+
+
+async def count_pending_alerts_by_severity(
+    db: AsyncSession, doctor_id: uuid.UUID | None
+) -> dict[str, int]:
+    patient_scope = [] if doctor_id is None else [Patient.doctor_id == doctor_id]
+    statement = (
+        select(Alert.severity, func.count())
+        .select_from(Alert)
+        .join(Patient, Alert.patient_id == Patient.id)
+        .outerjoin(ECGEvent, Alert.event_id == ECGEvent.id)
+        .where(*_pending_alert_filters(patient_scope))
+        .group_by(Alert.severity)
+    )
+    result = await db.execute(statement)
+    return {severity.value.lower(): int(count or 0) for severity, count in result.all()}
+
+
+async def count_fleet(
+    db: AsyncSession, doctor_id: uuid.UUID | None, stale_before: datetime
+) -> tuple[int, int]:
+    """(asignados, transmitiendo). Mismo corte de frescura que el watchdog."""
+    patient_scope = [] if doctor_id is None else [Patient.doctor_id == doctor_id]
+    base = [
+        Device.deleted_at.is_(None),
+        Device.status == DeviceStatus.ASSIGNED,
+        Device.patient_id.is_not(None),
+        Patient.deleted_at.is_(None),
+        *patient_scope,
+    ]
+    assigned = (
+        select(func.count())
+        .select_from(Device)
+        .join(Patient, Device.patient_id == Patient.id)
+        .where(*base)
+        .scalar_subquery()
+    )
+    transmitting = (
+        select(func.count())
+        .select_from(Device)
+        .join(Patient, Device.patient_id == Patient.id)
+        .where(*base, Device.last_seen_at.is_not(None), Device.last_seen_at >= stale_before)
+        .scalar_subquery()
+    )
+    row = (await db.execute(select(assigned, transmitting))).one()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+async def count_activity_by_day(
+    db: AsyncSession, doctor_id: uuid.UUID | None, since: datetime
+) -> tuple[dict[date, int], dict[date, int], dict[date, int]]:
+    """Alertas, registros del paciente y estudios iniciados, por día desde `since`.
+
+    Devuelve tres mapas dispersos: los días sin filas simplemente no están. El
+    relleno con ceros lo hace el service, que es el que sabe cuántos días tiene
+    que dibujar el gráfico.
+    """
+    patient_scope = [] if doctor_id is None else [Patient.doctor_id == doctor_id]
+
+    alerts = (
+        select(
+            func.date(func.timezone(DASHBOARD_TIMEZONE_NAME, Alert.created_at)).label("day"),
+            func.count(),
+        )
+        .select_from(Alert)
+        .join(Patient, Alert.patient_id == Patient.id)
+        .where(
+            Alert.deleted_at.is_(None),
+            Alert.created_at >= since,
+            Patient.deleted_at.is_(None),
+            *patient_scope,
+        )
+        .group_by("day")
+    )
+    reports = (
+        select(
+            func.date(func.timezone(DASHBOARD_TIMEZONE_NAME, PatientReport.occurred_at)).label(
+                "day"
+            ),
+            func.count(),
+        )
+        .select_from(PatientReport)
+        .join(Patient, PatientReport.patient_id == Patient.id)
+        .where(
+            PatientReport.deleted_at.is_(None),
+            PatientReport.occurred_at >= since,
+            Patient.deleted_at.is_(None),
+            *patient_scope,
+        )
+        .group_by("day")
+    )
+    studies = (
+        select(
+            func.date(func.timezone(DASHBOARD_TIMEZONE_NAME, Study.started_at)).label("day"),
+            func.count(),
+        )
+        .select_from(Study)
+        .join(Patient, Study.patient_id == Patient.id)
+        .where(
+            Study.deleted_at.is_(None),
+            Study.started_at >= since,
+            Patient.deleted_at.is_(None),
+            *patient_scope,
+        )
+        .group_by("day")
+    )
+
+    return (
+        {day: int(count or 0) for day, count in (await db.execute(alerts)).all()},
+        {day: int(count or 0) for day, count in (await db.execute(reports)).all()},
+        {day: int(count or 0) for day, count in (await db.execute(studies)).all()},
+    )
+
+
+async def count_windows(
+    db: AsyncSession, doctor_id: uuid.UUID | None, current_since: datetime, previous_since: datetime
+) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+    """Totales de dos ventanas consecutivas para alertas, estudios y pacientes.
+
+    Una sola ida a la base con seis subconsultas: son contadores chicos y la home
+    ya resuelve todo en un request.
+    """
+    patient_scope = [] if doctor_id is None else [Patient.doctor_id == doctor_id]
+
+    def alerts_between(start: datetime, end: datetime | None) -> Any:
+        statement = (
+            select(func.count())
+            .select_from(Alert)
+            .join(Patient, Alert.patient_id == Patient.id)
+            .where(
+                Alert.deleted_at.is_(None),
+                Alert.created_at >= start,
+                Patient.deleted_at.is_(None),
+                *patient_scope,
+            )
+        )
+        if end is not None:
+            statement = statement.where(Alert.created_at < end)
+        return statement.scalar_subquery()
+
+    def studies_between(start: datetime, end: datetime | None) -> Any:
+        statement = (
+            select(func.count())
+            .select_from(Study)
+            .join(Patient, Study.patient_id == Patient.id)
+            .where(
+                Study.deleted_at.is_(None),
+                Study.started_at >= start,
+                Patient.deleted_at.is_(None),
+                *patient_scope,
+            )
+        )
+        if end is not None:
+            statement = statement.where(Study.started_at < end)
+        return statement.scalar_subquery()
+
+    def patients_between(start: datetime, end: datetime | None) -> Any:
+        statement = (
+            select(func.count())
+            .select_from(Patient)
+            .where(
+                Patient.deleted_at.is_(None),
+                Patient.created_at >= start,
+                *patient_scope,
+            )
+        )
+        if end is not None:
+            statement = statement.where(Patient.created_at < end)
+        return statement.scalar_subquery()
+
+    row = (
+        await db.execute(
+            select(
+                alerts_between(current_since, None),
+                alerts_between(previous_since, current_since),
+                studies_between(current_since, None),
+                studies_between(previous_since, current_since),
+                patients_between(current_since, None),
+                patients_between(previous_since, current_since),
+            )
+        )
+    ).one()
+    values = [int(value or 0) for value in row]
+    return (values[0], values[1]), (values[2], values[3]), (values[4], values[5])

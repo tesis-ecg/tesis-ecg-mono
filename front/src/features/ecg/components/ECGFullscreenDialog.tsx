@@ -9,9 +9,11 @@ import {
 } from '@/components/ui/dialog'
 
 import { focusViewerOnAnnotation } from '../annotationMeta'
+import type { AmplitudeMode, PaperSpeed } from '../paperScale'
 import type { ECGAnnotation, ECGSignal, ECGViewerHandle, ECGViewportChange } from '../types'
 import { ECGFindingsPanel } from './ECGFindingsPanel'
 import { ECGMinimap } from './ECGMinimap'
+import { ECGPaperControls } from './ECGPaperControls'
 import { ECGViewer } from './ECGViewer'
 import { ECGZoomControls } from './ECGZoomControls'
 
@@ -26,15 +28,24 @@ interface ECGFullscreenDialogProps {
   signal: ECGSignal
   /** Viewport actual del viewer chico — la modal arranca mostrando lo mismo. */
   initialViewport: ECGViewportChange | null
+  initialCursorMs?: number | null
   open: boolean
   onOpenChange: (open: boolean) => void
   /**
    * Si está provisto, se invoca con el último viewport antes de cerrar — útil
    * para que el viewer chico recupere la posición del viewer grande.
    */
-  onClose?: (lastViewport: ECGViewportChange | null) => void
+  onClose?: (lastViewport: ECGViewportChange | null, lastCursorMs: number | null) => void
+  /** Calibración compartida con el visor principal y el informe. */
+  paperSpeed: PaperSpeed
+  amplitude: AmplitudeMode
+  onPaperSpeedChange: (value: PaperSpeed) => void
+  onAmplitudeChange: (value: AmplitudeMode) => void
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotationId: string) => void
+  /** Avisos dibujados sobre el gráfico; compartido con la vista principal. */
+  showAnnotations?: boolean
+  onShowAnnotationsChange?: (show: boolean) => void
 }
 
 /**
@@ -53,25 +64,39 @@ interface ECGFullscreenDialogProps {
 export function ECGFullscreenDialog({
   signal,
   initialViewport,
+  initialCursorMs,
   open,
   onOpenChange,
   onClose,
+  paperSpeed,
+  amplitude,
+  onPaperSpeedChange,
+  onAmplitudeChange,
   selectedAnnotationId = null,
   onAnnotationSelect,
+  showAnnotations = true,
+  onShowAnnotationsChange,
 }: ECGFullscreenDialogProps) {
   // Snapshot del viewport entregado por el padre cuando se abre la modal.
   // Sobrevive en una ref para que `onClose` lo pueda usar después de que el
   // body se desmontó.
   const closeViewportRef = useRef<ECGViewportChange | null>(initialViewport)
+  const closeCursorRef = useRef<number | null>(initialCursorMs ?? null)
+
+  useEffect(() => {
+    if (!open) return
+    closeViewportRef.current = initialViewport
+    closeCursorRef.current = initialCursorMs ?? null
+  }, [initialCursorMs, initialViewport, open])
 
   const closeDialog = () => {
-    onClose?.(closeViewportRef.current)
+    onClose?.(closeViewportRef.current, closeCursorRef.current)
     onOpenChange(false)
   }
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
-      onClose?.(closeViewportRef.current)
+      onClose?.(closeViewportRef.current, closeCursorRef.current)
     }
     onOpenChange(nextOpen)
   }
@@ -89,12 +114,22 @@ export function ECGFullscreenDialog({
           <ECGFullscreenBody
             signal={signal}
             initialViewport={initialViewport}
+            initialCursorMs={initialCursorMs ?? null}
             onViewportChange={(vp) => {
               closeViewportRef.current = vp
             }}
+            onCursorChange={(cursorMs) => {
+              closeCursorRef.current = cursorMs
+            }}
             onMinimize={closeDialog}
             initialSelectedAnnotationId={selectedAnnotationId}
+            paperSpeed={paperSpeed}
+            amplitude={amplitude}
+            onPaperSpeedChange={onPaperSpeedChange}
+            onAmplitudeChange={onAmplitudeChange}
             onAnnotationSelect={onAnnotationSelect}
+            showAnnotations={showAnnotations}
+            onShowAnnotationsChange={onShowAnnotationsChange}
           />
         )}
       </DialogContent>
@@ -105,22 +140,42 @@ export function ECGFullscreenDialog({
 interface ECGFullscreenBodyProps {
   signal: ECGSignal
   initialViewport: ECGViewportChange | null
+  initialCursorMs: number | null
   onViewportChange: (viewport: ECGViewportChange) => void
+  onCursorChange: (cursorMs: number) => void
   onMinimize: () => void
   initialSelectedAnnotationId: string | null
+  paperSpeed: PaperSpeed
+  amplitude: AmplitudeMode
+  onPaperSpeedChange: (value: PaperSpeed) => void
+  onAmplitudeChange: (value: AmplitudeMode) => void
   onAnnotationSelect?: (annotationId: string) => void
+  /** Avisos dibujados sobre el gráfico; compartido con la vista principal. */
+  showAnnotations?: boolean
+  onShowAnnotationsChange?: (show: boolean) => void
 }
 
 function ECGFullscreenBody({
   signal,
   initialViewport,
+  initialCursorMs,
   onViewportChange,
+  onCursorChange,
   onMinimize,
   initialSelectedAnnotationId,
+  paperSpeed,
+  amplitude,
+  onPaperSpeedChange,
+  onAmplitudeChange,
   onAnnotationSelect,
+  showAnnotations = true,
+  onShowAnnotationsChange,
 }: ECGFullscreenBodyProps) {
   const viewerRef = useRef<ECGViewerHandle | null>(null)
   const viewerSlotRef = useRef<HTMLDivElement | null>(null)
+  // La escala declarada viene del padre. Solo el estado de zoom libre queda
+  // local: depende del ancho y el viewport de esta instancia del visor.
+  const [onScale, setOnScale] = useState(initialViewport?.isClinicalScale ?? true)
   const [viewport, setViewport] = useState<ECGViewportChange | null>(initialViewport)
   const [viewerHeight, setViewerHeight] = useState(360)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(
@@ -167,6 +222,18 @@ function ECGFullscreenBody({
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
+  const handleResetScale = () => {
+    viewerRef.current?.resetScale()
+    setOnScale(true)
+  }
+  const handlePaperSpeedChange = (value: PaperSpeed) => {
+    onPaperSpeedChange(value)
+    setOnScale(true)
+  }
+  const handleAmplitudeChange = (value: AmplitudeMode) => {
+    onAmplitudeChange(value)
+    setOnScale(true)
+  }
   const handleAnnotationSelect = (annotation: ECGAnnotation) => {
     focusViewerOnAnnotation(viewerRef.current, annotation)
     setSelectedAnnotationId(annotation.id)
@@ -190,12 +257,22 @@ function ECGFullscreenBody({
         />
       </DialogHeader>
 
+      <ECGPaperControls
+        paperSpeed={paperSpeed}
+        amplitude={amplitude}
+        onPaperSpeedChange={handlePaperSpeedChange}
+        onAmplitudeChange={handleAmplitudeChange}
+        onScale={onScale}
+        onResetScale={handleResetScale}
+      />
+
       <ECGMinimap
         signal={signal}
         viewport={viewport}
         onViewportChange={handleMinimapChange}
         selectedAnnotationId={selectedAnnotationId}
         onAnnotationSelect={handleAnnotationSelect}
+        showAnnotations={showAnnotations}
       />
 
       <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
@@ -204,10 +281,16 @@ function ECGFullscreenBody({
             ref={viewerRef}
             signal={signal}
             height={viewerHeight}
+            paperSpeed={paperSpeed}
+            amplitude={amplitude}
             initialViewport={initialViewport ?? undefined}
+            initialCursorMs={initialCursorMs ?? undefined}
             onViewportChange={handleViewportChange}
+            onCursorChange={onCursorChange}
+            onScaleMatchChange={setOnScale}
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={handleAnnotationSelect}
+            showAnnotations={showAnnotations}
           />
         </div>
         <ECGFindingsPanel
@@ -215,6 +298,8 @@ function ECGFullscreenBody({
           recordingStartMs={signal.startTimestamp}
           selectedAnnotationId={selectedAnnotationId}
           onAnnotationSelect={handleAnnotationSelect}
+          showOnChart={showAnnotations}
+          onShowOnChartChange={onShowAnnotationsChange}
           className="overflow-hidden rounded-md border border-border bg-card p-3"
         />
       </div>

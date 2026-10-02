@@ -1,3 +1,5 @@
+export const CLINICAL_TIME_ZONE = 'America/Argentina/Buenos_Aires'
+
 /**
  * Devuelve una representación relativa en es-AR. Para el dashboard médico es
  * suficiente con minutos/horas/días — no nos importa precisión sub-minuto.
@@ -32,7 +34,12 @@ export function formatDate(iso: string | null | undefined): string {
   if (!iso) return '—'
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  return date.toLocaleDateString('es-AR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: CLINICAL_TIME_ZONE,
+  })
 }
 
 export function formatDateTime(iso: string | null | undefined): string {
@@ -40,11 +47,13 @@ export function formatDateTime(iso: string | null | undefined): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return '—'
   return date.toLocaleString('es-AR', {
+    timeZone: CLINICAL_TIME_ZONE,
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   })
 }
 

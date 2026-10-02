@@ -1,3 +1,5 @@
+import { CLINICAL_TIME_ZONE } from '@/lib/time'
+
 /**
  * Formato de timestamp para el ECG: `HH:MM:SS.mmm`. Acepta cualquier
  * timestamp en ms (relativo al estudio o absoluto epoch).
@@ -24,4 +26,38 @@ export function formatTimestampShort(ms: number): string {
   const s = Math.floor((abs % 60000) / 1000)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(h)}:${pad(m)}:${pad(s)}`
+}
+
+/**
+ * Hora de pared local, `HH:MM:SS`. Para el eje del ECG.
+ *
+ * El backend manda epoch UTC; el portal clínico muestra hora de Buenos Aires.
+ */
+export function formatWallClockShort(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString(undefined, {
+    timeZone: CLINICAL_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
+/** Hora de pared local con milisegundos, para el cursor: `HH:MM:SS.mmm`. */
+export function formatWallClock(epochMs: number): string {
+  const millis = String(Math.abs(Math.floor(epochMs)) % 1000).padStart(3, '0')
+  return `${formatWallClockShort(epochMs)}.${millis}`
+}
+
+/** Fecha y hora completas, para tooltips donde el día importa. */
+export function formatWallClockDateTime(epochMs: number): string {
+  return new Date(epochMs).toLocaleString(undefined, {
+    timeZone: CLINICAL_TIME_ZONE,
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }

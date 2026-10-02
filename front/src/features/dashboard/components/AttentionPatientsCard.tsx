@@ -30,13 +30,13 @@ export function AttentionPatientsCard() {
       isEmpty={!data || data.length === 0}
       emptyTitle="No hay pacientes en seguimiento"
     >
-      <Table>
+      <Table className="[&_td]:h-14 [&_th]:h-12">
         <TableHeader>
           <TableRow>
             <TableHead>Paciente</TableHead>
             <TableHead>Estado</TableHead>
             <TableHead className="hidden sm:table-cell">Último dato</TableHead>
-            <TableHead className="hidden lg:table-cell">Dispositivo</TableHead>
+            <TableHead className="hidden 2xl:table-cell">Dispositivo</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -52,7 +52,7 @@ export function AttentionPatientsCard() {
               <TableCell className="hidden sm:table-cell text-gray-600">
                 {formatRelativeTime(p.lastDataReceivedAt)}
               </TableCell>
-              <TableCell className="hidden lg:table-cell text-gray-600">
+              <TableCell className="hidden 2xl:table-cell text-gray-600">
                 {p.deviceSerial ?? '—'}
               </TableCell>
             </TableRow>

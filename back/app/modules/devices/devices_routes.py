@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.device import DeviceStatus
@@ -92,11 +92,12 @@ async def update_holter(
 @router.delete("/{device_id}", response_model=HolterOut)
 async def delete_holter(
     device_id: uuid.UUID,
+    background: BackgroundTasks,
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
     return await service.delete_holter(
-        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db
+        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db, background
     )
 
 
@@ -144,12 +145,14 @@ async def assign_holter(
 @router.post("/{device_id}/unassign", response_model=HolterOut)
 async def unassign_holter(
     device_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
     return await service.unassign_holter(
         HolterIdInput(doctor_id=scope.doctor_id, device_id=device_id, actor_id=scope.user.id),
         db,
+        background,
     )
 
 
@@ -157,6 +160,7 @@ async def unassign_holter(
 async def reassign_holter(
     device_id: uuid.UUID,
     data: ReassignHolterRequest,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> HolterOut:
@@ -168,6 +172,23 @@ async def reassign_holter(
             actor_id=scope.user.id,
         ),
         db,
+        background,
+    )
+
+
+@router.get("/{device_id}/api-key", response_model=HolterApiKeyOut)
+async def get_holter_api_key(
+    device_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> HolterApiKeyOut:
+    """Devuelve la API key en claro del equipo, para grabarla en su firmware.
+
+    Solo admin: la key habilita a subir señal como ese dispositivo, así que
+    entregarla es equivalente a entregar el equipo. Cada lectura queda auditada.
+    """
+    return await service.get_api_key(
+        HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db
     )
 
 
@@ -177,10 +198,10 @@ async def rotate_holter_api_key(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> HolterApiKeyOut:
-    """Rota la API key del equipo y la devuelve en claro **una sola vez**.
+    """Rota la API key del equipo: genera una nueva y deja la anterior inútil.
 
-    Solo admin: la key habilita a subir señal como ese dispositivo, así que
-    entregarla es equivalente a entregar el equipo.
+    Solo admin, por lo mismo que el GET. Es inmediato y no se puede deshacer —
+    el chaleco que tenga cargada la key vieja empieza a recibir 401.
     """
     return await service.rotate_api_key(
         HolterIdInput(doctor_id=None, device_id=device_id, actor_id=current_user.id), db

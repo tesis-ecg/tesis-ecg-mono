@@ -1,19 +1,23 @@
 """Persistencia de lo que produce el motor de detección.
 
-Separado de `processing.py` porque tiene una responsabilidad propia y difícil:
-**ser idempotente**. Un lote se puede reprocesar —por un reintento, por una
-corrección de umbrales, por un `POST /reprocess` futuro— y eso no puede duplicar
-hallazgos, ni inflar el banco de plantillas, ni romper una alerta que el paciente
-ya recibió por push.
+Separado de `processing.py` porque tiene una responsabilidad propia: escribir
+hallazgos, calidad y banco de plantillas sin duplicar nada ni inflar los conteos.
+
+**Un lote que falla no deja nada a medias.** Todo lo de acá corre dentro de la
+transacción del lote: si algo falla, `processing._mark_failed` hace rollback de
+los eventos, la calidad, las alertas y `study.ml_state` juntos, y el reintento
+arranca desde el mismo estado. Por eso no hay un borrado previo por lote: un
+lote `DONE` no se vuelve a procesar y uno `FAILED` no dejó nada escrito.
 
 Tres reglas:
 
 1. `model_version IS NOT NULL` es el único predicado que dice "esto lo escribió el
-   motor". Los hallazgos manuales de `simulate-anomaly` y los seeds legacy lo
-   tienen en NULL y **nunca se tocan**.
-2. Un evento con `alert` colgada **sobrevive al reproceso**. Ya notificó al
-   paciente y puede tener un `patient_report` respondiéndolo; borrarlo dejaría
-   una notificación apuntando a nada.
+   motor". Los hallazgos manuales de `simulate-anomaly`, los seeds legacy y la
+   Capa A (`"source": "firmware_flags"`, que escribe `processing._persist_events`)
+   lo tienen en NULL y **nunca se tocan**.
+2. `dedupe_key` hace idempotente la escritura de un mismo hallazgo: los episodios
+   entran con `ON CONFLICT DO NOTHING` y los encabezados por morfología se
+   upsertean, así que su conteo refleja el total del estudio.
 3. El banco no vuelve a plegar un lote que ya plegó (`consumedBatchIds`).
 """
 
@@ -23,7 +27,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,9 +42,7 @@ from app.ml import morphology
 from app.ml.contracts import Finding
 from app.ml.morphology import TemplateBank
 from app.ml.pipeline import PIPELINE_VERSION, PipelineConfig, PipelineResult, empty_bank
-
-#: Severidades que despiertan al paciente, igual que en `derive_events`.
-_PUSHABLE = {"HIGH": 1, "CRITICAL": 2}
+from app.modules.ingest.pushable import PUSH_RANK, Pushable, most_severe
 
 #: Predicado de `uq_ecg_event_dedupe`. Postgres **no infiere un índice parcial**
 #: solo por sus columnas: sin repetir el WHERE, el `ON CONFLICT` falla con "there
@@ -114,20 +116,6 @@ async def count_anomalies(db: AsyncSession, study_id: uuid.UUID) -> int:
     return int(total or 0)
 
 
-async def _clear_previous(db: AsyncSession, batch_id: uuid.UUID) -> None:
-    alerted = select(Alert.event_id).where(Alert.event_id.is_not(None))
-    await db.execute(
-        delete(ECGEvent).where(
-            ECGEvent.batch_id == batch_id,
-            ECGEvent.model_version.is_not(None),
-            ECGEvent.id.not_in(alerted),
-        )
-    )
-    await db.execute(
-        delete(SignalQualityInterval).where(SignalQualityInterval.batch_id == batch_id)
-    )
-
-
 def _event_row(finding: Finding, batch: ECGBatch, study: Study, sample_rate: int) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "kind": finding.kind,
@@ -164,15 +152,18 @@ async def persist_analysis(
     batch: ECGBatch,
     result: PipelineResult,
     sample_rate: int,
-) -> tuple[int, tuple[int, uuid.UUID] | None]:
+) -> tuple[int, Pushable | None]:
     """Escribe hallazgos, calidad y banco. Devuelve `(cuántos, alerta a notificar)`.
+
+    `cuántos` son las filas escritas o actualizadas, para el log: el
+    `events_count` del estudio sale de `recount_events`, no de acá.
 
     La alerta viaja hacia arriba en vez de notificarse acá: la transacción
     todavía no cerró, y mandar un push con un `alertId` que después se descarta
-    dejaría al paciente tocando una notificación rota.
+    dejaría al paciente tocando una notificación rota. Es el mismo `Pushable` de
+    la Capa A, con su `kind`, así que el aviso de una pausa del motor se titula
+    igual que cualquier otro (`anomaly_title`).
     """
-    await _clear_previous(db, batch.id)
-
     rows = [_event_row(finding, batch, study, sample_rate) for finding in result.findings]
     inserted: dict[str, uuid.UUID] = {}
     if rows:
@@ -259,14 +250,13 @@ async def _create_alerts(
     study: Study,
     findings: tuple[Finding, ...],
     inserted: dict[str, uuid.UUID],
-) -> tuple[int, uuid.UUID] | None:
+) -> Pushable | None:
     """Una alerta por hallazgo realmente nuevo que la pida.
 
-    Solo por los que el `INSERT` escribió: un hallazgo que ya existía —porque
-    sobrevivió al reproceso con su alerta— no puede generar un segundo push del
-    mismo evento.
+    Solo por los que el `INSERT` escribió: un hallazgo cuyo `dedupe_key` ya
+    existía no puede generar un segundo push del mismo evento.
     """
-    pushable: tuple[int, uuid.UUID] | None = None
+    pushable: Pushable | None = None
     for finding in findings:
         if finding.alert_message is None:
             continue
@@ -282,18 +272,23 @@ async def _create_alerts(
         )
         db.add(alert)
         await db.flush()
-        rank = _PUSHABLE.get(finding.severity.name)
-        if rank is not None and (pushable is None or rank > pushable[0]):
-            pushable = (rank, alert.id)
+        rank = PUSH_RANK.get(finding.severity)
+        if rank is not None:
+            pushable = most_severe(
+                pushable, Pushable(rank=rank, alert_id=alert.id, kind=finding.kind)
+            )
     return pushable
 
 
 async def recount_events(db: AsyncSession, study: Study) -> None:
     """Recalcula `study.events_count` en vez de incrementarlo.
 
-    Un `+= creados` se desincroniza en el primer reproceso, porque el borrado
-    previo no lo descuenta. El `COUNT(*)` sobre `ix_ecg_event_study_ts` con unos
-    cientos de filas es gratis y elimina la clase entera de bugs.
+    Hay dos escritores (la Capa A en `processing._persist_events` y el motor
+    acá), los encabezados por morfología se upsertean y `consolidate_morphologies`
+    da de baja los absorbidos: un `+= creados` tendría que saber distinguir
+    altas de actualizaciones y de bajas en los tres. El `COUNT(*)` sobre
+    `ix_ecg_event_study_ts` con unos cientos de filas es gratis y elimina la
+    clase entera de bugs.
     """
     total = await db.scalar(
         select(func.count())
@@ -379,4 +374,7 @@ async def consolidate_morphologies(db: AsyncSession, study: Study) -> dict[int, 
         )
 
     store_bank(study, merged, 0, dict(state.get("metrics") or {}))
+    # Los encabezados absorbidos se dieron de baja: el conteo del estudio no
+    # puede seguir contándolos.
+    await recount_events(db, study)
     return mapping

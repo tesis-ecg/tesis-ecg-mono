@@ -44,11 +44,11 @@ export async function getDevice(): Promise<DeviceStatus> {
 /**
  * Qué avisos pide la app.
  *
- * Espejo de `MobileAlertStatus` del backend. `answered` no es el complemento de
- * `pending`: el aviso de chaleco mal colocado no pide respuesta y solo aparece
- * en `all`.
+ * Espejo de `MobileAlertStatus` del backend. `actionable` alimenta la bandeja:
+ * combina pedidos clínicos pendientes con el episodio vigente del chaleco.
+ * Los otros valores siguen disponibles por compatibilidad.
  */
-export type AlertStatus = 'all' | 'pending' | 'answered'
+export type AlertStatus = 'all' | 'pending' | 'answered' | 'actionable'
 
 export interface AlertQuery {
   limit?: number

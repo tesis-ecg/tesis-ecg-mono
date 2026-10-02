@@ -5,37 +5,47 @@ desde el arranque, y la conversión a UTC es responsabilidad del backend
 (`INTEGRACION.md` §5). Tres cosas rompen el ancla y las tres se prueban acá.
 """
 
-from datetime import UTC, datetime
-
 from sqlalchemy import select
 
+from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch
-from app.db.models.study import Study
+from app.db.models.study import Study, StudyStatus
 from app.modules.ingest.processing import process_batch
-from tests.ingest_helpers import build_frames, post_frames
+from tests.ingest_helpers import build_frames, now_ms, post_frames
 
 
 async def _batches(db) -> list[ECGBatch]:
     return list((await db.scalars(select(ECGBatch).order_by(ECGBatch.created_at))).all())
 
 
-async def test_anchor_is_reception_time_minus_uptime(
+async def test_anchor_is_the_bridge_epoch_minus_uptime(
     client, s3, db, make_patient, make_device
 ) -> None:
+    """El arranque del equipo sale de la pareja que manda el puente.
+
+    El epoch y el uptime describen el mismo instante, así que su resta da el
+    momento en que el equipo se prendió sin que la latencia del pedido entre en
+    la cuenta.
+    """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     uptime_ms = 5_400_000
+    bridge_epoch_ms = now_ms()
 
-    before = int(datetime.now(UTC).timestamp() * 1000)
     body = (
-        await post_frames(client, device, api_key, build_frames(900), uptime_ms=uptime_ms)
+        await post_frames(
+            client,
+            device,
+            api_key,
+            build_frames(900),
+            uptime_ms=uptime_ms,
+            bridge_epoch_ms=bridge_epoch_ms,
+        )
     ).json()
-    after = int(datetime.now(UTC).timestamp() * 1000)
 
     batch = await db.get(ECGBatch, body["batchId"])
     assert batch is not None
-    assert batch.epoch_anchor_ms is not None
-    assert before - uptime_ms <= batch.epoch_anchor_ms <= after - uptime_ms
+    assert batch.epoch_anchor_ms == bridge_epoch_ms - uptime_ms
 
 
 async def test_raw_uptime_and_boot_id_are_persisted_next_to_the_derived_time(
@@ -89,20 +99,26 @@ async def test_a_reboot_lets_the_cursor_jump_forward_over_the_lost_frames(
     assert study.last_boot_id == 4
 
 
-async def test_a_reboot_does_not_let_the_cursor_go_backwards(
+async def test_a_rewound_seq_that_is_not_archived_opens_a_new_study(
     client, s3, db, make_patient, make_device
 ) -> None:
-    """La `seq` no rebobina en un reinicio: §4.3 la describe como continua entre boots.
+    """El modo de falla más caro de la integración, cerrado (`INTEGRACION.md` §11.6).
 
-    Un lote que arranca antes del cursor con otro `bootId` solo puede ser un
-    error, y aceptarlo sobreescribiría en S3 los objetos del estudio, que se
-    nombran con el `first_seq` del lote.
+    Los cursores del log viven en la metadata de la flash. Al actualizar el
+    firmware cambia el formato de esa metadata y el equipo arranca `writeSeq_` en
+    0, así que sus tramas caen enteras por debajo de nuestro cursor.
 
-    Antes se contestaba 202 re-confirmando el cursor "para que el equipo no
-    cicle". Eso era el bug: el número devuelto pertenece a la numeración vieja y
-    el equipo lo interpreta en la nueva, borrando de su flash miles de tramas que
-    el backend nunca archivó. Visto en producción con las dos partes sanas. Ahora
-    se corta con 409 y el equipo conserva su señal.
+    Tres comportamientos distintos, en orden histórico:
+
+    1. Se contestaba como duplicado: se re-confirmaba el cursor viejo y el equipo
+       borraba de su flash un lote que **nunca se archivó**. Pérdida permanente y
+       silenciosa.
+    2. Se contestaba `409 STUDY_SEQ_REWIND`: no se perdía señal, pero el equipo
+       reintentaba el mismo lote para siempre y el estudio no volvía a avanzar
+       solo. Si el corte duraba lo suficiente, el backlog daba la vuelta y ahí sí
+       se perdía registro.
+    3. **Hoy**: se cierra el estudio viejo, se abre uno nuevo y la señal entra.
+       Queda una alerta para que el médico sepa por qué hay dos estudios.
     """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
@@ -116,11 +132,143 @@ async def test_a_reboot_does_not_let_the_cursor_go_backwards(
         client, device, api_key, build_frames(1500, boot_id=4, first_seq=0, t0_ms=0)
     )
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "INGEST_SEQ_RENUMBERED"
-    study = await db.get(Study, first["studyId"])
-    assert study is not None
-    assert study.last_ingested_seq == cursor
+    assert response.status_code == 202
+    body = response.json()
+    # La señal nueva entró, y entró en un estudio distinto.
+    assert body["studyId"] != first["studyId"]
+    assert body["framesAccepted"] > 0
+    assert body["lastAcceptedSeq"] == 0 + body["framesAccepted"] - 1
+
+    # El estudio viejo quedó cerrado, con su cursor y su señal intactos: nada de
+    # lo ya archivado se pisó ni se perdió.
+    old = await db.get(Study, first["studyId"])
+    assert old is not None
+    assert old.status is StudyStatus.COMPLETED
+    assert old.ended_at is not None
+    assert old.last_ingested_seq == cursor
+
+    new = await db.get(Study, body["studyId"])
+    assert new is not None
+    assert new.status is StudyStatus.IN_PROGRESS
+    assert new.last_boot_id == 4
+
+    alert = (
+        await db.execute(
+            select(Alert).where(Alert.patient_id == patient.id, Alert.kind == "study_seq_rewind")
+        )
+    ).scalar_one()
+    assert alert.severity is AlertSeverity.HIGH
+
+
+async def test_a_rewound_batch_that_crosses_the_cursor_opens_a_new_study(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El prefijo rebobinado no puede confirmarse solo porque el lote sigue.
+
+    Es el caso que faltaba: el primer POST después de actualizar firmware puede
+    traer `seq=0` hasta una secuencia mayor que el cursor del estudio anterior.
+    Antes el detector miraba solamente la última trama, dejaba pasar el lote y
+    el ACK confirmaba las tramas nuevas bajo el cursor como si fueran duplicadas.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    first = (
+        await post_frames(client, device, api_key, build_frames(1_500, boot_id=3, first_seq=1))
+    ).json()
+    cursor = first["lastAcceptedSeq"]
+
+    # El 0 no existe en el estudio anterior; el lote nuevo lo incluye y además
+    # avanza más allá de su cursor.
+    rewound = build_frames(9_000, boot_id=4, first_seq=0, t0_ms=0)
+    assert len(rewound) > cursor
+    second = (await post_frames(client, device, api_key, rewound)).json()
+
+    assert second["studyId"] != first["studyId"]
+    assert second["framesAccepted"] == len(rewound)
+    assert second["framesDuplicate"] == 0
+    assert second["lastAcceptedSeq"] == len(rewound) - 1
+
+    batch = await db.get(ECGBatch, second["batchId"])
+    assert batch is not None
+    assert batch.frames_count == len(rewound)
+    assert batch.first_seq == 0
+    assert batch.last_seq == len(rewound) - 1
+
+
+async def test_a_crossing_retransmission_with_changed_bytes_starts_a_new_study(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Un prefijo con bytes distintos nunca se confirma como ya archivado."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    archived = build_frames(3_000, boot_id=3, first_seq=0)
+    first = (await post_frames(client, device, api_key, archived)).json()
+
+    crossing = build_frames(9_000, boot_id=4, first_seq=0, t0_ms=0)
+    assert len(crossing) > len(archived)
+    second = (await post_frames(client, device, api_key, crossing)).json()
+
+    assert second["studyId"] != first["studyId"]
+    assert second["framesDuplicate"] == 0
+    assert second["framesAccepted"] == len(crossing)
+    assert second["lastAcceptedSeq"] == len(crossing) - 1
+
+    batch = await db.get(ECGBatch, second["batchId"])
+    assert batch is not None
+    assert batch.first_seq == 0
+    assert batch.frames_count == len(crossing)
+
+
+async def test_a_rewind_does_not_open_a_study_per_post(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """La recuperación corre UNA vez, no en cada reintento.
+
+    Sin esta guarda, un equipo que quedara rebobinado abriría un estudio nuevo
+    cada diez minutos y el paciente terminaría con doscientos estudios de un
+    lote. Lo que la evita es que el estudio recién creado arranca con
+    `last_ingested_seq = None`, y sin cursor no hay contra qué rebobinar.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    await post_frames(client, device, api_key, build_frames(1500, boot_id=3, first_seq=800))
+    frames = build_frames(3000, boot_id=4, first_seq=0, t0_ms=0)
+
+    second = (await post_frames(client, device, api_key, frames[:2])).json()
+    third = (await post_frames(client, device, api_key, frames[2:4])).json()
+
+    assert third["studyId"] == second["studyId"]
+    studies = (
+        (await db.execute(select(Study).where(Study.patient_id == patient.id))).scalars().all()
+    )
+    assert len(studies) == 2
+
+
+async def test_a_rewound_seq_that_IS_archived_is_still_a_duplicate(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Los mismos 256 bytes bajo el cursor se vuelven a confirmar.
+
+    Es el caso que hay que no romper al cerrar el de arriba: mirando solo los
+    números los dos son idénticos. Lo que los separa es si las tramas están
+    archivadas, y acá lo están, así que el ACK las vuelve a confirmar para que el
+    equipo no reintente el mismo lote para siempre.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(1800, boot_id=2, first_seq=0)
+
+    first = (await post_frames(client, device, api_key, frames)).json()
+
+    replay = frames
+    second = (await post_frames(client, device, api_key, replay)).json()
+
+    assert second["framesDuplicate"] == len(replay)
+    assert second["batchId"] is None  # nada nuevo se archivó
+    assert second["lastAcceptedSeq"] == first["lastAcceptedSeq"]
 
 
 async def test_boot_id_wrapping_from_15_to_0_counts_as_a_change(

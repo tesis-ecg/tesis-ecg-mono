@@ -9,6 +9,7 @@ Dos superficies distintas:
   avisa al paciente que lo tiene mal puesto sin esperar al envío de la hora.
 """
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,9 +27,12 @@ from app.core.push import (
     PushMessage,
 )
 from app.db.models.alert import Alert, AlertSeverity
+from app.db.models.device import Device, DeviceStatus
 from app.db.models.push_token import PushToken
 from app.db.models.user import User
 from app.ml.decompression import FLAG_EVENT_MARKER
+from app.ml.status_flags import STATUS_FLAG_FLASH_NOT_READY
+from app.modules.ingest.ingest_service import DEVICE_FAULT_ALERT_KIND
 from app.modules.ingest.processing import process_batch
 from tests.ingest_helpers import build_frames_with_flag_span, device_headers, post_frames
 
@@ -402,6 +406,11 @@ async def test_una_anomalia_notifica_una_sola_vez_y_abre_la_bitacora(
     assert len(sent_pushes) == 1, "un lote de 1 h no puede disparar una notificación por evento"
     _, mensaje = sent_pushes[0]
     assert mensaje.data["type"] == "report_request"
+    # El tipo de hallazgo viaja con el aviso: nombra el título del push y
+    # encabeza el formulario que abre, para que el paciente pueda reconstruir
+    # qué estaba haciendo en ese momento.
+    assert mensaje.data["kind"] == "symptom_marker"
+    assert "síntoma" in mensaje.title
     alert_id = mensaje.data["alertId"]
 
     # El paciente responde el formulario que abrió la notificación.
@@ -524,3 +533,225 @@ async def test_historial_de_avisos_pagina_y_filtra_por_estado(
     assert vest_out["needsReport"] is False
     assert vest_out["reportId"] is None
     assert vest_out["answeredAt"] is None
+
+
+async def test_bandeja_actionable_muestra_solo_el_episodio_vigente_del_chaleco(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_patient_account: Callable[..., Any],
+    make_device: Callable[..., Any],
+    mobile_headers: Callable[[User], dict[str, str]],
+) -> None:
+    patient = await make_patient()
+    account = await make_patient_account(patient)
+    device, _ = await make_device(patient=patient, placement_ok=False)
+    now = datetime.now(UTC)
+    vest_vieja = Alert(
+        patient_id=patient.id,
+        kind="vest_misplaced",
+        severity=AlertSeverity.HIGH,
+        message="Primer episodio de mala colocación.",
+        created_at=now - timedelta(minutes=10),
+    )
+    vest_vigente = Alert(
+        patient_id=patient.id,
+        kind="vest_misplaced",
+        severity=AlertSeverity.HIGH,
+        message="El chaleco sigue mal colocado.",
+        created_at=now - timedelta(minutes=2),
+    )
+    pendiente = Alert(
+        patient_id=patient.id,
+        kind="afib",
+        severity=AlertSeverity.CRITICAL,
+        message="Contanos cómo te sentiste.",
+        created_at=now,
+    )
+    respondida = Alert(
+        patient_id=patient.id,
+        kind="other",
+        severity=AlertSeverity.MEDIUM,
+        message="Aviso ya respondido.",
+        created_at=now - timedelta(minutes=1),
+    )
+    db.add_all([vest_vieja, vest_vigente, pendiente, respondida])
+    await db.flush()
+
+    headers = mobile_headers(account)
+    respuesta = await client.post(
+        "/mobile/reports",
+        json={"alertId": str(respondida.id), "symptoms": ["mareo"], "activity": "reposo"},
+        headers=headers,
+    )
+    assert respuesta.status_code == 201, respuesta.text
+
+    first_page = await client.get("/mobile/alerts?limit=1&status=actionable", headers=headers)
+    second_page = await client.get(
+        "/mobile/alerts?limit=1&offset=1&status=actionable", headers=headers
+    )
+    assert first_page.status_code == 200, first_page.text
+    assert second_page.status_code == 200, second_page.text
+    assert first_page.json()["total"] == 2
+    assert first_page.json()["pendingTotal"] == 1
+    assert [item["id"] for item in first_page.json()["items"]] == [str(vest_vigente.id)]
+    assert [item["id"] for item in second_page.json()["items"]] == [str(pendiente.id)]
+
+    # La recuperación cambia estado, no borra historia: el aviso desaparece de
+    # la bandeja operativa pero sigue disponible en `all`.
+    device.placement_ok = True
+    await db.flush()
+    recovered = await client.get("/mobile/alerts?limit=10&status=actionable", headers=headers)
+    assert [item["id"] for item in recovered.json()["items"]] == [str(pendiente.id)]
+    assert recovered.json()["total"] == 1
+    assert recovered.json()["pendingTotal"] == 1
+
+    # Sin una medición actual o sin equipo asignado tampoco se afirma que el
+    # chaleco está mal colocado.
+    device.placement_ok = None
+    await db.flush()
+    unknown = await client.get("/mobile/alerts?status=actionable", headers=headers)
+    assert [item["id"] for item in unknown.json()["items"]] == [str(pendiente.id)]
+
+    device.placement_ok = False
+    device.patient_id = None
+    device.status = DeviceStatus.AVAILABLE
+    await db.flush()
+    unassigned = await client.get("/mobile/alerts?status=actionable", headers=headers)
+    assert [item["id"] for item in unassigned.json()["items"]] == [str(pendiente.id)]
+
+
+def test_el_titulo_del_aviso_nombra_el_hallazgo() -> None:
+    """Un push que no dice de qué es, no se abre.
+
+    "Registrá cómo te sentís" describía la tarea y no el motivo, así que en la
+    bandeja era indistinguible de cualquier otro recordatorio. El título ahora
+    nombra el hallazgo con las mismas palabras que usa la app.
+    """
+    from app.modules.patient_app.notifications_service import anomaly_message
+
+    afib = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00", "afib")
+
+    assert afib.title == "Tu chaleco registró un ritmo irregular"
+    assert afib.data["kind"] == "afib"
+    # El cuerpo cierra con la acción: Expo no dibuja botones, así que el CTA
+    # tiene que estar en el texto o no existe.
+    assert afib.body.endswith("Tocá para responder, es un minuto.")
+
+
+def test_un_tipo_desconocido_no_deja_el_aviso_mudo() -> None:
+    """Un `kind` nuevo del pipeline no puede romper la notificación."""
+    from app.modules.patient_app.notifications_service import anomaly_message
+
+    sin_kind = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00")
+    raro = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00", "algo_nuevo")
+
+    assert sin_kind.title == "Hay un momento de tu registro para revisar"
+    assert raro.title == sin_kind.title
+    # Sin `kind` la clave no viaja: el formulario cae en su etiqueta genérica.
+    assert "kind" not in sin_kind.data
+
+
+async def test_alive_es_un_latido_y_no_toca_la_colocacion(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+    sent_pushes: list[tuple[Any, PushMessage]],
+) -> None:
+    """El evento neutro que pidió Biomédica (`INTEGRACION.md` §11.5).
+
+    Cierra el modo de falla "equipo encendido e invisible": un equipo que
+    adquiere pero no graba —la flash no monta— no produce tramas, así que hasta
+    ahora no existía para el backend y no se distinguía de uno apagado.
+
+    Lo que **no** puede hacer es lo que importa. Los otros tres eventos afirman
+    algo sobre la señal: `signal_recovered` escribe `placement_ok = true`, que es
+    lo que la app del paciente dibuja como colocación correcta. Un latido con ese
+    valor le estaría afirmando al paciente que el chaleco está bien puesto cada
+    diez minutos sin que el firmware tenga con qué sostenerlo, y cualquier otro
+    lo dejaría en `False`, avisándole de un problema que nadie reportó.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    device_id = device.id
+
+    response = await _device_status(
+        client, device, api_key, event="alive", durationSeconds=0, batteryPct=64, sqi=3
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["notified"] is False
+    assert body["alertId"] is None
+    assert sent_pushes == []
+
+    refreshed = await db.get(Device, device_id)
+    assert refreshed is not None
+    # Telemetría sí: es exactamente para esto que existe el evento.
+    assert refreshed.last_seen_at is not None
+    assert refreshed.last_battery_pct == 64
+    assert refreshed.last_sqi == 3
+    # Colocación no: sigue en "nunca reportó".
+    assert refreshed.placement_ok is None
+    assert refreshed.placement_reported_at is None
+
+    alerts = (await db.execute(select(Alert).where(Alert.patient_id == patient.id))).scalars().all()
+    assert list(alerts) == []
+
+
+async def test_alive_no_pisa_una_colocacion_ya_reportada(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+    sent_pushes: list[tuple[Any, PushMessage]],
+) -> None:
+    """Un latido después de un aviso real no puede blanquear el episodio."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    device_id = device.id
+
+    await _device_status(client, device, api_key, event="lead_off", durationSeconds=300)
+    before = await db.get(Device, device_id)
+    assert before is not None
+    assert before.placement_ok is False
+    reported_at = before.placement_reported_at
+
+    await _device_status(client, device, api_key, event="alive", durationSeconds=0)
+
+    after = await db.get(Device, device_id)
+    assert after is not None
+    assert after.placement_ok is False
+    assert after.placement_reported_at == reported_at
+
+
+async def test_un_equipo_con_la_flash_rota_avisa_por_el_canal_corto(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+) -> None:
+    """El caso que justifica el evento neutro, de punta a punta.
+
+    Sin flash el equipo no produce una sola trama, así que no hay ningún POST de
+    ingesta donde ver el problema. El latido es el único camino por el que ese
+    equipo puede decir algo, y las cabeceras de diagnóstico viajan con él.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    payload = {"event": "alive", "durationSeconds": 0}
+    headers = device_headers(device, api_key, status_flags=STATUS_FLAG_FLASH_NOT_READY)
+    headers.pop("Content-Type")
+    response = await client.post("/ingest/device-status", json=payload, headers=headers)
+
+    assert response.status_code == 200, response.text
+    alert = (
+        await db.execute(
+            select(Alert).where(
+                Alert.patient_id == patient.id, Alert.kind == DEVICE_FAULT_ALERT_KIND
+            )
+        )
+    ).scalar_one()
+    assert alert.severity is AlertSeverity.CRITICAL

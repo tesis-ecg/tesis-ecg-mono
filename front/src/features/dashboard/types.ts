@@ -33,6 +33,17 @@ export type AlertKind =
   | 'symptom_marker'
   | 'other'
   | 'device_offline'
+  // Los que el backend ya producía y esta unión no cubría, más los nuevos del
+  // diagnóstico del equipo. Un `kind` que falte acá no rompe nada visible —
+  // `KIND_LABEL` tiene fallback— pero deja el tipo mintiendo.
+  | 'vest_misplaced'
+  | 'lead_off'
+  | 'internal_gap'
+  | 'patient_report'
+  | 'backlog_overflow'
+  | 'corrupt_frame'
+  | 'device_fault'
+  | 'study_seq_rewind'
 
 export interface DashboardAlert {
   id: string
@@ -57,6 +68,7 @@ export interface RunningStudy {
   id: string
   patientName: string
   startedAt: string
+  startedAtVerified: boolean
   durationMs: number
   deviceSerial: string
 }
@@ -73,10 +85,52 @@ export interface DeviceWatchdogItem {
   reason: DeviceWatchdogReason
 }
 
+// --- Actividad (lo que alimenta los gráficos de la home) ---
+
+export interface ActivityPoint {
+  /** `YYYY-MM-DD`. Siempre vienen 7, con ceros donde no pasó nada. */
+  date: string
+  alerts: number
+  reports: number
+  studies: number
+}
+
+/**
+ * Flujo de los últimos 7 días contra los 7 anteriores.
+ *
+ * Es flujo y no stock: `current` es cuántas alertas *entraron* esta semana, no
+ * cuántas quedan pendientes. Por eso la tarjeta lo rotula "últimos 7 días" en
+ * vez de presentarlo como un delta del número grande.
+ */
+export interface ActivityTrend {
+  current: number
+  previous: number
+}
+
+export interface SeverityBucket {
+  severity: AlertSeverity
+  count: number
+}
+
+export interface FleetHealth {
+  assigned: number
+  transmitting: number
+}
+
+export interface DashboardActivity {
+  days: ActivityPoint[]
+  alertsTrend: ActivityTrend
+  studiesTrend: ActivityTrend
+  patientsTrend: ActivityTrend
+  pendingBySeverity: SeverityBucket[]
+  fleet: FleetHealth
+}
+
 export interface DashboardOverview {
   kpis: DashboardKpis
   alerts: DashboardAlert[]
   attentionPatients: AttentionPatient[]
   runningStudies: RunningStudy[]
   deviceWatchdog: DeviceWatchdogItem[]
+  activity: DashboardActivity
 }

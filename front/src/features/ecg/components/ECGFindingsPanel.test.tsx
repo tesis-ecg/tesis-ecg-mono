@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ECGAnnotation } from '../types'
@@ -130,6 +130,56 @@ describe('ECGFindingsPanel', () => {
 
     const card = container.querySelector('[data-annotation-card]')
     expect(card?.className).toContain('border-primary-300')
+  })
+
+  it('alterna si los avisos se dibujan sobre el gráfico', () => {
+    const onToggle = vi.fn()
+    const { container, rerender } = render(
+      <ECGFindingsPanel
+        annotations={[annotation({ id: 'a' })]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={() => undefined}
+        showOnChart
+        onShowOnChartChange={onToggle}
+      />,
+    )
+
+    const view = within(container)
+    fireEvent.click(view.getByRole('button', { name: 'Ocultar del gráfico' }))
+    expect(onToggle).toHaveBeenCalledWith(false)
+
+    rerender(
+      <ECGFindingsPanel
+        annotations={[annotation({ id: 'a' })]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={() => undefined}
+        showOnChart={false}
+        onShowOnChartChange={onToggle}
+      />,
+    )
+    // Ocultarlos del gráfico no los saca de la lista.
+    expect(view.getByText('1 aviso detectado')).toBeTruthy()
+    fireEvent.click(view.getByRole('button', { name: 'Mostrar en gráfico' }))
+    expect(onToggle).toHaveBeenLastCalledWith(true)
+  })
+
+  it('mantiene fija la cabecera y limita el scroll a la lista', () => {
+    const { container } = render(
+      <ECGFindingsPanel
+        annotations={[annotation({})]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={() => undefined}
+        className="h-full"
+      />,
+    )
+
+    const panel = container.querySelector('[aria-label="Hallazgos ECG"]')
+    expect(panel?.className).toContain('h-full')
+    expect(panel?.querySelector('.overflow-y-auto')).not.toBeNull()
+    expect(panel?.querySelector('h2')?.closest('.overflow-y-auto')).toBeNull()
   })
 })
 

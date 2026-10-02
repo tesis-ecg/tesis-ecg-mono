@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.study import StudyStatus
@@ -12,9 +12,18 @@ from app.modules.studies.studies_schemas import (
     SimulateAnomalyInput,
     SimulateAnomalyOut,
     SimulateAnomalyRequest,
+    StudyClinicalReportDraftInput,
+    StudyClinicalReportDraftOut,
+    StudyClinicalReportDraftUpdate,
+    StudyClinicalReportFinalizeInput,
+    StudyClinicalReportPreviewOut,
+    StudyClinicalReportVersionOut,
+    StudyClinicalReportVersionsOut,
     StudyDetailOut,
     StudyEcgManifestOut,
     StudyEcgOut,
+    StudyEcgReportWindowsRequest,
+    StudyEcgReportWindowsResponse,
     StudyFindingsInput,
     StudyFindingsOut,
     StudyIdInput,
@@ -60,6 +69,7 @@ async def get_study(
 @router.post("/{study_id}/complete", response_model=StudyDetailOut)
 async def complete_study(
     study_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyDetailOut:
@@ -75,12 +85,14 @@ async def complete_study(
             actor_id=scope.user.id,
         ),
         db,
+        background,
     )
 
 
 @router.post("/{study_id}/cancel", response_model=StudyDetailOut)
 async def cancel_study(
     study_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyDetailOut:
@@ -92,6 +104,108 @@ async def cancel_study(
             actor_id=scope.user.id,
         ),
         db,
+        background,
+    )
+
+
+@router.get("/{study_id}/clinical-report/draft", response_model=StudyClinicalReportDraftOut)
+async def get_clinical_report_draft(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportDraftOut:
+    return await service.get_clinical_report_draft(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.put("/{study_id}/clinical-report/draft", response_model=StudyClinicalReportDraftOut)
+async def update_clinical_report_draft(
+    study_id: uuid.UUID,
+    data: StudyClinicalReportDraftUpdate,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportDraftOut:
+    return await service.update_clinical_report_draft(
+        StudyClinicalReportDraftInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+            data=data,
+        ),
+        db,
+    )
+
+
+@router.get("/{study_id}/clinical-report/preview", response_model=StudyClinicalReportPreviewOut)
+async def get_clinical_report_preview(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportPreviewOut:
+    return await service.get_clinical_report_preview(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.post("/{study_id}/clinical-report/finalize", response_model=StudyClinicalReportVersionOut)
+async def finalize_clinical_report(
+    study_id: uuid.UUID,
+    draft_revision: int = Query(alias="draftRevision", ge=1),
+    snapshot_hash: str = Query(alias="snapshotHash", min_length=64, max_length=64),
+    pdf: bytes = Body(media_type="application/pdf"),
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportVersionOut:
+    return await service.finalize_clinical_report(
+        StudyClinicalReportFinalizeInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+            draft_revision=draft_revision,
+            snapshot_hash=snapshot_hash,
+            pdf=pdf,
+        ),
+        db,
+    )
+
+
+@router.get("/{study_id}/clinical-reports", response_model=StudyClinicalReportVersionsOut)
+async def list_clinical_report_versions(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyClinicalReportVersionsOut:
+    return await service.list_clinical_report_versions(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.get("/{study_id}/clinical-reports/{report_id}/pdf")
+async def download_clinical_report(
+    study_id: uuid.UUID,
+    report_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    pdf, version = await service.get_clinical_report_pdf(
+        StudyIdInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+        ),
+        report_id,
+        db,
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="informe-holter-v{version}-{study_id}.pdf"'
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
@@ -105,11 +219,11 @@ async def simulate_anomaly(
 ) -> SimulateAnomalyOut:
     """Banco de pruebas: fabrica un hallazgo clínico y notifica al paciente.
 
-    Solo admin y solo fuera de preview/producción — escribe un `ecg_event` y una
-    `alert` reales sobre la historia de un paciente. Es el reemplazo temporal
-    del pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar
-    el aviso de anomalía, el formulario de la bitácora y la respuesta sobre el
-    ECG sin hardware.
+    Solo admin, en cualquier entorno — escribe un `ecg_event` y una `alert`
+    reales sobre la historia de un paciente. Es el reemplazo temporal del
+    pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar el
+    aviso de anomalía, el formulario de la bitácora y la respuesta sobre el ECG
+    sin hardware — también en el sistema desplegado, que es donde se demuestra.
     """
     if not scope.is_admin:
         raise HTTPException(
@@ -147,6 +261,7 @@ async def get_study_ecg(
 @router.get("/{study_id}/ecg/manifest", response_model=StudyEcgManifestOut)
 async def get_study_ecg_manifest(
     study_id: uuid.UUID,
+    background: BackgroundTasks,
     scope: RoleScope = Depends(get_doctor_scope),
     db: AsyncSession = Depends(get_db),
 ) -> StudyEcgManifestOut:
@@ -156,6 +271,26 @@ async def get_study_ecg_manifest(
             study_id=study_id,
             actor_id=scope.user.id,
         ),
+        db,
+        background,
+    )
+
+
+@router.post("/{study_id}/ecg/report-windows", response_model=StudyEcgReportWindowsResponse)
+async def get_study_ecg_report_windows(
+    study_id: uuid.UUID,
+    data: StudyEcgReportWindowsRequest,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyEcgReportWindowsResponse:
+    """Muestras crudas de ventanas breves para el informe PDF.
+
+    La UI envía lotes chicos para no descargar el estudio entero ni convertir
+    una vista piramidal en una tira que parezca diagnóstica.
+    """
+    return await service.get_study_ecg_report_windows(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id, actor_id=scope.user.id),
+        data,
         db,
     )
 

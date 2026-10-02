@@ -57,6 +57,12 @@ export const modalHeaderFade: ViewStyle = {
     "linear-gradient(180deg, #f6f6f6 0%, rgba(246,246,246,0.98) 68%, rgba(246,246,246,0) 100%)",
 };
 
+/** El mismo fundido del header, dado vuelta, para una barra fija al pie. */
+export const modalFooterFade: ViewStyle = {
+  experimental_backgroundImage:
+    "linear-gradient(0deg, #f6f6f6 0%, rgba(246,246,246,0.98) 68%, rgba(246,246,246,0) 100%)",
+};
+
 /**
  * Aura del chaleco: el estado del equipo, dicho en color.
  *

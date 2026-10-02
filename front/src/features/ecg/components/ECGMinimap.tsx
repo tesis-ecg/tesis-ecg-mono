@@ -23,6 +23,8 @@ interface ECGMinimapProps {
   height?: number
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotation: ECGAnnotation) => void
+  /** Muestra los avisos: la franja de arriba y las bandas sobre la traza. Default true. */
+  showAnnotations?: boolean
 }
 
 /**
@@ -42,6 +44,7 @@ export function ECGMinimap({
   height = 64,
   selectedAnnotationId,
   onAnnotationSelect,
+  showAnnotations = true,
 }: ECGMinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -81,15 +84,29 @@ export function ECGMinimap({
       ctx.fillRect(0, 0, cssWidth, height)
 
       const samples = signal.samples
-      if (samples.length === 0) return
-      const samplesPerColumn = Math.max(1, Math.floor(samples.length / cssWidth))
+      if (samples.length === 0 || cssWidth <= 0 || signal.durationMs <= 0) return
+      const columnMins = new Float64Array(cssWidth)
+      const columnMaxs = new Float64Array(cssWidth)
+      columnMins.fill(Infinity)
+      columnMaxs.fill(-Infinity)
       let yMin = Infinity
       let yMax = -Infinity
       for (let i = 0; i < samples.length; i++) {
         const v = samples[i]
+        if (!Number.isFinite(v)) continue
+        const timestamp = signal.timestampsMs[i]
+        const elapsedMs =
+          signal.timestampsMs.length === samples.length && Number.isFinite(timestamp)
+            ? timestamp - signal.startTimestamp
+            : (i / Math.max(samples.length - 1, 1)) * signal.durationMs
+        if (elapsedMs < 0 || elapsedMs > signal.durationMs) continue
+        const col = Math.min(cssWidth - 1, Math.floor((elapsedMs / signal.durationMs) * cssWidth))
+        columnMins[col] = Math.min(columnMins[col], v)
+        columnMaxs[col] = Math.max(columnMaxs[col], v)
         if (v < yMin) yMin = v
         if (v > yMax) yMax = v
       }
+      if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) return
       if (yMin === yMax) {
         yMin -= 1
         yMax += 1
@@ -100,15 +117,8 @@ export function ECGMinimap({
       ctx.lineWidth = 1
       ctx.beginPath()
       for (let col = 0; col < cssWidth; col++) {
-        const start = col * samplesPerColumn
-        const end = Math.min(samples.length, start + samplesPerColumn)
-        let mn = Infinity
-        let mx = -Infinity
-        for (let i = start; i < end; i++) {
-          const v = samples[i]
-          if (v < mn) mn = v
-          if (v > mx) mx = v
-        }
+        const mn = columnMins[col]
+        const mx = columnMaxs[col]
         if (mn === Infinity) continue
         const yTop = 2 + (yMax - mx) * yScale
         const yBot = 2 + (yMax - mn) * yScale
@@ -132,13 +142,15 @@ export function ECGMinimap({
           Math.min(100, ((viewport.startMs - signal.startTimestamp) / 1000 / durationSec) * 100),
         )
       : 0
+  // El selector necesita un ancho visual mínimo para seguir siendo visible,
+  // pero la navegación debe conservar el ancho real. Antes se usaba 0,5 %
+  // también para los cálculos y arrastrar un zoom fino lo ensanchaba.
   const viewportWidthPct =
     viewport != null
-      ? Math.max(
-          0.5,
-          Math.min(100, ((viewport.endMs - viewport.startMs) / 1000 / durationSec) * 100),
-        )
+      ? Math.max(0, Math.min(100, ((viewport.endMs - viewport.startMs) / 1000 / durationSec) * 100))
       : 100
+  const selectorWidthPct = Math.max(0.5, viewportWidthPct)
+  const selectorLeftPct = Math.max(0, Math.min(100 - selectorWidthPct, viewportLeftPct))
 
   // Drag handler para mover la ventana visible.
   const dragRef = useRef<{ pointerId: number; startX: number; startLeftPct: number } | null>(null)
@@ -150,7 +162,7 @@ export function ECGMinimap({
     const clickXPct = ((e.clientX - rect.left) / rect.width) * 100
     // Si el click cae fuera de la ventana, centrar la ventana en el click.
     const clickedInsideWindow =
-      clickXPct >= viewportLeftPct && clickXPct <= viewportLeftPct + viewportWidthPct
+      clickXPct >= selectorLeftPct && clickXPct <= selectorLeftPct + selectorWidthPct
     const startLeftPct = clickedInsideWindow
       ? viewportLeftPct
       : Math.max(0, Math.min(100 - viewportWidthPct, clickXPct - viewportWidthPct / 2))
@@ -192,7 +204,7 @@ export function ECGMinimap({
 
   return (
     <div className="flex w-full flex-col gap-1.5">
-      {signal.annotations.length > 0 && (
+      {showAnnotations && signal.annotations.length > 0 && (
         <TooltipProvider delayDuration={200}>
           <div className="relative h-8 rounded-sm bg-gray-50" aria-label="Avisos del estudio">
             {annotationDrawOrder.map((annotation) => {
@@ -258,6 +270,7 @@ export function ECGMinimap({
 
       <div
         ref={containerRef}
+        aria-label="Navegación general del ECG"
         className={cn(
           'relative w-full select-none overflow-hidden rounded-md border border-border bg-card',
           'cursor-pointer',
@@ -269,28 +282,31 @@ export function ECGMinimap({
         onPointerCancel={handlePointerUp}
       >
         <canvas ref={canvasRef} className="absolute inset-0 block" />
-        {annotationDrawOrder.map((annotation) => {
-          const startPct = annotationPercent(annotation.startMs)
-          const endPct = annotationPercent(annotation.endMs)
-          return (
-            <span
-              key={annotation.id}
-              className="pointer-events-none absolute top-0 bottom-0 border-x"
-              style={{
-                left: `${startPct}%`,
-                width: `${Math.max(endPct - startPct, 0.2)}%`,
-                minWidth: annotation.endMs <= annotation.startMs ? 8 : 4,
-                borderColor: `var(--ecg-alert-${annotation.severity})`,
-                backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
-              }}
-            />
-          )
-        })}
+        {/* Ocultar los avisos del gráfico también los saca de la vista previa:
+            si no, el médico sigue viendo las bandas de color sin saber de qué. */}
+        {showAnnotations &&
+          annotationDrawOrder.map((annotation) => {
+            const startPct = annotationPercent(annotation.startMs)
+            const endPct = annotationPercent(annotation.endMs)
+            return (
+              <span
+                key={annotation.id}
+                className="pointer-events-none absolute top-0 bottom-0 border-x"
+                style={{
+                  left: `${startPct}%`,
+                  width: `${Math.max(endPct - startPct, 0.2)}%`,
+                  minWidth: annotation.endMs <= annotation.startMs ? 8 : 4,
+                  borderColor: `var(--ecg-alert-${annotation.severity})`,
+                  backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
+                }}
+              />
+            )
+          })}
         <div
           className="pointer-events-none absolute top-0 bottom-0 border-2"
           style={{
-            left: `${viewportLeftPct}%`,
-            width: `${viewportWidthPct}%`,
+            left: `${selectorLeftPct}%`,
+            width: `${selectorWidthPct}%`,
             borderColor: 'var(--ecg-selector)',
             backgroundColor: 'var(--ecg-selector-bg)',
           }}

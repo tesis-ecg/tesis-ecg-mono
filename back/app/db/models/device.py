@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -49,6 +50,10 @@ class Device(TimestampMixin, Base):
             "last_sd_free_mb IS NULL OR last_sd_free_mb >= 0",
             name="ck_device_sd_free_nonnegative",
         ),
+        CheckConstraint(
+            "last_sqi IS NULL OR last_sqi BETWEEN 0 AND 3",
+            name="ck_device_last_sqi",
+        ),
         Index(
             "uq_device_active_patient",
             "patient_id",
@@ -68,10 +73,29 @@ class Device(TimestampMixin, Base):
         UUID(as_uuid=True), ForeignKey("doctor.id"), nullable=True, index=True
     )
     api_key_hash: Mapped[str] = mapped_column(String(255))
+    #: La misma key cifrada con Fernet (`app.core.device_keys`). Es reversible a
+    #: propósito: el admin tiene que poder releerla para grabarla en el firmware
+    #: del chaleco, y con solo el hash la única salida era rotarla — lo que deja
+    #: fuera de servicio al equipo que ya la tenía cargada.
+    #: `api_key_hash` sigue siendo la credencial autoritativa: la ingesta valida
+    #: contra el hash y nunca toca esta columna.
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     firmware_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_battery_pct: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sd_free_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: Último índice de calidad de señal que reportó el equipo: 0 desconocida,
+    #: 1 **no analizable**, 2 degradada, 3 buena (`INTEGRACION.md` §3.1).
+    #:
+    #: El campo ya venía en el cuerpo de `POST /ingest/device-status` y se
+    #: validaba, pero se descartaba sin escribirlo en ningún lado.
+    last_sqi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_rssi_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_battery_flags: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    battery_alert_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     #: Última colocación reportada por el equipo (`POST /ingest/device-status`).
     #: `None` no es "está bien": es que todavía no reportó ninguna de las dos
     #: cosas. La app lo dibuja como estado desconocido y no como correcto.

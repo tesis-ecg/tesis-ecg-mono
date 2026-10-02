@@ -177,7 +177,7 @@ async def test_un_medico_no_puede_fabricar_hallazgos(
     assert response.status_code == 403
 
 
-async def test_fuera_de_desarrollo_no_existe(
+async def test_en_produccion_el_admin_igual_puede_simular(
     db: Any,
     as_user: Any,
     make_user: Any,
@@ -186,6 +186,13 @@ async def test_fuera_de_desarrollo_no_existe(
     make_study: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """El entorno ya no es una barrera; el rol sí.
+
+    Estaba bloqueado fuera de desarrollo, y eso dejaba el flujo de aviso al
+    paciente sin forma de demostrarse en el sistema desplegado. Lo que sigue
+    protegiendo la historia clínica es que solo un admin pueda pedirlo (ver
+    `test_un_medico_no_puede_fabricar_hallazgos`).
+    """
     _, _, study = await _recorded_study(db, make_patient, make_device, make_study)
     client: AsyncClient = as_user(await _admin(db, make_user))
     monkeypatch.setattr(settings, "environment", Environment.PRODUCTION)
@@ -199,8 +206,8 @@ async def test_fuera_de_desarrollo_no_existe(
         headers={"Origin": str(settings.frontend_url).rstrip("/")},
     )
 
-    assert response.status_code == 403
-    assert response.json()["code"] == "SIMULATION_DISABLED"
+    assert response.status_code == 200
+    assert response.json()["alertId"]
 
 
 async def test_el_hallazgo_aparece_en_el_manifest_del_estudio(

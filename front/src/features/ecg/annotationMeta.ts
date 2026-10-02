@@ -46,6 +46,12 @@ const KIND_LABEL: Record<string, string> = {
   frame_gap: 'Hueco entre tramas',
   symptom_marker: 'Síntoma marcado por el paciente',
   patient_report: 'Registro del paciente',
+  backlog_overflow: 'Pérdida de tramas confirmada por el Holter',
+  missing_frames_inferred: 'Pérdida de tramas (causa inferida)',
+  close_reason_1: 'Cierre técnico: salto de tiempo',
+  close_reason_2: 'Cierre técnico: apagado o batería crítica',
+  close_reason_3: 'Cierre técnico: corridas agotadas',
+  corrupt_frame: 'Trama descartada por el equipo',
   // Motor de detección (`back/app/ml`). El nombre no menciona ninguna
   // enfermedad a propósito: el motor es no supervisado y lo único que puede
   // afirmar es que ese latido no se parece a los del propio paciente. Llamarlo

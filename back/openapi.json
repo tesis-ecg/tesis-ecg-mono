@@ -252,6 +252,76 @@
         "title": "CatalogOptionOut",
         "type": "object"
       },
+      "DashboardActivityOut": {
+        "properties": {
+          "alertsTrend": {
+            "$ref": "#/components/schemas/DashboardTrendOut"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardActivityPointOut"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "fleet": {
+            "$ref": "#/components/schemas/DashboardFleetOut"
+          },
+          "patientsTrend": {
+            "$ref": "#/components/schemas/DashboardTrendOut"
+          },
+          "pendingBySeverity": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardSeverityBucketOut"
+            },
+            "title": "Pendingbyseverity",
+            "type": "array"
+          },
+          "studiesTrend": {
+            "$ref": "#/components/schemas/DashboardTrendOut"
+          }
+        },
+        "required": [
+          "days",
+          "alertsTrend",
+          "studiesTrend",
+          "patientsTrend",
+          "pendingBySeverity",
+          "fleet"
+        ],
+        "title": "DashboardActivityOut",
+        "type": "object"
+      },
+      "DashboardActivityPointOut": {
+        "description": "Un día de la serie semanal. Siempre hay siete, con ceros donde no pasó nada.",
+        "properties": {
+          "alerts": {
+            "title": "Alerts",
+            "type": "integer"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "reports": {
+            "title": "Reports",
+            "type": "integer"
+          },
+          "studies": {
+            "title": "Studies",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "alerts",
+          "reports",
+          "studies"
+        ],
+        "title": "DashboardActivityPointOut",
+        "type": "object"
+      },
       "DashboardAlertOut": {
         "properties": {
           "detectedAt": {
@@ -303,6 +373,25 @@
           "studyId"
         ],
         "title": "DashboardAlertOut",
+        "type": "object"
+      },
+      "DashboardFleetOut": {
+        "description": "Salud de la flota: cuántos chalecos asignados están transmitiendo.\n\n`transmitting` usa el mismo corte de `device_stale_hours` que el watchdog,\nasí que los dos widgets no pueden contradecirse.",
+        "properties": {
+          "assigned": {
+            "title": "Assigned",
+            "type": "integer"
+          },
+          "transmitting": {
+            "title": "Transmitting",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assigned",
+          "transmitting"
+        ],
+        "title": "DashboardFleetOut",
         "type": "object"
       },
       "DashboardKpisOut": {
@@ -363,6 +452,9 @@
       },
       "DashboardOverviewOut": {
         "properties": {
+          "activity": {
+            "$ref": "#/components/schemas/DashboardActivityOut"
+          },
           "alerts": {
             "items": {
               "$ref": "#/components/schemas/DashboardAlertOut"
@@ -400,9 +492,47 @@
           "alerts",
           "attentionPatients",
           "runningStudies",
-          "deviceWatchdog"
+          "deviceWatchdog",
+          "activity"
         ],
         "title": "DashboardOverviewOut",
+        "type": "object"
+      },
+      "DashboardSeverityBucketOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "count"
+        ],
+        "title": "DashboardSeverityBucketOut",
+        "type": "object"
+      },
+      "DashboardTrendOut": {
+        "description": "Flujo de los últimos 7 días contra los 7 anteriores.\n\nEs *flujo* y no *stock*: `current` es cuántas alertas entraron esta semana,\nno cuántas hay pendientes ahora. Por eso no reusa `KpiDeltaOut` y expone los\ndos totales — el front rotula la comparación en vez de inventar un delta que\nparecería referirse al número grande de la tarjeta.",
+        "properties": {
+          "current": {
+            "title": "Current",
+            "type": "integer"
+          },
+          "previous": {
+            "title": "Previous",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "current",
+          "previous"
+        ],
+        "title": "DashboardTrendOut",
         "type": "object"
       },
       "DeviceStatus": {
@@ -652,7 +782,7 @@
         "type": "object"
       },
       "HolterApiKeyOut": {
-        "description": "La API key en claro. Se devuelve UNA vez y no se puede volver a leer.",
+        "description": "La API key en claro de un equipo. Solo la ve un admin.\n\nLa devuelven tanto el alta y la rotación como `GET /devices/{id}/api-key`:\nla key se guarda cifrada además de hasheada, así que se puede volver a leer.\n`rotatedAt` es cuándo se generó la que se está devolviendo.",
         "properties": {
           "apiKey": {
             "title": "Apikey",
@@ -1428,11 +1558,12 @@
         "type": "object"
       },
       "MobileAlertStatus": {
-        "description": "Qué avisos pide la app.\n\nSon tres y no un booleano porque el centro de avisos ofrece las tres vistas\ncomo filtro. `ANSWERED` no es \"todo lo que no está pendiente\": el aviso de\nchaleco mal colocado no pide respuesta, así que no cae en ninguno de los dos\nlados y solo aparece en `ALL`.",
+        "description": "Qué avisos pide la app.\n\n`ACTIONABLE` es la bandeja operativa del paciente: pedidos clínicos todavía\nsin responder más, como máximo, el episodio vigente de chaleco mal colocado.\nLas otras tres vistas se conservan para compatibilidad con clientes previos.\n\n`ANSWERED` no es \"todo lo que no está pendiente\": el aviso de chaleco mal\ncolocado no pide respuesta, así que solo aparece en `ALL` o en `ACTIONABLE`\nmientras el equipo siga reportando mala colocación.",
         "enum": [
           "all",
           "pending",
-          "answered"
+          "answered",
+          "actionable"
         ],
         "title": "MobileAlertStatus",
         "type": "string"
@@ -1462,7 +1593,7 @@
         "type": "object"
       },
       "MobileDeviceOut": {
-        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `dashboard_stale_hours` que no manda nada\n\n`vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo\npuede estar grabando y transmitiendo perfecto y no registrar nada igual\nporque no hace contacto con la piel. Son dos preguntas distintas y la\npantalla las dibuja en dos lugares distintos.",
+        "description": "Estado del chaleco, contado para el paciente y no para el técnico.\n\n`state` resume en una palabra lo que la pantalla necesita decidir:\n- ``none``: no tiene chaleco asignado\n- ``never_connected``: asignado pero todavía no se encendió\n- ``recording``: hay un estudio en curso y llegaron datos hace poco\n- ``stale``: hace más de `device_stale_hours` que no manda nada\n\n`vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo\npuede estar grabando y transmitiendo perfecto y no registrar nada igual\nporque no hace contacto con la piel. Son dos preguntas distintas y la\npantalla las dibuja en dos lugares distintos.",
         "properties": {
           "batteryPercent": {
             "anyOf": [
@@ -2467,6 +2598,10 @@
             "title": "Startedat",
             "type": "string"
           },
+          "startedAtVerified": {
+            "title": "Startedatverified",
+            "type": "boolean"
+          },
           "status": {
             "$ref": "#/components/schemas/StudyStatus"
           }
@@ -2475,6 +2610,7 @@
           "id",
           "patientId",
           "startedAt",
+          "startedAtVerified",
           "endedAt",
           "durationHours",
           "status",
@@ -2716,12 +2852,17 @@
             "format": "date-time",
             "title": "Startedat",
             "type": "string"
+          },
+          "startedAtVerified": {
+            "title": "Startedatverified",
+            "type": "boolean"
           }
         },
         "required": [
           "id",
           "patientName",
           "startedAt",
+          "startedAtVerified",
           "durationMs",
           "deviceSerial"
         ],
@@ -2817,8 +2958,522 @@
         "title": "SimulatedAnomalyType",
         "type": "string"
       },
+      "StudyClinicalReportDraftOut": {
+        "properties": {
+          "clinicalObservations": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinicalobservations"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "indication": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indication"
+          },
+          "medications": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medications"
+          },
+          "referringProfessional": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referringprofessional"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "studyId": {
+            "format": "uuid",
+            "title": "Studyid",
+            "type": "string"
+          },
+          "technician": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technician"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedat"
+          },
+          "updatedBy": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedby"
+          },
+          "updatedByName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedbyname"
+          },
+          "updatedByRole": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updatedbyrole"
+          }
+        },
+        "required": [
+          "studyId",
+          "revision",
+          "indication",
+          "medications",
+          "referringProfessional",
+          "technician",
+          "clinicalObservations",
+          "conclusion",
+          "updatedAt",
+          "updatedBy",
+          "updatedByName",
+          "updatedByRole"
+        ],
+        "title": "StudyClinicalReportDraftOut",
+        "type": "object"
+      },
+      "StudyClinicalReportDraftUpdate": {
+        "properties": {
+          "clinicalObservations": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clinicalobservations"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "maxLength": 12000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "indication": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indication"
+          },
+          "medications": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medications"
+          },
+          "referringProfessional": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referringprofessional"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "technician": {
+            "anyOf": [
+              {
+                "maxLength": 240,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Technician"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "title": "StudyClinicalReportDraftUpdate",
+        "type": "object"
+      },
+      "StudyClinicalReportIssueOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "warning",
+              "blocking"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "severity"
+        ],
+        "title": "StudyClinicalReportIssueOut",
+        "type": "object"
+      },
+      "StudyClinicalReportPreviewOut": {
+        "properties": {
+          "blockingReasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockingreasons",
+            "type": "array"
+          },
+          "canFinalize": {
+            "title": "Canfinalize",
+            "type": "boolean"
+          },
+          "canGenerateDraft": {
+            "title": "Cangeneratedraft",
+            "type": "boolean"
+          },
+          "draft": {
+            "$ref": "#/components/schemas/StudyClinicalReportDraftOut"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/StudyClinicalReportIssueOut"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "nextVersion": {
+            "title": "Nextversion",
+            "type": "integer"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "snapshotHash": {
+            "title": "Snapshothash",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StudyClinicalReportWindowPlanOut"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "draft",
+          "snapshot",
+          "snapshotHash",
+          "windows",
+          "nextVersion",
+          "canGenerateDraft",
+          "canFinalize",
+          "blockingReasons",
+          "issues"
+        ],
+        "title": "StudyClinicalReportPreviewOut",
+        "type": "object"
+      },
+      "StudyClinicalReportVersionOut": {
+        "properties": {
+          "finalizedAt": {
+            "format": "date-time",
+            "title": "Finalizedat",
+            "type": "string"
+          },
+          "finalizedBy": {
+            "format": "uuid",
+            "title": "Finalizedby",
+            "type": "string"
+          },
+          "finalizedByName": {
+            "title": "Finalizedbyname",
+            "type": "string"
+          },
+          "finalizedByRole": {
+            "title": "Finalizedbyrole",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "pdfByteLength": {
+            "title": "Pdfbytelength",
+            "type": "integer"
+          },
+          "pdfSha256": {
+            "title": "Pdfsha256",
+            "type": "string"
+          },
+          "snapshotSha256": {
+            "title": "Snapshotsha256",
+            "type": "string"
+          },
+          "studyId": {
+            "format": "uuid",
+            "title": "Studyid",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "studyId",
+          "version",
+          "finalizedAt",
+          "finalizedBy",
+          "finalizedByName",
+          "finalizedByRole",
+          "pdfByteLength",
+          "pdfSha256",
+          "snapshotSha256"
+        ],
+        "title": "StudyClinicalReportVersionOut",
+        "type": "object"
+      },
+      "StudyClinicalReportVersionsOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudyClinicalReportVersionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "StudyClinicalReportVersionsOut",
+        "type": "object"
+      },
+      "StudyClinicalReportWindowPlanOut": {
+        "properties": {
+          "blockCount": {
+            "title": "Blockcount",
+            "type": "integer"
+          },
+          "blockIndex": {
+            "title": "Blockindex",
+            "type": "integer"
+          },
+          "category": {
+            "enum": [
+              "clinical",
+              "patient_marker"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "confidenceScore": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidencescore"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "findingDurationMs": {
+            "title": "Findingdurationms",
+            "type": "integer"
+          },
+          "findingEndEpochMs": {
+            "title": "Findingendepochms",
+            "type": "integer"
+          },
+          "findingId": {
+            "format": "uuid",
+            "title": "Findingid",
+            "type": "string"
+          },
+          "findingStartEpochMs": {
+            "title": "Findingstartepochms",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "relatedSymptoms": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Relatedsymptoms",
+            "type": "array"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "findingId",
+          "kind",
+          "category",
+          "severity",
+          "findingStartEpochMs",
+          "findingEndEpochMs",
+          "findingDurationMs",
+          "startEpochMs",
+          "endEpochMs",
+          "blockIndex",
+          "blockCount",
+          "confidenceScore",
+          "description",
+          "relatedSymptoms"
+        ],
+        "title": "StudyClinicalReportWindowPlanOut",
+        "type": "object"
+      },
       "StudyDetailOut": {
         "properties": {
+          "canAccessDevice": {
+            "title": "Canaccessdevice",
+            "type": "boolean"
+          },
+          "deviceId": {
+            "format": "uuid",
+            "title": "Deviceid",
+            "type": "string"
+          },
           "deviceSerial": {
             "title": "Deviceserial",
             "type": "string"
@@ -2867,6 +3522,18 @@
             "title": "Id",
             "type": "string"
           },
+          "lastDataReceivedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastdatareceivedat"
+          },
           "patientId": {
             "format": "uuid",
             "title": "Patientid",
@@ -2881,6 +3548,11 @@
             "title": "Startedat",
             "type": "string"
           },
+          "startedAtVerified": {
+            "default": true,
+            "title": "Startedatverified",
+            "type": "boolean"
+          },
           "status": {
             "$ref": "#/components/schemas/StudyStatus"
           }
@@ -2889,10 +3561,13 @@
           "id",
           "patientId",
           "patientName",
+          "deviceId",
           "startedAt",
           "endedAt",
           "durationMs",
           "deviceSerial",
+          "canAccessDevice",
+          "lastDataReceivedAt",
           "status",
           "doctorId",
           "doctorName"
@@ -2935,6 +3610,10 @@
             ],
             "title": "Description"
           },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
           "endOffsetMs": {
             "title": "Endoffsetms",
             "type": "integer"
@@ -2970,6 +3649,10 @@
             "title": "Severity",
             "type": "string"
           },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
           "startOffsetMs": {
             "title": "Startoffsetms",
             "type": "integer"
@@ -2982,21 +3665,19 @@
           "severity",
           "startOffsetMs",
           "endOffsetMs",
+          "startEpochMs",
+          "endEpochMs",
           "confidenceScore"
         ],
         "title": "StudyEcgAnnotationOut",
         "type": "object"
       },
-      "StudyEcgLevelOut": {
+      "StudyEcgLevelChunkOut": {
+        "description": "Un tramo de un nivel, aportado por un lote.",
         "properties": {
           "byteLength": {
             "title": "Bytelength",
             "type": "integer"
-          },
-          "encoding": {
-            "default": "minmax-float32-le",
-            "title": "Encoding",
-            "type": "string"
           },
           "expiresAt": {
             "format": "date-time",
@@ -3005,10 +3686,6 @@
           },
           "pointCount": {
             "title": "Pointcount",
-            "type": "integer"
-          },
-          "samplesPerBucket": {
-            "title": "Samplesperbucket",
             "type": "integer"
           },
           "sha256": {
@@ -3032,8 +3709,39 @@
           "expiresAt",
           "byteLength",
           "sha256",
-          "samplesPerBucket",
           "pointCount"
+        ],
+        "title": "StudyEcgLevelChunkOut",
+        "type": "object"
+      },
+      "StudyEcgLevelOut": {
+        "description": "Un nivel de la pirámide, repartido en chunks.\n\nAntes era un objeto único que se reescribía entero en cada lote. Eso crecía\ncon el estudio y corría con la fila del estudio bloqueada, una fuente de\ncontención bajo ingesta sostenida. Ahora cada lote anexa lo suyo y\nlos chunks se compactan de a ratos, así que el trabajo por lote es constante.\n\nEl cliente concatena `chunks` en orden — es la misma mecánica que ya usa con\n`segments`. Un nivel compactado tiene un solo chunk.",
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgLevelChunkOut"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "encoding": {
+            "default": "minmax-float32-le",
+            "title": "Encoding",
+            "type": "string"
+          },
+          "pointCount": {
+            "title": "Pointcount",
+            "type": "integer"
+          },
+          "samplesPerBucket": {
+            "title": "Samplesperbucket",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "samplesPerBucket",
+          "pointCount",
+          "chunks"
         ],
         "title": "StudyEcgLevelOut",
         "type": "object"
@@ -3062,7 +3770,7 @@
             "type": "string"
           },
           "formatVersion": {
-            "default": 2,
+            "default": 3,
             "title": "Formatversion",
             "type": "integer"
           },
@@ -3102,12 +3810,33 @@
             "title": "Segments",
             "type": "array"
           },
+          "startTimeVerified": {
+            "default": true,
+            "title": "Starttimeverified",
+            "type": "boolean"
+          },
           "startTimestamp": {
             "title": "Starttimestamp",
             "type": "integer"
           },
           "status": {
             "$ref": "#/components/schemas/StudyStatus"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgTimelineSegmentOut"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "viewKind": {
+            "default": "raw",
+            "enum": [
+              "raw",
+              "filtered_visualization"
+            ],
+            "title": "Viewkind",
+            "type": "string"
           }
         },
         "required": [
@@ -3199,6 +3928,126 @@
         "title": "StudyEcgOut",
         "type": "object"
       },
+      "StudyEcgReportWindowOut": {
+        "properties": {
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "gapIndices": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Gapindices",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "samplesMv": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Samplesmv",
+            "type": "array"
+          },
+          "source": {
+            "default": "raw",
+            "enum": [
+              "raw",
+              "envelope",
+              "filtered_visualization"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
+          "timestampsMs": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Timestampsms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "startEpochMs",
+          "endEpochMs",
+          "timestampsMs",
+          "samplesMv",
+          "gapIndices"
+        ],
+        "title": "StudyEcgReportWindowOut",
+        "type": "object"
+      },
+      "StudyEcgReportWindowRequest": {
+        "description": "Ventana corta en hora de pared para una tira detallada del informe.",
+        "properties": {
+          "endEpochMs": {
+            "minimum": 0.0,
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "minimum": 0.0,
+            "title": "Startepochms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "startEpochMs",
+          "endEpochMs"
+        ],
+        "title": "StudyEcgReportWindowRequest",
+        "type": "object"
+      },
+      "StudyEcgReportWindowsRequest": {
+        "description": "El límite mantiene acotado el JSON y permite al cliente paginar lotes.",
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgReportWindowRequest"
+            },
+            "maxItems": 25,
+            "minItems": 1,
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows"
+        ],
+        "title": "StudyEcgReportWindowsRequest",
+        "type": "object"
+      },
+      "StudyEcgReportWindowsResponse": {
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/StudyEcgReportWindowOut"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows"
+        ],
+        "title": "StudyEcgReportWindowsResponse",
+        "type": "object"
+      },
       "StudyEcgSegmentOut": {
         "description": "Un tramo de señal decodificada, tal como llegó en un lote del chaleco.",
         "properties": {
@@ -3246,6 +4095,85 @@
         "title": "StudyEcgSegmentOut",
         "type": "object"
       },
+      "StudyEcgTimelineSegmentOut": {
+        "description": "Una corrida contigua de grabación, con su hora de pared real.\n\nEl buffer de muestras del estudio es continuo por construcción: cada lote se\npega al anterior. La grabación no lo es. Estos tramos son la traducción entre\nlas dos cosas, y son lo que permite dibujar un hueco como hueco en vez de\npegar los bordes y correr la hora de todo lo que sigue.",
+        "properties": {
+          "anchorMatchesBoot": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchormatchesboot"
+          },
+          "anchorSource": {
+            "enum": [
+              "ntp",
+              "none",
+              "server_receive"
+            ],
+            "title": "Anchorsource",
+            "type": "string"
+          },
+          "anchorUncertaintyMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchoruncertaintyms"
+          },
+          "bootId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bootid"
+          },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "sampleCount": {
+            "title": "Samplecount",
+            "type": "integer"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
+          "startSampleIndex": {
+            "title": "Startsampleindex",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal",
+          "startSampleIndex",
+          "sampleCount",
+          "startEpochMs",
+          "endEpochMs",
+          "bootId",
+          "anchorSource",
+          "anchorUncertaintyMs"
+        ],
+        "title": "StudyEcgTimelineSegmentOut",
+        "type": "object"
+      },
       "StudyFindingGroupOut": {
         "description": "Una morfología recurrente, o todos los hallazgos de un mismo tipo.\n\nAgrupar no es cosmético: 412 latidos de la misma forma son **un** hallazgo\ncon 412 ocurrencias, no 412 filas. Sin esto, el panel del médico es\nilegible y la herramienta no se usa.",
         "properties": {
@@ -3281,6 +4209,10 @@
             "title": "Category",
             "type": "string"
           },
+          "firstEpochMs": {
+            "title": "Firstepochms",
+            "type": "integer"
+          },
           "firstOffsetMs": {
             "title": "Firstoffsetms",
             "type": "integer"
@@ -3299,6 +4231,10 @@
           "kind": {
             "title": "Kind",
             "type": "string"
+          },
+          "lastEpochMs": {
+            "title": "Lastepochms",
+            "type": "integer"
           },
           "lastOffsetMs": {
             "title": "Lastoffsetms",
@@ -3337,7 +4273,9 @@
           "severity",
           "occurrences",
           "firstOffsetMs",
-          "lastOffsetMs"
+          "lastOffsetMs",
+          "firstEpochMs",
+          "lastEpochMs"
         ],
         "title": "StudyFindingGroupOut",
         "type": "object"
@@ -3399,6 +4337,10 @@
             ],
             "title": "Description"
           },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
           "endOffsetMs": {
             "title": "Endoffsetms",
             "type": "integer"
@@ -3433,6 +4375,10 @@
             "title": "Severity",
             "type": "string"
           },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
           "startOffsetMs": {
             "title": "Startoffsetms",
             "type": "integer"
@@ -3455,6 +4401,8 @@
           "severity",
           "startOffsetMs",
           "endOffsetMs",
+          "startEpochMs",
+          "endEpochMs",
           "confidenceScore",
           "modelVersion",
           "validationStatus"
@@ -3987,7 +4935,8 @@
         "enum": [
           "signal_quality_bad",
           "lead_off",
-          "signal_recovered"
+          "signal_recovered",
+          "alive"
         ],
         "title": "VestStatusEvent",
         "type": "string"
@@ -4502,7 +5451,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 10,
+              "default": 8,
               "maximum": 50,
               "minimum": 1,
               "title": "Limit",
@@ -4583,7 +5532,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 6,
+              "default": 4,
               "maximum": 50,
               "minimum": 1,
               "title": "Limit",
@@ -4664,7 +5613,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 6,
+              "default": 4,
               "maximum": 50,
               "minimum": 1,
               "title": "Limit",
@@ -4875,7 +5824,7 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 6,
+              "default": 4,
               "maximum": 50,
               "minimum": 1,
               "title": "Limit",
@@ -5395,8 +6344,82 @@
       }
     },
     "/devices/{device_id}/api-key": {
+      "get": {
+        "description": "Devuelve la API key en claro del equipo, para grabarla en su firmware.\n\nSolo admin: la key habilita a subir señal como ese dispositivo, así que\nentregarla es equivalente a entregar el equipo. Cada lectura queda auditada.",
+        "operationId": "get_holter_api_key_devices__device_id__api_key_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HolterApiKeyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Holter Api Key",
+        "tags": [
+          "devices"
+        ]
+      },
       "post": {
-        "description": "Rota la API key del equipo y la devuelve en claro **una sola vez**.\n\nSolo admin: la key habilita a subir señal como ese dispositivo, así que\nentregarla es equivalente a entregar el equipo.",
+        "description": "Rota la API key del equipo: genera una nueva y deja la anterior inútil.\n\nSolo admin, por lo mismo que el GET. Es inmediato y no se puede deshacer —\nel chaleco que tenga cargada la key vieja empieza a recibir 401.",
         "operationId": "rotate_holter_api_key_devices__device_id__api_key_post",
         "parameters": [
           {
@@ -6170,6 +7193,183 @@
               ],
               "title": "X-Battery-Pct"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-bridge-epoch-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Bridge-Epoch-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Source"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-uncertainty-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Uncertainty-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-lead-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Lead-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-loss-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Loss-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-status-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Status-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-backlog-seconds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Backlog-Seconds"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-boot-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Boot-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-rssi",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Rssi"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-sqi",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Sqi"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-battery-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Battery-Flags"
+            }
           }
         ],
         "requestBody": {
@@ -6294,6 +7494,183 @@
                 }
               ],
               "title": "X-Battery-Pct"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-bridge-epoch-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Bridge-Epoch-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Source"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-time-sync-uncertainty-ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Time-Sync-Uncertainty-Ms"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-lead-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Lead-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-loss-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Loss-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-status-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Status-Flags"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-backlog-seconds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Backlog-Seconds"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-boot-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Boot-Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-rssi",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Rssi"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-sqi",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Sqi"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-device-battery-flags",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Device-Battery-Flags"
             }
           }
         ],
@@ -8215,6 +9592,505 @@
         ]
       }
     },
+    "/studies/{study_id}/clinical-report/draft": {
+      "get": {
+        "operationId": "get_clinical_report_draft_studies__study_id__clinical_report_draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportDraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Clinical Report Draft",
+        "tags": [
+          "studies"
+        ]
+      },
+      "put": {
+        "operationId": "update_clinical_report_draft_studies__study_id__clinical_report_draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudyClinicalReportDraftUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportDraftOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Clinical Report Draft",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-report/finalize": {
+      "post": {
+        "operationId": "finalize_clinical_report_studies__study_id__clinical_report_finalize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "draftRevision",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Draftrevision",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "snapshotHash",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 64,
+              "title": "Snapshothash",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/pdf": {
+              "schema": {
+                "contentMediaType": "application/octet-stream",
+                "title": "Pdf",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finalize Clinical Report",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-report/preview": {
+      "get": {
+        "operationId": "get_clinical_report_preview_studies__study_id__clinical_report_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportPreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Clinical Report Preview",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-reports": {
+      "get": {
+        "operationId": "list_clinical_report_versions_studies__study_id__clinical_reports_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyClinicalReportVersionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Clinical Report Versions",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/clinical-reports/{report_id}/pdf": {
+      "get": {
+        "operationId": "download_clinical_report_studies__study_id__clinical_reports__report_id__pdf_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Report Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Clinical Report",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
     "/studies/{study_id}/complete": {
       "post": {
         "description": "Cierra el estudio: fija `endedAt` y lo pasa a `completed`.\n\nEs la contraparte del alta automática que hace la ingesta. Sin esto un\nestudio abierto no tenía forma de terminar.",
@@ -8442,6 +10318,92 @@
         ]
       }
     },
+    "/studies/{study_id}/ecg/report-windows": {
+      "post": {
+        "description": "Muestras crudas de ventanas breves para el informe PDF.\n\nLa UI envía lotes chicos para no descargar el estudio entero ni convertir\nuna vista piramidal en una tira que parezca diagnóstica.",
+        "operationId": "get_study_ecg_report_windows_studies__study_id__ecg_report_windows_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudyEcgReportWindowsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyEcgReportWindowsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Study Ecg Report Windows",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
     "/studies/{study_id}/findings": {
       "get": {
         "description": "Lo que el motor encontró, agrupado para revisión.\n\nSin paginación **a propósito**: el presupuesto de revisión acota la respuesta\npor construcción (`ml_findings_max_per_study`), y paginar señalizaría que el\nresultado no está acotado — que es exactamente lo contrario de lo que este\ndiseño afirma. Lo que sí viaja es `truncated`, para que un recorte nunca se\nlea como \"esto es todo lo que hay\".",
@@ -8608,7 +10570,7 @@
     },
     "/studies/{study_id}/simulate-anomaly": {
       "post": {
-        "description": "Banco de pruebas: fabrica un hallazgo clínico y notifica al paciente.\n\nSolo admin y solo fuera de preview/producción — escribe un `ecg_event` y una\n`alert` reales sobre la historia de un paciente. Es el reemplazo temporal\ndel pipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar\nel aviso de anomalía, el formulario de la bitácora y la respuesta sobre el\nECG sin hardware.",
+        "description": "Banco de pruebas: fabrica un hallazgo clínico y notifica al paciente.\n\nSolo admin, en cualquier entorno — escribe un `ecg_event` y una `alert`\nreales sobre la historia de un paciente. Es el reemplazo temporal del\npipeline de `app/ml/`, que todavía son stubs, y lo que permite ejercitar el\naviso de anomalía, el formulario de la bitácora y la respuesta sobre el ECG\nsin hardware — también en el sistema desplegado, que es donde se demuestra.",
         "operationId": "simulate_anomaly_studies__study_id__simulate_anomaly_post",
         "parameters": [
           {

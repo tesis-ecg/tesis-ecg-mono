@@ -52,7 +52,7 @@ export function useVestMisplaced(): boolean {
 const ALERT_PAGE_SIZE = 20
 
 /**
- * El historial de avisos del centro de notificaciones.
+ * La lista paginada del centro de notificaciones.
  *
  * El filtro va en la query y no se aplica sobre lo ya traído: con paginación,
  * filtrar en el cliente deja páginas enteras sin ninguna fila que pase el

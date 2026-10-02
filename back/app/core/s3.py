@@ -20,13 +20,17 @@ montan `moto` *después* de que el módulo se importó.
 from functools import lru_cache
 from typing import Any, cast
 
-import boto3
-from botocore.config import Config
-
 from app.core.config import settings
 
 
 def _build_client(endpoint: str) -> Any:
+    # boto3 y botocore se importan acá adentro, no arriba: son ~0,5 s de import
+    # en un arranque en frío, y los paga hasta un request que no toca S3. Los
+    # clientes ya están cacheados, así que el costo se paga una sola vez y solo
+    # cuando de verdad hay que hablar con el bucket.
+    import boto3
+    from botocore.config import Config
+
     # `addressing_style` explícito, nunca "auto": contra AWS real, "auto" arma el
     # host global `<bucket>.s3.amazonaws.com`, que responde 307 hacia la región
     # del bucket. Un cliente boto3 sigue ese redirect solo, pero una URL
@@ -88,6 +92,18 @@ def put_object(key: str, payload: bytes) -> None:
 
 def get_object(key: str) -> bytes:
     response = get_s3_client().get_object(Bucket=settings.s3_bucket_name, Key=key)
+    return cast(bytes, response["Body"].read())
+
+
+def get_object_range(key: str, start_byte: int, end_byte: int) -> bytes:
+    """Lee un rango inclusivo de un objeto sin traer el ECG completo."""
+    if start_byte < 0 or end_byte < start_byte:
+        raise ValueError("Invalid S3 byte range")
+    response = get_s3_client().get_object(
+        Bucket=settings.s3_bucket_name,
+        Key=key,
+        Range=f"bytes={start_byte}-{end_byte}",
+    )
     return cast(bytes, response["Body"].read())
 
 

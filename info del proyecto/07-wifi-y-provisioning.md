@@ -36,7 +36,30 @@ No se requiere módulo celular, plan de datos, app móvil ni BLE.
 
 ### Implementación
 
-ESP-IDF trae el componente `wifi_provisioning`, que soporta dos transportes intercambiables: `scheme_ble` y `scheme_softap`. **Se usa `scheme_softap`** — misma API y mismo handshake de seguridad, sobre HTTP en vez de GATT. No hay que implementar el protocolo desde cero.
+> ### ⚠️ CORRECCIÓN (septiembre 2026): el portal "sin app" hay que escribirlo a mano
+>
+> Este documento afirmaba dos cosas que **no pueden ser ciertas a la vez**: que
+> `wifi_provisioning` evita "implementar el protocolo desde cero", y que el
+> teléfono "abre solo la página de configuración", sin app.
+>
+> `wifi_provisioning` con `scheme_softap` **no es un portal cautivo**: habla
+> protocomm sobre protobuf y necesita la app *ESP SoftAP Prov* de Espressif (o el
+> CLI `esp-prov`). Un navegador no lo puede manejar. Lo verificó Biomédica contra
+> el README del ejemplo del Arduino-ESP32 instalado, cuya salida dice
+> literalmente *«Give Credentials of your access point using "Android app"»*.
+>
+> O sea: el flujo sin app hay que escribirlo (`WebServer` + `DNSServer` +
+> `Preferences`), que es justo la parte que este documento daba por resuelta. **No
+> cambia la arquitectura elegida** —SoftAP + portal sigue siendo lo correcto— pero
+> sí cambia la estimación de esfuerzo.
+>
+> **Y ya está hecho, del lado del firmware:** el puente tiene su portal cautivo
+> propio (red `Holter-Setup-XXXX` + página en el navegador del celular) desde el
+> 14/9/2026, validado en banco aislado con un celular. Es **un** slot de NVS, no
+> los dos que describe este documento. El detalle está en `BRINGUP.md` §7.4 del
+> repo del firmware.
+
+ESP-IDF trae el componente `wifi_provisioning`, que soporta dos transportes intercambiables: `scheme_ble` y `scheme_softap`. **Se usa `scheme_softap`** — misma API y mismo handshake de seguridad, sobre HTTP en vez de GATT.
 
 Piezas involucradas:
 
@@ -53,6 +76,24 @@ No se puede servir HTTPS válido desde `192.168.4.1` (ninguna CA firma una IP pr
 
 1. **AP con WPA2 y contraseña única por dispositivo**, derivada del serial e impresa en la etiqueta. Cifra el enlace y evita que un tercero cercano se conecte al chaleco.
 2. **`security2` (SRP6a) de `wifi_provisioning`**, que cifra el payload de credenciales a nivel de aplicación usando un Proof of Possession también impreso en la etiqueta. Con esto el HTTP plano deja de ser relevante.
+
+> **`security2` NO se va a implementar, y conviene que esté dicho de los dos
+> lados** (septiembre 2026). El PoP va impreso en la etiqueta del equipo, o sea
+> un paso de fabricación por unidad que hoy no existe en ningún proceso. Lo
+> mismo pasa con la orden `unprovision` desde el backend que pide este
+> documento: `IngestAckOut` no tiene canal de comandos —devuelve contadores,
+> `lastAcceptedSeq`, `batchId`, `studyId` y `serverTime`— y no hay ningún campo
+> por el que el backend pueda pedirle algo al equipo.
+>
+> Ninguna de las dos es urgente: el re-provisioning se dispara con el **botón
+> físico**, que esta misma especificación ya prevé y que además funciona con el
+> backend caído. Se deja asentado para que no quede como una tarea que cada
+> equipo cree que hace el otro.
+>
+> Si algún día se agrega el canal de comandos, la guarda que pide esta
+> especificación es importante y va del lado del firmware: `unprovision` tiene
+> que ser **rechazable**. Si al equipo le quedan tramas sin subir, responde con
+> cuántas en vez de obedecer — es la única operación irreversible del flujo.
 
 Vale notar que el provisioning por BLE tampoco es seguro por sí solo —el pairing "Just Works" es vulnerable a MITM—, y por eso ESP-IDF aplica la misma capa `security2` en ambos transportes. SoftAP no es la opción menos segura de las dos.
 

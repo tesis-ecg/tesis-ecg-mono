@@ -30,9 +30,9 @@ Seis cosas:
 - `signal_quality_interval` + `study.ml_state`. La calidad no es un evento
   puntual sino una propiedad continua del registro; ver el docstring del modelo.
 
-Revision ID: e5f6a7b8c9d0
-Revises: d4e5f6a7b8c9
-Create Date: 2026-09-03 16:00:00.000000
+Revision ID: d0e1f2a3b4c5
+Revises: c9d0e1f2a3b4
+Create Date: 2026-10-01 12:00:00.000000
 """
 
 from collections.abc import Sequence
@@ -43,8 +43,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "e5f6a7b8c9d0"
-down_revision: str | Sequence[str] | None = "d4e5f6a7b8c9"
+revision: str = "d0e1f2a3b4c5"
+down_revision: str | Sequence[str] | None = "c9d0e1f2a3b4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

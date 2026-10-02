@@ -8,9 +8,15 @@ interface StudyBreadcrumbProps {
   patientName: string
   /** Inicio del estudio. Un médico lo identifica por fecha, no por UUID. */
   startedAt: string
+  startedAtVerified?: boolean
 }
 
-export function StudyBreadcrumb({ patientId, patientName, startedAt }: StudyBreadcrumbProps) {
+export function StudyBreadcrumb({
+  patientId,
+  patientName,
+  startedAt,
+  startedAtVerified,
+}: StudyBreadcrumbProps) {
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-body3 text-gray-600">
       <Link
@@ -28,7 +34,9 @@ export function StudyBreadcrumb({ patientId, patientName, startedAt }: StudyBrea
       </Link>
       <ChevronRight className="size-3.5 text-gray-300" aria-hidden />
       <span className="text-gray-900" aria-current="page">
-        Estudio del {formatDateTime(startedAt)}
+        {startedAtVerified === false
+          ? 'Estudio · hora no verificada'
+          : `Estudio del ${formatDateTime(startedAt)}`}
       </span>
     </nav>
   )

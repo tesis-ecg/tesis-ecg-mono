@@ -38,8 +38,6 @@ for key, value in TEST_ENV.items():
 
 # ruff: noqa: E402  — el entorno tiene que estar armado antes de importar `app`.
 import asyncio
-import hashlib
-import secrets
 import uuid
 from collections.abc import AsyncGenerator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -50,6 +48,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.core.device_keys import encrypt_api_key, generate_api_key, hash_api_key
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.doctor import Doctor
 from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
@@ -182,6 +181,8 @@ _PURGE_STATEMENTS = (
     "DELETE FROM ecg_event WHERE batch_id IN (SELECT b.id FROM ecg_batch b"
     " JOIN device d ON d.id = b.device_id WHERE d.doctor_id = ANY(:ids))",
     "DELETE FROM ecg_batch WHERE device_id IN (SELECT id FROM device WHERE doctor_id = ANY(:ids))",
+    "DELETE FROM study_timeline_segment WHERE study_id IN (SELECT s.id FROM study s"
+    " JOIN patient p ON p.id = s.patient_id WHERE p.doctor_id = ANY(:ids))",
     "DELETE FROM study WHERE patient_id IN (SELECT id FROM patient WHERE doctor_id = ANY(:ids))",
     "DELETE FROM device WHERE doctor_id = ANY(:ids)",
     "DELETE FROM patient WHERE doctor_id = ANY(:ids)",
@@ -267,6 +268,7 @@ def scheduled_batches(monkeypatch: pytest.MonkeyPatch) -> list[uuid.UUID]:
         scheduled.append(batch_id)
 
     monkeypatch.setattr("app.modules.ingest.processing.process_batch_task", _spy)
+    monkeypatch.setattr("app.modules.ingest.processing.process_study_task", _spy)
     return scheduled
 
 
@@ -419,17 +421,19 @@ def make_device(db: AsyncSession) -> Callable[..., object]:
     ) -> tuple[Device, str]:
         """Devuelve `(device, api_key_en_claro)`.
 
-        La key en claro solo existe acá: en la base va el sha256, igual que en
-        producción.
+        En la base van las dos copias que guarda producción: el sha256 que valida
+        la ingesta y la copia cifrada que el admin puede volver a leer.
         """
-        api_key = kwargs.pop("api_key", secrets.token_urlsafe(32))
+        api_key = kwargs.pop("api_key", generate_api_key())
         assert isinstance(api_key, str)
         if status is None:
             status = DeviceStatus.ASSIGNED if patient is not None else DeviceStatus.AVAILABLE
         device = Device(
             serial_number=kwargs.pop("serial_number", f"HOL-{uuid.uuid4().hex[:10].upper()}"),
             model=kwargs.pop("model", "Holter ECG"),
-            api_key_hash=hashlib.sha256(api_key.encode()).hexdigest(),
+            api_key_hash=hash_api_key(api_key),
+            api_key_encrypted=encrypt_api_key(api_key),
+            api_key_rotated_at=datetime.now(UTC),
             patient_id=patient.id if patient is not None else None,
             doctor_id=_owner_doctor_id(doctor, patient),
             status=status,

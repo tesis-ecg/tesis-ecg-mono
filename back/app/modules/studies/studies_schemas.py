@@ -2,7 +2,7 @@ import enum
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -14,6 +14,7 @@ class PatientStudyOut(CamelModel):
     id: uuid.UUID
     patientId: uuid.UUID
     startedAt: datetime
+    startedAtVerified: bool
     endedAt: datetime | None
     durationHours: float | None
     status: StudyStatus
@@ -31,10 +32,19 @@ class StudyDetailOut(CamelModel):
     id: uuid.UUID
     patientId: uuid.UUID
     patientName: str
+    deviceId: uuid.UUID
     startedAt: datetime
+    startedAtVerified: bool = True
     endedAt: datetime | None
     durationMs: int
     deviceSerial: str
+    #: Indica si quien consulta todavía puede abrir el detalle y la telemetría
+    #: actual del Holter. Un estudio histórico sigue siendo visible aunque el
+    #: equipo haya sido transferido a otro médico.
+    canAccessDevice: bool
+    #: Último lote ECG recibido para este estudio. No usa el cache global del
+    #: paciente, que podría pertenecer a un estudio posterior.
+    lastDataReceivedAt: datetime | None
     status: StudyStatus
     doctorId: uuid.UUID | None
     doctorName: str | None
@@ -63,10 +73,28 @@ class StudyEcgObjectOut(CamelModel):
     sha256: str | None
 
 
-class StudyEcgLevelOut(StudyEcgObjectOut):
+class StudyEcgLevelChunkOut(StudyEcgObjectOut):
+    """Un tramo de un nivel, aportado por un lote."""
+
+    pointCount: int
+
+
+class StudyEcgLevelOut(CamelModel):
+    """Un nivel de la pirámide, repartido en chunks.
+
+    Antes era un objeto único que se reescribía entero en cada lote. Eso crecía
+    con el estudio y corría con la fila del estudio bloqueada, una fuente de
+    contención bajo ingesta sostenida. Ahora cada lote anexa lo suyo y
+    los chunks se compactan de a ratos, así que el trabajo por lote es constante.
+
+    El cliente concatena `chunks` en orden — es la misma mecánica que ya usa con
+    `segments`. Un nivel compactado tiene un solo chunk.
+    """
+
     samplesPerBucket: int
     pointCount: int
     encoding: str = "minmax-float32-le"
+    chunks: list[StudyEcgLevelChunkOut]
 
 
 class StudyEcgSegmentOut(StudyEcgObjectOut):
@@ -85,6 +113,11 @@ class StudyEcgAnnotationOut(CamelModel):
     severity: Literal["low", "medium", "high", "critical"]
     startOffsetMs: int
     endOffsetMs: int
+    #: Hora de pared real del aviso, resuelta contra la línea de tiempo. Es lo
+    #: que el visor pinta en el eje: los offsets son sobre el buffer empaquetado
+    #: y se despegan de la hora en cuanto el estudio tiene un hueco.
+    startEpochMs: int
+    endEpochMs: int
     confidenceScore: float | None
     #: Cuando el registro es la respuesta del paciente al aviso de un hallazgo,
     #: el id de la anotación de ese hallazgo. El visor las dibuja unidas: sin
@@ -137,6 +170,29 @@ class StudyPatientReportsResponse(CamelModel):
     pendingSignalTotal: int
 
 
+class StudyEcgTimelineSegmentOut(CamelModel):
+    """Una corrida contigua de grabación, con su hora de pared real.
+
+    El buffer de muestras del estudio es continuo por construcción: cada lote se
+    pega al anterior. La grabación no lo es. Estos tramos son la traducción entre
+    las dos cosas, y son lo que permite dibujar un hueco como hueco en vez de
+    pegar los bordes y correr la hora de todo lo que sigue.
+    """
+
+    ordinal: int
+    startSampleIndex: int
+    sampleCount: int
+    startEpochMs: int
+    endEpochMs: int
+    bootId: int | None
+    #: `ntp` es una hora sincronizada por el puente; `server_receive` es el
+    #: camino viejo, derivado de nuestra hora de recepción y por lo tanto con la
+    #: latencia del pedido adentro. El visor lo usa para avisar cuánto vale.
+    anchorSource: Literal["ntp", "none", "server_receive"]
+    anchorUncertaintyMs: int | None
+    anchorMatchesBoot: bool | None = None
+
+
 class StudyEcgManifestOut(CamelModel):
     """Manifest v2.
 
@@ -152,19 +208,150 @@ class StudyEcgManifestOut(CamelModel):
     así que el cliente casi nunca necesita mirar `raw` ni `segments`.
     """
 
-    formatVersion: int = 2
+    formatVersion: int = 3
     channel: str = "ecg"
     encoding: str
     sampleRate: int
     sampleCount: int
     startTimestamp: int
+    startTimeVerified: bool = True
     durationMs: int
     status: StudyStatus
     isSimulated: bool
+    viewKind: Literal["raw", "filtered_visualization"] = "raw"
     raw: StudyEcgObjectOut | None
     levels: list[StudyEcgLevelOut]
     segments: list[StudyEcgSegmentOut] = Field(default_factory=list)
+    #: Tramos contiguos con su hora de pared. Vacío en los estudios seedeados o
+    #: legacy, donde el eje relativo sigue siendo correcto porque no hay huecos.
+    timeline: list[StudyEcgTimelineSegmentOut] = Field(default_factory=list)
     annotations: list[StudyEcgAnnotationOut] = Field(default_factory=list)
+
+
+class StudyEcgReportWindowRequest(CamelModel):
+    """Ventana corta en hora de pared para una tira detallada del informe."""
+
+    id: str = Field(min_length=1, max_length=120)
+    startEpochMs: int = Field(ge=0)
+    endEpochMs: int = Field(ge=0)
+
+
+class StudyEcgReportWindowsRequest(CamelModel):
+    """El límite mantiene acotado el JSON y permite al cliente paginar lotes."""
+
+    windows: list[StudyEcgReportWindowRequest] = Field(min_length=1, max_length=25)
+
+
+class StudyEcgReportWindowOut(CamelModel):
+    id: str
+    startEpochMs: int
+    endEpochMs: int
+    timestampsMs: list[int]
+    samplesMv: list[float]
+    gapIndices: list[int]
+    #: `raw` hoy es el camino normal. Se deja explícito para que la UI nunca
+    #: presente una envolvente futura como si fuera la señal cruda.
+    source: Literal["raw", "envelope", "filtered_visualization"] = "raw"
+
+
+class StudyEcgReportWindowsResponse(CamelModel):
+    windows: list[StudyEcgReportWindowOut]
+
+
+class StudyClinicalReportDraftUpdate(CamelModel):
+    revision: int = Field(ge=0)
+    indication: str | None = Field(default=None, max_length=4000)
+    medications: str | None = Field(default=None, max_length=8000)
+    referringProfessional: str | None = Field(default=None, max_length=240)
+    technician: str | None = Field(default=None, max_length=240)
+    clinicalObservations: str | None = Field(default=None, max_length=8000)
+    conclusion: str | None = Field(default=None, max_length=12000)
+
+
+class StudyClinicalReportDraftOut(CamelModel):
+    studyId: uuid.UUID
+    revision: int
+    indication: str | None
+    medications: str | None
+    referringProfessional: str | None
+    technician: str | None
+    clinicalObservations: str | None
+    conclusion: str | None
+    updatedAt: datetime | None
+    updatedBy: uuid.UUID | None
+    updatedByName: str | None
+    updatedByRole: str | None
+
+
+class StudyClinicalReportWindowPlanOut(CamelModel):
+    id: str
+    findingId: uuid.UUID
+    kind: str
+    category: Literal["clinical", "patient_marker"]
+    severity: Literal["low", "medium", "high", "critical"]
+    findingStartEpochMs: int
+    findingEndEpochMs: int
+    findingDurationMs: int
+    startEpochMs: int
+    endEpochMs: int
+    blockIndex: int
+    blockCount: int
+    confidenceScore: float | None
+    description: str | None
+    relatedSymptoms: list[str]
+
+
+class StudyClinicalReportIssueOut(CamelModel):
+    code: str
+    message: str
+    severity: Literal["warning", "blocking"]
+
+
+class StudyClinicalReportPreviewOut(CamelModel):
+    draft: StudyClinicalReportDraftOut
+    snapshot: dict[str, Any]
+    snapshotHash: str
+    windows: list[StudyClinicalReportWindowPlanOut]
+    nextVersion: int
+    canGenerateDraft: bool
+    canFinalize: bool
+    blockingReasons: list[str]
+    issues: list[StudyClinicalReportIssueOut]
+
+
+class StudyClinicalReportVersionOut(CamelModel):
+    id: uuid.UUID
+    studyId: uuid.UUID
+    version: int
+    finalizedAt: datetime
+    finalizedBy: uuid.UUID
+    finalizedByName: str
+    finalizedByRole: str
+    pdfByteLength: int
+    pdfSha256: str
+    snapshotSha256: str
+
+
+class StudyClinicalReportVersionsOut(CamelModel):
+    items: list[StudyClinicalReportVersionOut]
+
+
+@dataclass(frozen=True)
+class StudyClinicalReportDraftInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID
+    data: StudyClinicalReportDraftUpdate
+
+
+@dataclass(frozen=True)
+class StudyClinicalReportFinalizeInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID
+    draft_revision: int
+    snapshot_hash: str
+    pdf: bytes
 
 
 class SimulatedAnomalyType(enum.StrEnum):
@@ -259,6 +446,10 @@ class StudyFindingOut(CamelModel):
     severity: Literal["low", "medium", "high", "critical"]
     startOffsetMs: int
     endOffsetMs: int
+    #: Hora de pared real, resuelta igual que en `StudyEcgAnnotationOut`: es lo
+    #: que el panel usa para llevar el visor a la banda del hallazgo.
+    startEpochMs: int
+    endEpochMs: int
     #: Cuán atípico, en [0, 1]. **No es una probabilidad calibrada**: el motor es
     #: no supervisado y no hay con qué calibrarla.
     confidenceScore: float | None
@@ -295,6 +486,8 @@ class StudyFindingGroupOut(CamelModel):
     meanIntraCorrelation: float | None = None
     firstOffsetMs: int
     lastOffsetMs: int
+    firstEpochMs: int
+    lastEpochMs: int
     items: list[StudyFindingOut] = Field(default_factory=list)
 
 

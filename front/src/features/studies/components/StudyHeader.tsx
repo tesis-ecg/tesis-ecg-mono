@@ -1,11 +1,10 @@
-import { Calendar, CheckCircle2, Clock, HeartPulse, XCircle } from 'lucide-react'
+import { Calendar, CheckCircle2, Clock, HeartPulse, Radio, XCircle } from 'lucide-react'
 import { useState } from 'react'
 
-import { KebabMenu } from '@/components/KebabMenu'
+import { KebabMenu, type KebabMenuAction } from '@/components/KebabMenu'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { formatDateTime, formatDurationMs } from '@/lib/time'
+import { formatDateTime, formatDurationMs, formatRelativeTime } from '@/lib/time'
 
 import { CloseStudyDialog } from './CloseStudyDialog'
 import type { PatientStudySessionStatus, Study } from '../types'
@@ -31,7 +30,27 @@ export function StudyHeader({ study }: StudyHeaderProps) {
   // Un estudio abierto es el único que se puede terminar. `scheduled` todavía no
   // grabó nada, así que solo admite cancelarse — el backend rechaza completarlo.
   const isRunning = study.status === 'in_progress'
-  const isOpen = isRunning || study.status === 'scheduled'
+
+  // Las dos salidas del estudio viven juntas en el kebab. Finalizar estaba
+  // suelto como botón del header: es la acción más definitiva de la pantalla y
+  // quedaba a un click de distancia del scroll, al lado de datos de lectura.
+  // Las dos son irreversibles, así que las dos se buscan en el mismo lugar.
+  const actions: KebabMenuAction[] = []
+  if (isRunning) {
+    actions.push({
+      label: 'Finalizar estudio',
+      icon: CheckCircle2,
+      onSelect: () => setClosing('complete'),
+    })
+  }
+  if (isRunning || study.status === 'scheduled') {
+    actions.push({
+      label: 'Cancelar estudio',
+      icon: XCircle,
+      variant: 'destructive',
+      onSelect: () => setClosing('cancel'),
+    })
+  }
 
   return (
     <Card className="flex flex-col gap-4 p-6">
@@ -41,24 +60,8 @@ export function StudyHeader({ study }: StudyHeaderProps) {
         <h1 className="text-h5 text-gray-900">Estudio · {study.patientName}</h1>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={status.variant}>{status.label}</Badge>
-          {isRunning && (
-            <Button size="sm" onClick={() => setClosing('complete')}>
-              <CheckCircle2 className="mr-1 size-4" aria-hidden />
-              Finalizar estudio
-            </Button>
-          )}
-          {isOpen && (
-            <KebabMenu
-              label={`Acciones del estudio de ${study.patientName}`}
-              actions={[
-                {
-                  label: 'Cancelar estudio',
-                  icon: XCircle,
-                  variant: 'destructive',
-                  onSelect: () => setClosing('cancel'),
-                },
-              ]}
-            />
+          {actions.length > 0 && (
+            <KebabMenu label={`Acciones del estudio de ${study.patientName}`} actions={actions} />
           )}
         </div>
       </div>
@@ -73,8 +76,16 @@ export function StudyHeader({ study }: StudyHeaderProps) {
         />
       )}
 
-      <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Metadata icon={Calendar} label="Inicio" value={formatDateTime(study.startedAt)} />
+      <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <Metadata
+          icon={Calendar}
+          label="Inicio"
+          value={
+            study.startedAtVerified === false
+              ? 'Hora no verificada'
+              : formatDateTime(study.startedAt)
+          }
+        />
         <Metadata
           icon={Calendar}
           label="Fin"
@@ -82,6 +93,16 @@ export function StudyHeader({ study }: StudyHeaderProps) {
         />
         <Metadata icon={Clock} label="Duración" value={formatDurationMs(study.durationMs)} />
         <Metadata icon={HeartPulse} label="Dispositivo" value={study.deviceSerial} />
+        <Metadata
+          icon={Radio}
+          label="Último dato recibido"
+          value={
+            study.lastDataReceivedAt
+              ? formatDateTime(study.lastDataReceivedAt)
+              : 'Sin datos recibidos'
+          }
+          hint={study.lastDataReceivedAt ? formatRelativeTime(study.lastDataReceivedAt) : undefined}
+        />
       </dl>
     </Card>
   )
@@ -91,9 +112,10 @@ interface MetadataProps {
   icon: typeof Calendar
   label: string
   value: string
+  hint?: string
 }
 
-function Metadata({ icon: Icon, label, value }: MetadataProps) {
+function Metadata({ icon: Icon, label, value, hint }: MetadataProps) {
   return (
     <div className="flex items-start gap-2">
       <div className="mt-0.5 flex size-8 items-center justify-center rounded-md bg-primary-50 text-primary-500">
@@ -102,6 +124,7 @@ function Metadata({ icon: Icon, label, value }: MetadataProps) {
       <div className="flex flex-col">
         <dt className="text-body3 text-gray-600">{label}</dt>
         <dd className="text-body1 font-medium text-gray-900">{value}</dd>
+        {hint && <dd className="text-helper text-gray-500">{hint}</dd>}
       </div>
     </div>
   )

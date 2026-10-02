@@ -19,6 +19,7 @@ from app.ml.decompression import (
     SQ_BAD,
     STEP_MS,
 )
+from app.ml.status_flags import STATUS_FLAG_BACKLOG_OVERFLOW, STATUS_FLAG_CORRUPT_FRAME
 from app.modules.ingest.processing import derive_events, process_batch
 from tests.ingest_helpers import build_frames, build_frames_with_flag_span, post_frames
 
@@ -57,6 +58,27 @@ async def test_symptom_marker_creates_an_event_and_an_alert(
     assert len(alerts) == 1
     assert alerts[0].patient_id == patient.id
     assert alerts[0].event_id == markers[0].id
+
+
+async def test_hardware_events_carry_their_source_and_study(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """La Capa A se distingue del motor por `source`, y cuelga del estudio.
+
+    Los hallazgos del motor llevan `"source": "ml"` y `model_version`; los de los
+    bits del hardware, `"source": "firmware_flags"` y ninguna versión de modelo:
+    no los escribió el motor y nada los reescribe.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames_with_flag_span(1200, span=(400, 404), flags=FLAG_EVENT_MARKER)
+
+    body = await _ingest(client, db, device, api_key, frames)
+
+    [marker] = [e for e in await _events(db) if e.event_metadata["kind"] == "symptom_marker"]
+    assert marker.event_metadata["source"] == "firmware_flags"
+    assert marker.model_version is None
+    assert str(marker.study_id) == body["studyId"]
 
 
 async def test_lead_off_is_marked_but_the_samples_are_kept(
@@ -179,14 +201,33 @@ async def test_internal_gap_is_reported_with_its_exact_length(
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     samples = [Sample(timestamp_ms=i * STEP_MS, raw_uV=[i % 100]) for i in range(600)]
-    for sample in samples[300:]:
-        sample.timestamp_ms += 4  # 4 ms que no existen en ningún lado
+    # Saltos de 4 ms cada 5 muestras: ninguno cierra la trama, pero juntos
+    # superan la tolerancia del reloj del ADS en cualquier trama que los toque.
+    for jump_at in range(300, 600, 5):
+        for sample in samples[jump_at:]:
+            sample.timestamp_ms += 4
 
     await _ingest(client, db, device, api_key, encode_samples(samples))
 
     gaps = [e for e in await _events(db) if e.event_metadata["kind"] == "internal_gap"]
     assert gaps
     assert gaps[0].severity == ECGEventSeverity.MEDIUM
+
+
+async def test_adc_clock_drift_is_not_reported_as_gap(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El ADS1292R va 0,25 % lento: eso no es un hueco (INTEGRACION.md §12.11)."""
+    from app.ml.decompression import STEP_MS
+    from tests.frame_builder import Sample, encode_samples
+
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    samples = [Sample(timestamp_ms=i * STEP_MS + i // 200, raw_uV=[i % 100]) for i in range(1500)]
+
+    await _ingest(client, db, device, api_key, encode_samples(samples))
+
+    assert [e for e in await _events(db) if e.event_metadata["kind"] == "internal_gap"] == []
 
 
 async def test_a_clean_batch_produces_no_events(client, s3, db, make_patient, make_device):
@@ -290,7 +331,7 @@ def _batch_from_frames(frames):
 def test_a_gap_between_two_frames_is_reported() -> None:
     """Lo que el equipo dejó de adquirir ENTRE dos tramas no lo miraba nadie.
 
-    El `internal_gap_ms` solo ve lo que falta adentro de una trama. Las tramas de
+    El `gap_beyond_clock_ms` solo ve lo que falta adentro de una trama. Las tramas de
     un lote son contiguas por `seq` y de un solo `bootId`, así que un salto de
     `t0Ms` acá es adquisición perdida de verdad — y sin marcarla, el visor
     dibujaría una línea isoeléctrica indistinguible de una asistolia.
@@ -317,3 +358,118 @@ def test_contiguous_frames_produce_no_gap() -> None:
     batch = _batch_from_frames([_decoded_frame(first), _decoded_frame(second)])
 
     assert [e for e in derive_events(batch, 500) if e.kind == "frame_gap"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Pérdida de señal: lo que NO está en ninguna muestra
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_backlog_overflow_gap_becomes_an_event_and_an_alert(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El hueco de `INTEGRACION.md` §4.6, visible para el médico.
+
+    Aceptar el salto destraba la ingesta, pero aceptarlo en silencio sería peor
+    que el deadlock: el estudio quedaría con horas faltantes y nada que lo diga.
+    §9.1 lo pide explícito — "registro de cada overflow con su hora de pared: es
+    un hueco en el estudio y el médico tiene que verlo".
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    # El log circular dio la vuelta: faltan dos tramas y el bootId no cambió.
+    body = (
+        await post_frames(
+            client, device, api_key, frames[4:6], status_flags=STATUS_FLAG_BACKLOG_OVERFLOW
+        )
+    ).json()
+    await process_batch(db, body["batchId"])
+
+    overflows = [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"]
+    assert len(overflows) == 1
+    event = overflows[0]
+    assert event.severity is ECGEventSeverity.HIGH
+    assert event.event_metadata["gapFrames"] == 2
+    assert event.event_metadata["cause"] == "device_confirmed"
+    # Ocupa cero muestras: el buffer del estudio es continuo por construcción y
+    # una banda con ancho taparía señal real (ver `signal_loss_events`).
+    assert event.event_metadata["sampleCount"] == 0
+
+    alert = (await db.execute(select(Alert).where(Alert.event_id == event.id))).scalar_one()
+    assert "confirmó que sobreescribió" in alert.message
+
+
+async def test_a_gap_without_the_status_bit_is_recorded_as_inferred(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Sin el bit del equipo el hueco sigue siendo real; lo que falta es la causa."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    await _ingest(client, db, device, api_key, frames[4:6])
+
+    overflows = [
+        e for e in await _events(db) if e.event_metadata["kind"] == "missing_frames_inferred"
+    ]
+    assert len(overflows) == 1
+    assert overflows[0].event_metadata["cause"] == "inferred"
+
+
+async def test_reprocessing_does_not_duplicate_the_gap_event(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Todo sale de columnas del lote, así que reprocesar da lo mismo."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    body = (await post_frames(client, device, api_key, frames[4:6])).json()
+    await process_batch(db, body["batchId"])
+    await process_batch(db, body["batchId"])
+
+    overflows = [
+        e for e in await _events(db) if e.event_metadata["kind"] == "missing_frames_inferred"
+    ]
+    assert len(overflows) == 1
+
+
+async def test_a_contiguous_batch_produces_no_gap_event(
+    client, s3, db, make_patient, make_device
+) -> None:
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(3000, first_seq=0)
+
+    await _ingest(client, db, device, api_key, frames[:2])
+    await _ingest(client, db, device, api_key, frames[2:4])
+
+    assert [e for e in await _events(db) if e.event_metadata["kind"] == "backlog_overflow"] == []
+
+
+async def test_a_crc_discard_reported_by_the_device_becomes_an_event(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Bit 3 del STATUS: el equipo descartó una trama por CRC.
+
+    Es un hueco real en el registro del que no queda rastro en las tramas que sí
+    llegaron, porque la que falta nunca se archivó.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+
+    body = (
+        await post_frames(
+            client, device, api_key, build_frames(1500), status_flags=STATUS_FLAG_CORRUPT_FRAME
+        )
+    ).json()
+    await process_batch(db, body["batchId"])
+
+    corrupt = [e for e in await _events(db) if e.event_metadata["kind"] == "corrupt_frame"]
+    assert len(corrupt) == 1
+    assert corrupt[0].severity is ECGEventSeverity.MEDIUM

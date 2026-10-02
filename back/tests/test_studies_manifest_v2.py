@@ -7,6 +7,7 @@ señal completa (`raw` para los seedeados, `segments` para los ingestados).
 import hashlib
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from sqlalchemy import select
 
@@ -14,8 +15,9 @@ from app.core.s3 import put_object
 from app.db.models.audit_event import AuditEvent, AuditEventType
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
+from app.db.models.study import Study
 from app.db.models.user import UserRole
-from app.modules.ingest.processing import process_batch
+from app.modules.ingest.processing import append_filtered_view, process_batch
 from tests.ingest_helpers import build_frames, post_frames
 
 
@@ -28,6 +30,13 @@ async def _ingested_study(client, db, make_patient, make_device, samples: int = 
     device, api_key = await make_device(patient=patient)
     body = (await post_frames(client, device, api_key, build_frames(samples))).json()
     await process_batch(db, body["batchId"])
+    study = await db.get(Study, body["studyId"])
+    assert study is not None
+    # These manifest contract tests use a short synthetic study. The production
+    # path waits 120 seconds; force its safe prefix here to test the view shape.
+    with patch("app.modules.ingest.processing.CONTEXT_SECONDS", 0):
+        await append_filtered_view(db, study)
+    await db.commit()
     return patient, body["studyId"]
 
 
@@ -41,7 +50,7 @@ async def test_an_ingested_study_exposes_segments_and_no_raw(
 
     assert response.status_code == 200, response.text
     manifest = response.json()
-    assert manifest["formatVersion"] == 2
+    assert manifest["formatVersion"] == 3
     assert manifest["raw"] is None
     assert manifest["segments"], "un estudio ingestado tiene que traer segmentos"
     assert manifest["levels"], "y niveles de pirámide para el visor"
@@ -143,12 +152,20 @@ async def test_a_legacy_seeded_study_still_returns_raw(
         "severity": "low",
         "startOffsetMs": 1250,
         "endOffsetMs": 1750,
+        # Sin tramos de línea de tiempo —este estudio es seedeado, no ingerido—
+        # la hora absoluta es el inicio del estudio más el offset. Es lo correcto
+        # justamente porque un estudio seedeado no tiene huecos.
+        "startEpochMs": manifest["annotations"][0]["startEpochMs"],
+        "endEpochMs": manifest["annotations"][0]["endEpochMs"],
         "confidenceScore": None,
         # Solo los registros del paciente llenan estos dos: un hallazgo no
         # responde a nada ni trae texto propio.
         "linkedAnnotationId": None,
         "description": None,
     }
+    started_ms = manifest["startTimestamp"]
+    assert manifest["annotations"][0]["startEpochMs"] == started_ms + 1250
+    assert manifest["annotations"][0]["endEpochMs"] == started_ms + 1750
 
 
 async def test_manifest_normalizes_orders_and_clips_ingested_events(
@@ -224,6 +241,70 @@ async def test_a_study_without_any_signal_is_404(
     assert response.json()["code"] == "ECG_NOT_FOUND"
 
 
+async def test_report_windows_reads_only_the_requested_raw_range(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    """El PDF pide tiras cortas, no descarga el Holter entero al navegador."""
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = await _manifest(client, study_id)
+    start = manifest["startTimestamp"] + 1_000
+
+    response = await client.post(
+        f"/studies/{study_id}/ecg/report-windows",
+        json={"windows": [{"id": "detail-1", "startEpochMs": start, "endEpochMs": start + 2_000}]},
+    )
+
+    assert response.status_code == 200, response.text
+    window = response.json()["windows"][0]
+    assert window["id"] == "detail-1"
+    assert window["source"] == "filtered_visualization"
+    assert len(window["samplesMv"]) == len(window["timestampsMs"])
+    assert 900 <= len(window["samplesMv"]) <= 1_100
+
+
+async def test_unfinished_filtered_window_reports_processing(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    patient = await make_patient()
+    device, key = await make_device(patient=patient)
+    body = (await post_frames(client, device, key, build_frames(900))).json()
+    await process_batch(db, body["batchId"])
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = await _manifest(client, body["studyId"])
+    start = manifest["timeline"][0]["startEpochMs"]
+    response = await client.post(
+        f"/studies/{body['studyId']}/ecg/report-windows",
+        json={"windows": [{"id": "pending", "startEpochMs": start, "endEpochMs": start + 1000}]},
+    )
+    assert response.status_code == 503
+    assert response.json()["code"] == "ECG_PROCESSING"
+
+
+async def test_report_windows_rejects_a_window_longer_than_ten_seconds(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    as_user(await make_user(UserRole.ADMIN))
+    manifest = await _manifest(client, study_id)
+
+    response = await client.post(
+        f"/studies/{study_id}/ecg/report-windows",
+        json={
+            "windows": [
+                {
+                    "id": "too-long",
+                    "startEpochMs": manifest["startTimestamp"],
+                    "endEpochMs": manifest["startTimestamp"] + 10_001,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_WINDOW"
+
+
 async def test_manifest_grows_as_batches_arrive(
     client, s3, db, as_user, make_user, make_patient, make_device
 ) -> None:
@@ -235,11 +316,20 @@ async def test_manifest_grows_as_batches_arrive(
 
     first = (await post_frames(client, device, api_key, frames[:half])).json()
     await process_batch(db, first["batchId"])
+    study = await db.get(Study, first["studyId"])
+    assert study is not None
+    with patch("app.modules.ingest.processing.CONTEXT_SECONDS", 0):
+        await append_filtered_view(db, study)
+    await db.commit()
     as_user(await make_user(UserRole.ADMIN))
     before = await _manifest(client, first["studyId"])
 
     second = (await post_frames(client, device, api_key, frames[half:])).json()
     await process_batch(db, second["batchId"])
+    await db.refresh(study)
+    with patch("app.modules.ingest.processing.CONTEXT_SECONDS", 0):
+        await append_filtered_view(db, study)
+    await db.commit()
     after = await _manifest(client, first["studyId"])
 
     assert after["sampleCount"] > before["sampleCount"]
@@ -257,13 +347,14 @@ async def test_every_url_is_presigned_with_an_expiry(
     as_user(await make_user(UserRole.ADMIN))
     manifest = await _manifest(client, study_id)
 
-    urls = [item["url"] for item in manifest["levels"] + manifest["segments"]]
+    level_chunks = [chunk for level in manifest["levels"] for chunk in level["chunks"]]
+    urls = [item["url"] for item in level_chunks + manifest["segments"]]
     assert urls
     for url in urls:
         params = parse_qs(urlparse(url).query)
         assert "X-Amz-Signature" in params
         assert int(params["X-Amz-Expires"][0]) <= 3600
-    for item in manifest["levels"] + manifest["segments"]:
+    for item in level_chunks + manifest["segments"]:
         assert item["expiresAt"]
 
 

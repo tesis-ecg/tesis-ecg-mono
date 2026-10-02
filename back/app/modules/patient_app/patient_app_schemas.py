@@ -78,7 +78,7 @@ class MobileDeviceOut(CamelModel):
     - ``none``: no tiene chaleco asignado
     - ``never_connected``: asignado pero todavía no se encendió
     - ``recording``: hay un estudio en curso y llegaron datos hace poco
-    - ``stale``: hace más de `dashboard_stale_hours` que no manda nada
+    - ``stale``: hace más de `device_stale_hours` que no manda nada
 
     `vestPlacement` va aparte de `state` y no es un valor más suyo: el equipo
     puede estar grabando y transmitiendo perfecto y no registrar nada igual
@@ -231,15 +231,19 @@ class MobileReportListInput:
 class MobileAlertStatus(enum.StrEnum):
     """Qué avisos pide la app.
 
-    Son tres y no un booleano porque el centro de avisos ofrece las tres vistas
-    como filtro. `ANSWERED` no es "todo lo que no está pendiente": el aviso de
-    chaleco mal colocado no pide respuesta, así que no cae en ninguno de los dos
-    lados y solo aparece en `ALL`.
+    `ACTIONABLE` es la bandeja operativa del paciente: pedidos clínicos todavía
+    sin responder más, como máximo, el episodio vigente de chaleco mal colocado.
+    Las otras tres vistas se conservan para compatibilidad con clientes previos.
+
+    `ANSWERED` no es "todo lo que no está pendiente": el aviso de chaleco mal
+    colocado no pide respuesta, así que solo aparece en `ALL` o en `ACTIONABLE`
+    mientras el equipo siga reportando mala colocación.
     """
 
     ALL = "all"
     PENDING = "pending"
     ANSWERED = "answered"
+    ACTIONABLE = "actionable"
 
 
 @dataclass(frozen=True)

@@ -232,6 +232,28 @@ def test_internal_gap_is_measured_to_the_millisecond() -> None:
     assert info.internal_gap_ms == 4
 
 
+def test_slow_adc_clock_is_not_a_gap() -> None:
+    """El ADS1292R va 0,25 % lento: una trama sin pérdida declara ~2 ms de más."""
+    samples = [Sample(timestamp_ms=i * STEP_MS + i // 200, raw_uV=[i]) for i in range(400)]
+    info = read_header(_one_frame(samples))
+
+    assert info.internal_gap_ms > 0
+    assert info.gap_beyond_clock_ms == 0
+
+
+def test_gap_beyond_clock_tolerance_is_reported() -> None:
+    """Varios saltos chicos que suman más que la tolerancia sí son señal perdida."""
+    samples = [Sample(timestamp_ms=i * STEP_MS, raw_uV=[i]) for i in range(200)]
+    for jump_at in range(20, 200, 20):
+        for sample in samples[jump_at:]:
+            sample.timestamp_ms += 4  # cada salto queda bajo el umbral de cierre
+    info = read_header(_one_frame(samples))
+
+    tolerance = info.expected_duration_ms * 15_000 // 1_000_000 + 2
+    assert info.internal_gap_ms == 36
+    assert info.gap_beyond_clock_ms == 36 - tolerance
+
+
 def test_frame_without_gap_reports_zero() -> None:
     assert read_header(_one_frame(synth_samples(300))).internal_gap_ms == 0
 
