@@ -9,3 +9,5 @@ tests
 htmlcov
 coverage.xml
 *.pyc
+# Datos de PhysioNet bajados para evaluar (cientos de MB): no entran a la imagen
+tools/physionet/data
