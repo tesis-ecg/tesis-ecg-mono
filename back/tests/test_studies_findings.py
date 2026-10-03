@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models.audit_event import AuditEvent, AuditEventType
+from app.db.models.signal_quality import SignalQualityInterval
 from app.db.models.user import UserRole
 from app.ml.decompression import FLAG_LEAD_OFF
 from app.ml.pipeline import PIPELINE_VERSION
@@ -27,7 +28,9 @@ def _frames(signal_mv: np.ndarray, flags: np.ndarray) -> list[bytes]:
 async def _study_with_ectopics(client, db, make_patient, make_device, *, lead_off: bool = False):
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
-    signal = synth_ecg(duration_s=900.0, ectopic_every=12)
+    # Tres bloques de 300 s, más el contexto derecho que el tercero espera con
+    # la corrida abierta (`ml_analysis_lookahead_seconds`).
+    signal = synth_ecg(duration_s=930.0, ectopic_every=12)
     flags = signal.flags.copy()
     if lead_off:
         flags[300 * SAMPLE_RATE : 340 * SAMPLE_RATE] |= FLAG_LEAD_OFF
@@ -115,37 +118,67 @@ async def test_el_resumen_dice_que_fraccion_del_registro_no_se_pudo_evaluar(
     assert malo["startOffsetMs"] == pytest.approx(300_000, abs=10_000)
 
 
-async def test_los_intervalos_de_calidad_se_fusionan_entre_lotes(
+async def test_los_intervalos_de_calidad_se_fusionan_entre_bloques(
     client, s3, db, as_user, make_user, make_patient, make_device
 ) -> None:
-    """Un intervalo nunca cruza el borde de un lote —el motor analiza lote a
-    lote—, así que la fusión se hace al leer. Si no, dos tramos limpios
-    contiguos se verían como dos tramos distintos sin ningún motivo."""
+    """Un intervalo nunca cruza el borde de un bloque de análisis —el motor
+    escribe solo la parte nueva de cada uno—, así que la fusión se hace al leer.
+    Si no, dos tramos limpios contiguos de la misma corrida se verían como dos
+    tramos distintos sin ningún motivo.
+
+    Dos lotes de un bloque entero cada uno (300 s) y uno con el contexto
+    derecho que el segundo bloque espera con la corrida abierta, contiguos en
+    `seq` **y en `t0Ms`**: con el reloj reiniciado en cero cada lote abriría
+    una corrida nueva, y entre corridas no se funde nada.
+    """
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     study_id = None
     next_seq = 0
-    for indice in range(2):
-        signal = synth_ecg(duration_s=120.0, seed=indice + 1)
+    offset = 0
+    for indice, segundos in enumerate((300.0, 300.0, 30.0)):
+        signal = synth_ecg(duration_s=segundos, seed=indice + 1)
         samples = [
-            Sample(timestamp_ms=index * STEP_MS, raw_uV=[value], flags=int(flag))
+            Sample(timestamp_ms=(offset + index) * STEP_MS, raw_uV=[value], flags=int(flag))
             for index, (value, flag) in enumerate(
                 zip(to_microvolts(signal.signal_mv), signal.flags, strict=True)
             )
         ]
+        offset += len(samples)
         # La secuencia tiene que ser contigua: el ACK go-back-N descarta un lote
-        # que no continúa al anterior, y el estudio se quedaría con una sola hora.
+        # que no continúa al anterior, y el estudio se quedaría con uno solo.
         frames = encode_samples(samples, first_seq=next_seq, boot_id=0, simulated=True)
         next_seq += len(frames)
         body = (await post_frames(client, device, api_key, frames)).json()
         study_id = body["studyId"]
         await process_batch(db, body["batchId"])
 
+    filas = list(
+        (
+            await db.scalars(
+                select(SignalQualityInterval).where(SignalQualityInterval.study_id == study_id)
+            )
+        ).all()
+    )
+    assert len(filas) == 2, "una fila por bloque"
+
     as_user(await make_user(UserRole.ADMIN))
     body = (await client.get(f"/studies/{study_id}/findings")).json()
     assert len(body["quality"]["intervals"]) == 1
-    assert body["quality"]["intervals"][0]["level"] == "good"
-    assert body["quality"]["evaluatedMs"] == pytest.approx(240_000, rel=0.01)
+    intervalo = body["quality"]["intervals"][0]
+    assert intervalo["level"] == "good"
+    assert body["quality"]["evaluatedMs"] == pytest.approx(600_000, rel=0.01)
+    # Con hora de pared, como los hallazgos: el panel lleva al visor por ahí.
+    manifest = (await client.get(f"/studies/{study_id}/ecg/manifest")).json()
+    tramo = manifest["timeline"][0]
+    assert intervalo["startEpochMs"] == tramo["startEpochMs"]
+    # Los 30 s del tercer lote siguen en la cola abierta: el tramo los tiene y
+    # la calidad todavía no.
+    duracion = tramo["endEpochMs"] - tramo["startEpochMs"]
+    assert duracion == pytest.approx(630_000, abs=5)
+    assert intervalo["endEpochMs"] - intervalo["startEpochMs"] == pytest.approx(
+        duracion * 600 / 630, abs=2
+    )
 
 
 async def test_los_items_por_grupo_se_recortan_por_score_y_no_por_orden(

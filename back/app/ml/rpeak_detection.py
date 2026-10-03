@@ -81,13 +81,40 @@ def detect_rpeaks(cleaned: Signal, sample_rate: int) -> Indices:
     Devuelve vacío en vez de propagar el error cuando la señal es demasiado
     corta o degenerada: una ventana sin latidos es un resultado válido del gate
     de calidad, no una falla del lote.
+
+    **Sin la corrección de artefactos de NeuroKit** (`correct_artifacts=False`).
+    La corrección de Kubios no mira la señal: mira la serie R-R y, donde un
+    intervalo se aparta del ritmo, **mueve o inserta** el R en la posición que
+    interpola. Eso es justo lo que este motor existe para informar:
+
+    - Una pausa de 3 s se lee como latidos perdidos y se rellena con R en el
+      medio. Con variabilidad R-R real, o con un foco ectópico en el bloque, una
+      pausa sinusal desaparecía entera sobre los bloques de 300 s
+      (`test_ml_blocks.test_una_pausa_sobrevive_a_la_correccion_de_artefactos_en_un_bloque_largo`,
+      `test_ml_block_invariance`).
+    - Un ectópico prematuro con su pausa compensatoria es un par corto-largo: el
+      R se corría al medio, el latido se recortaba fuera de su QRS y armaba
+      plantillas fantasma. En MIT-BIH, sin la corrección, la precisión de las
+      anomalías sube en los cuatro registros de carga alta (208 0,911 → 0,951;
+      119 0,965 → 0,998; 233 0,952 → 0,999; 221 0,904 → 0,987) con el mismo
+      recall, la pureza de clusters sube igual y los controles de carga baja
+      bajan a 0 hallazgos/h (101 y 103 tenían 2 y 4). En las capturas del
+      chaleco no cambia el nivel de ninguna ventana y las limpias quedan con
+      menos plantillas (`gel_limpia` 3 → 1). El delineador de intervalos ya
+      descartaba los R corridos (`intervals.IntervalThresholds.peak_tolerance_ms`).
+
+    Lo que la corrección sí arreglaba —un latido que el detector no vio— queda
+    acotado de otra forma: el R-R de una ventana mala ya es inválido (Etapa 1);
+    taquicardia y bradicardia corren sobre la mediana móvil de 8 latidos, que
+    absorbe un intervalo suelto; y por encima de 48 lpm un solo latido perdido
+    no llega a los 2,5 s de `ml_pause_seconds`.
     """
     if cleaned.size < sample_rate:  # menos de un segundo: no hay nada que buscar
         return np.empty(0, dtype=np.int64)
     import neurokit2 as nk
 
     try:
-        _, info = nk.ecg_peaks(cleaned, sampling_rate=sample_rate, correct_artifacts=True)
+        _, info = nk.ecg_peaks(cleaned, sampling_rate=sample_rate, correct_artifacts=False)
     except Exception:  # noqa: BLE001 — cualquier degeneración de la señal
         return np.empty(0, dtype=np.int64)
     peaks = info.get("ECG_R_Peaks") if isinstance(info, dict) else None

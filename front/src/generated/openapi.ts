@@ -795,6 +795,8 @@ export interface StudyPatientReportsResponse {
 export interface StudyQualityIntervalOut {
   "startOffsetMs": number
   "endOffsetMs": number
+  "startEpochMs": number
+  "endEpochMs": number
   "level": "good" | "marginal" | "bad" | "unknown"
   "reason": string
 }

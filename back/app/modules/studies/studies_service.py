@@ -389,10 +389,27 @@ async def get_study_ecg_manifest(
     if background is not None:
         from app.modules.ingest.processing import process_study_task
 
-        if pending or (
-            study.filter_view_enabled
-            and study.status is not StudyStatus.IN_PROGRESS
-            and study.filtered_samples_count < study.samples_count
+        closed = study.status is not StudyStatus.IN_PROGRESS
+        if (
+            pending
+            or (
+                study.filter_view_enabled
+                and closed
+                and study.filtered_samples_count < study.samples_count
+            )
+            # La cola que el motor analiza recién al cierre: si la finalización
+            # falló, éste es el camino de recuperación, igual que para la vista
+            # filtrada. Solo con segmentos crudos: un estudio seedeado tiene
+            # `samples_count` sin nada que el motor pueda leer. Y la cuenta se
+            # cierra sola —la pasada del cierre lleva el cursor hasta
+            # `samples_count` aunque haya señal sin corrida que no se pueda
+            # analizar—, así que no se vuelve a agendar en cada vista.
+            or (
+                settings.ml_enabled
+                and closed
+                and bool(study.ecg_segments)
+                and study.ml_analyzed_samples < study.samples_count
+            )
         ):
             background.add_task(process_study_task, study.id)
     # El manifest puede estar vacío mientras se procesa el primer lote. Se
@@ -1071,9 +1088,14 @@ async def simulate_anomaly(
 
 
 def _schedule_study_finalization(background: BackgroundTasks | None, study: Study) -> None:
-    if background is None or not (
-        study.filter_view_enabled or study.ecg_segments or study.ecg_pyramid_levels
-    ):
+    """Agenda `process_study_task`: drena la cola, cierra las colas y funde morfologías.
+
+    También para un estudio que todavía no tiene señal procesada: se puede
+    cerrar con su primer lote en cola, y sin esta pasada ese lote se procesaría
+    después sin que nadie fundiera las morfologías del estudio. Sin nada que
+    hacer, la tarea toma la fila, no escribe nada y commitea.
+    """
+    if background is None:
         return
     from app.modules.ingest.processing import process_study_task
 

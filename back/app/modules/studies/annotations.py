@@ -17,9 +17,8 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol
 
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient_report import PatientReport
@@ -29,8 +28,17 @@ from app.db.models.study_timeline_segment import StudyTimelineSegment
 AnnotationCategory = Literal["signal_quality", "clinical", "patient_marker", "technical"]
 AnnotationSeverity = Literal["low", "medium", "high", "critical"]
 
-#: `offsetMs (buffer empaquetado) -> epoch ms (hora real)`. Ver `wall_clock_resolver`.
-WallClockResolver = Callable[[int], int]
+
+class WallClockResolver(Protocol):
+    """`offsetMs (buffer empaquetado) -> epoch ms (hora real)`. Ver `wall_clock_resolver`.
+
+    `exclusive_end`: el offset es el final **exclusivo** de un rango. Si cae
+    justo en el borde de un tramo, se resuelve contra el tramo que termina ahí
+    y no contra el siguiente, que empieza después del hueco.
+    """
+
+    def __call__(self, offset_ms: int, *, exclusive_end: bool = False) -> int: ...
+
 
 SIGNAL_QUALITY_KINDS = {
     "noise",
@@ -144,26 +152,34 @@ def wall_clock_resolver(study: Study, segments: list[StudyTimelineSegment]) -> W
     mismo.
     """
     started_ms = int(study.started_at.timestamp() * 1000)
-    if not segments:
-        return lambda offset_ms: started_ms + offset_ms
-
     rate = study.sample_rate or 500
 
-    def resolve(offset_ms: int) -> int:
+    def resolve(offset_ms: int, *, exclusive_end: bool = False) -> int:
         sample = offset_ms * rate / 1000
         for segment in segments:
             end = segment.start_sample_index + segment.sample_count
-            if sample < end or segment is segments[-1]:
-                within = max(sample - segment.start_sample_index, 0)
-                return round(
-                    segment.start_epoch_ms
-                    + within
-                    * (segment.end_epoch_ms - segment.start_epoch_ms)
-                    / max(segment.sample_count, 1)
-                )
+            if sample < end or (exclusive_end and sample == end) or segment is segments[-1]:
+                return segment_epoch_ms(segment, sample)
         return started_ms + offset_ms
 
     return resolve
+
+
+def segment_epoch_ms(segment: StudyTimelineSegment, sample: float) -> int:
+    """Hora de pared de una muestra **dentro de su tramo**, con su borde final.
+
+    `wall_clock_resolver` elige el tramo por la muestra, así que el final
+    exclusivo de un rango que termina justo donde termina su tramo caería en
+    el tramo siguiente, después del hueco, si no se lo pide con
+    `exclusive_end`. Quien ya sabe a qué tramo pertenece un rango (los
+    intervalos de calidad, que nunca cruzan una corrida) resuelve sus dos
+    bordes acá, contra ese tramo.
+    """
+    within = max(sample - segment.start_sample_index, 0)
+    return round(
+        segment.start_epoch_ms
+        + within * (segment.end_epoch_ms - segment.start_epoch_ms) / max(segment.sample_count, 1)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +229,10 @@ def event_view(event: ECGEvent, study: Study, to_epoch_ms: WallClockResolver) ->
         start_ms=offsets[0],
         end_ms=offsets[1],
         start_epoch_ms=to_epoch_ms(offsets[0]),
-        end_epoch_ms=to_epoch_ms(offsets[1]),
+        # Un evento que termina justo donde termina su tramo (la cola de una
+        # corrida, que el motor analiza hasta su última muestra) no dura todo
+        # el hueco de grabación que viene después.
+        end_epoch_ms=to_epoch_ms(offsets[1], exclusive_end=offsets[1] > offsets[0]),
         kind=kind,
         category=annotation_category(event, kind),
         severity=ANNOTATION_SEVERITY[event.severity],

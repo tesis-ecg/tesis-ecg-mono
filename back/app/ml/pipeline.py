@@ -17,7 +17,7 @@ descarta ruido primero produce cientos de falsos positivos por día.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -30,6 +30,7 @@ from app.ml.contracts import (
     EpisodeBudget,
     Finding,
     Flags,
+    Mask,
     QualityReport,
     QualityThresholds,
     QualityWindow,
@@ -37,15 +38,16 @@ from app.ml.contracts import (
     Signal,
 )
 from app.ml.episodes import RECURRENT_KIND, apply_refractory, enforce_budget, group_beats
-from app.ml.hrv import RRSeries, build_rr, hrv_summary, prematurity
+from app.ml.hrv import build_rr, prematurity
 from app.ml.morphology import TemplateBank
-from app.ml.quality import assess_quality, merge_windows, window_counts
+from app.ml.quality import assess_quality, exclude_splices, merge_windows, window_counts
 from app.ml.rpeak_detection import (
     clean_signal,
     compensate_firmware_peaks,
     detect_rpeaks,
     firmware_rpeaks,
 )
+from app.ml.totals import block_totals, summary_from_totals
 
 #: Versión del pipeline. Viaja en `ecg_event.model_version` y se **pinnea por
 #: estudio** en el primer lote analizado: si el código sube de versión a mitad de
@@ -81,13 +83,20 @@ class PipelineConfig:
 
 @dataclass(frozen=True, slots=True)
 class PipelineResult:
-    """Salida del análisis de un lote, con coordenadas **absolutas al estudio**."""
+    """Salida del análisis de un bloque, con coordenadas **absolutas al estudio**.
+
+    `totals` son las sumas de la parte nueva (`totals.block_totals`): se
+    acumulan en el estudio con `totals.combine_totals`. `metrics` es su resumen
+    legible más el estado del banco, y existe para los lectores de
+    `ml_state["metrics"]`; describe **este** bloque, no el estudio.
+    """
 
     quality_intervals: tuple[tuple[QualityWindow, int], ...]
     findings: tuple[Finding, ...]
     bank: TemplateBank
     metrics: dict[str, float]
     model_version: str
+    totals: dict[str, float] = field(default_factory=dict)
 
 
 def build_config(
@@ -153,18 +162,76 @@ def analyze_batch(
     start_sample_index: int,
     bank: TemplateBank,
     config: PipelineConfig,
-    batch_id: str,
+    fold_key: str,
     existing_anomalies: int = 0,
+    context_samples: int = 0,
+    lookahead_samples: int = 0,
+    gap_samples: tuple[tuple[int, int], ...] = (),
+    flags_known: Mask | None = None,
 ) -> PipelineResult:
-    """Analiza un lote. **Bloqueante y CPU-bound**: llamar desde un hilo.
+    """Analiza un bloque. **Bloqueante y CPU-bound**: llamar desde un hilo.
 
-    `batch_id` es una red de seguridad: si coincide con el último lote plegado
-    al banco, los latidos se puntúan contra el banco pero no se vuelven a sumar
-    —contarlos dos veces falsearía la carga (`burdenPct`) que lee el médico—.
-    Hoy no se dispara: un lote `DONE` no se reprocesa y uno que falla hace
-    rollback de `study.ml_state` junto con todo lo demás.
+    `signal_mv[0]` es la muestra `start_sample_index` del estudio. Las primeras
+    `context_samples` son **contexto izquierdo**: señal que ya analizó el
+    bloque anterior de la misma corrida y que se vuelve a pasar solo para que
+    lo nuevo no arranque en frío. Un lote de ~15 s nunca llega a los 30 s que
+    pide una taquicardia, y sin contexto cada borde de bloque corta un R-R, una
+    pausa o la referencia de prematuridad de los primeros latidos. Del contexto
+    se usa todo lo que sirve para mirar la parte nueva, pero de él no se
+    **informa** nada que el bloque anterior ya haya informado:
+
+    - Calidad: las ventanas se cubren por separado a cada lado del borde
+      (`quality.block_window_bounds`). Se informan —intervalos, hallazgos,
+      totales— solo las de la parte nueva; las del contexto solo arman la
+      máscara de analizable con la que se validan los R-R.
+    - Ritmo: la serie R-R es la del bloque entero. Se descarta el hallazgo que
+      termina antes de la parte nueva (con una franja de guarda, ver
+      `_frontier_guard_samples`) y se conserva el que empieza en el contexto y
+      termina en ella, **con su inicio en el contexto**: la persistencia lo
+      empalma con el evento que ya escribió el bloque anterior.
+    - Morfología: solo los latidos de la parte nueva se asignan y se pliegan al
+      banco. "De la parte nueva" es que su ventana termina después del borde
+      (`morphology.windows_ending_after`): el R puede caer hasta `BEAT_POST_MS`
+      antes, porque el bloque anterior no tenía la ventana completa de ese
+      latido. Los del contexto aportan su R-R, que es contra lo que se mide la
+      prematuridad de los primeros nuevos, y se puntúan contra el banco para
+      agrupar episodios a través del borde: se informa el grupo que tiene al
+      menos un latido nuevo, aunque arranque en el contexto.
+    - Totales: ver `totals.block_totals`.
+
+    Las últimas `lookahead_samples` son **contexto derecho**: señal que es del
+    bloque siguiente y se lee para que el final de la parte nueva no sea un
+    borde duro. Sin él, lo que este bloque decidía en sus últimos segundos era
+    final y estaba mal medido: el R de los últimos milisegundos se perdía o
+    salía uno fantasma sobre el QRS cortado, la mediana de prematuridad de los
+    últimos dieciséis latidos repetía el último R-R —un bloque que terminaba en
+    un ectópico lo medía contra sí mismo y lo metía en el RMSSD— y la última
+    ventana de calidad se juzgaba con el notch sin asentar. Del contexto derecho
+    no se informa nada que sea del bloque siguiente: ni ventanas, ni latidos
+    que contar o plegar, ni un hallazgo que **empiece** ahí. Uno que empieza en
+    la parte nueva y termina en el contexto derecho sí, entero: el bloque
+    siguiente lo vuelve a ver desde su contexto izquierdo y la persistencia lo
+    empalma.
+
+    `gap_samples` son los empalmes de la corrida (`frame_gap`, `internal_gap`)
+    relativos a `signal_mv[0]`: adquisición perdida que no tiene muestras en el
+    buffer. Se excluyen de la máscara de analizable (`quality.exclude_splices`).
+
+    `flags_known` marca las muestras cuyos flags se archivaron; `None` es que
+    todas. Las que no —un estudio ingerido antes de que cada lote archivara sus
+    flags— llegan en cero, y el gate no les pide bSQI (`quality.assess_quality`).
+
+    `fold_key` es una red de seguridad: si coincide con la del último tramo
+    plegado al banco, los latidos se puntúan contra el banco pero no se vuelven
+    a sumar —contarlos dos veces falsearía la carga (`burdenPct`) que lee el
+    médico—. Con el cursor de bloques es la clave del bloque, así que un bloque
+    que se reintenta no se pliega dos veces.
     """
     sample_rate = config.sample_rate
+    n_samples = int(signal_mv.size)
+    context = min(max(int(context_samples), 0), n_samples)
+    #: Final de la parte nueva: de acá en adelante es contexto derecho.
+    end = max(n_samples - max(int(lookahead_samples), 0), context)
     cleaned = clean_signal(signal_mv, sample_rate)
     firmware_peaks = compensate_firmware_peaks(
         firmware_rpeaks(flags),
@@ -181,48 +248,20 @@ def analyze_batch(
         detected_peaks,
         sample_rate=sample_rate,
         thresholds=config.quality,
+        context_samples=context,
+        lookahead_samples=n_samples - end,
+        flags_known=flags_known,
     )
+    reported = tuple(window for window in report.windows if context <= window.start_sample < end)
+    analyzable = exclude_splices(report.analyzable, gap_samples, sample_rate)
 
-    rr = build_rr(detected_peaks, report.analyzable, sample_rate)
-    findings: list[Finding] = detect_rhythm(rr, config.rhythm, sample_rate)
-    quality_findings = _quality_findings(report.windows, sample_rate)
-
-    # --- Etapa 2 ------------------------------------------------------------- #
-    beats = morphology.extract_beats(cleaned, detected_peaks, report.analyzable, sample_rate)
-    if batch_id != bank.last_folded_batch_id:
-        updated_bank, assignment = morphology.assign_and_update(
-            bank,
-            beats,
-            match_threshold=config.match_threshold,
-            max_templates=config.max_templates,
-            batch_id=batch_id,
-            sample_offset=start_sample_index,
-        )
-    else:
-        updated_bank = bank
-        assignment = morphology.score_only(bank, beats, match_threshold=config.match_threshold)
-
-    if beats.n_beats:
-        beat_prematurity = prematurity(rr)[beats.beat_index]
-        # Contra la plantilla DOMINANTE, no contra la asignada: ver
-        # `morphology.dissimilarity_to_dominant`.
-        scores = morphology.anomaly_score(
-            morphology.dissimilarity_to_dominant(updated_bank, beats),
-            beat_prematurity,
-            match_threshold=config.match_threshold,
-        )
-        findings.extend(
-            group_beats(
-                beats.rpeaks,
-                scores >= config.anomaly_score_min,
-                scores,
-                assignment.cluster_ids,
-                updated_bank.recurrent_ids(config.recurrent_min_beats),
-                sample_rate=sample_rate,
-                budget=config.budget,
-            )
-        )
-
+    rr = build_rr(detected_peaks, analyzable, sample_rate)
+    # La refractariedad corre ANTES de descartar lo del contexto: una pausa del
+    # contexto y otra a 5 s, ya en la parte nueva, son un solo hallazgo cuando
+    # el lote es uno solo, y tienen que seguir siéndolo cuando el borde cae
+    # entre las dos. Fundidas, empiezan en el contexto y la persistencia las
+    # empalma con el evento de la primera.
+    #
     # La refractariedad se aplica SOLO a los hallazgos que pueden disparar un
     # aviso al paciente. Sobre morfología produciría bandas fantasma: dos
     # ectópicos separados por 12 s se fusionaban en un hallazgo de 12,5 s con dos
@@ -235,19 +274,96 @@ def analyze_batch(
     # contigüidad exacta. Con la refractariedad de 10 s, dos tramos malos
     # separados por UNA ventana buena (hueco de 10 s justos) se volvían a fundir
     # en una banda de ruido pintada encima de la señal buena del medio.
-    alerting = [item for item in findings if item.event_type is not ECGEventType.ANOMALY]
-    morphology_findings = [item for item in findings if item.event_type is ECGEventType.ANOMALY]
-    findings = (
-        apply_refractory(
-            alerting,
-            sample_rate=sample_rate,
-            refractory_seconds=config.budget.refractory_seconds,
-        )
-        + morphology_findings
-        + quality_findings
+    rhythm = apply_refractory(
+        detect_rhythm(rr, config.rhythm, sample_rate),
+        sample_rate=sample_rate,
+        refractory_seconds=config.budget.refractory_seconds,
     )
+    # El final de un hallazgo de ritmo es la posición de su último R, una
+    # muestra que el hallazgo incluye. El bloque anterior vio hasta la muestra
+    # `context - 1`, pero **no todos sus R**: el detector no encuentra un R cuyo
+    # QRS quedó cortado por el final de la señal (medido: los de los últimos
+    # 30-50 ms se pierden). Una pausa que cerraba con ese R no la informó nadie
+    # —el bloque anterior no vio el R que la cierra y este la descartaba por
+    # terminar en su contexto—. Por eso se descarta solo lo que termina antes de
+    # `context - guard`: lo que cae en esa franja se vuelve a informar, y si el
+    # bloque anterior ya lo había escrito la persistencia lo empalma con su
+    # evento sin volver a avisar.
+    #
+    # Lo que empieza en el contexto derecho es del bloque siguiente, que lo ve
+    # entero y con su propio contexto.
+    guard = _frontier_guard_samples(sample_rate) if context else 0
+    findings: list[Finding] = [
+        item
+        for item in rhythm
+        if item.start_sample + item.length_samples >= context - guard and item.start_sample < end
+    ]
+    quality_findings = _quality_findings(reported, sample_rate)
+
+    # --- Etapa 2 ------------------------------------------------------------- #
+    extracted = morphology.extract_beats(cleaned, detected_peaks, analyzable, sample_rate)
+    # Son de este bloque los latidos cuya ventana termina en la parte nueva, no
+    # solo los que tienen el R ahí: el bloque anterior terminaba en `context` y
+    # no pudo extraer los que tienen el R en sus últimos `BEAT_POST_MS`. La
+    # misma regla en el otro borde: los que terminan después de `end` son del
+    # bloque siguiente, aunque acá el contexto derecho los deje extraer.
+    in_context = ~morphology.windows_ending_after(extracted, context, sample_rate)
+    owned = ~in_context & ~morphology.windows_ending_after(extracted, end, sample_rate)
+    beats = morphology.select_beats(extracted, owned)
+    if fold_key != bank.last_fold_key:
+        updated_bank, assignment = morphology.assign_and_update(
+            bank,
+            beats,
+            match_threshold=config.match_threshold,
+            max_templates=config.max_templates,
+            fold_key=fold_key,
+            sample_offset=start_sample_index,
+        )
+    else:
+        updated_bank = bank
+        assignment = morphology.score_only(bank, beats, match_threshold=config.match_threshold)
+
+    if beats.n_beats:
+        beat_prematurity = prematurity(rr)
+        # Los latidos del contexto también se puntúan —contra el banco, sin
+        # plegarlos: ya los plegó el bloque anterior— para agrupar los episodios
+        # **a través del borde**. Agrupando solo los nuevos, un par de ectópicos
+        # con un latido a cada lado del borde quedaba en dos grupos de uno, que
+        # sin morfología recurrente no llegan al mínimo: el par se perdía. Y un
+        # bigeminismo de una hora salía partido en un evento por bloque.
+        # Los del contexto derecho no: el bloque siguiente los agrupa con los
+        # suyos, puntuados contra un banco que ya plegó los de este.
+        previous = morphology.select_beats(extracted, in_context)
+        grouped = morphology.concat_beats(previous, beats)
+        previous_ids = morphology.score_only(
+            updated_bank, previous, match_threshold=config.match_threshold
+        ).cluster_ids
+        # Contra la plantilla DOMINANTE, no contra la asignada: ver
+        # `morphology.dissimilarity_to_dominant`.
+        scores = morphology.anomaly_score(
+            morphology.dissimilarity_to_dominant(updated_bank, grouped),
+            beat_prematurity[grouped.beat_index],
+            match_threshold=config.match_threshold,
+        )
+        # Solo los grupos con al menos un latido nuevo: los que quedan enteros
+        # en el contexto ya los informó el bloque anterior. Uno que arranca en
+        # el contexto conserva su inicio ahí, y la persistencia lo empalma con
+        # el evento que escribió el bloque anterior (mismo foco, se solapan).
+        findings.extend(
+            group_beats(
+                grouped.rpeaks,
+                scores >= config.anomaly_score_min,
+                scores,
+                np.concatenate((previous_ids, assignment.cluster_ids)),
+                updated_bank.recurrent_ids(config.recurrent_min_beats),
+                sample_rate=sample_rate,
+                budget=config.budget,
+                owned=np.arange(grouped.n_beats) >= previous.n_beats,
+            )
+        )
+
     findings, score_floor = enforce_budget(
-        findings, budget=config.budget, existing_anomalies=existing_anomalies
+        findings + quality_findings, budget=config.budget, existing_anomalies=existing_anomalies
     )
 
     # Los hallazgos de estudio se agregan DESPUÉS del presupuesto: son un
@@ -256,7 +372,7 @@ def analyze_batch(
     absolute = [_shift(finding, start_sample_index) for finding in findings]
     absolute.extend(_recurrent_findings(updated_bank, config))
 
-    merged = merge_windows(report.windows)
+    merged = merge_windows(reported)
     intervals = tuple(
         (
             QualityWindow(
@@ -269,23 +385,43 @@ def analyze_batch(
                 bassqi=interval.bassqi,
                 bsqi=interval.bsqi,
             ),
-            window_counts(report.windows, interval),
+            window_counts(reported, interval),
         )
         for interval in merged
     )
 
+    totals = block_totals(
+        rr,
+        reported,
+        analyzable,
+        context_samples=context,
+        n_samples=n_samples,
+        sample_rate=sample_rate,
+        lookahead_samples=n_samples - end,
+    )
     return PipelineResult(
         quality_intervals=intervals,
         findings=tuple(absolute),
         bank=replace(updated_bank, score_floor=score_floor),
-        metrics=_metrics(report, rr, beats.n_beats, updated_bank),
+        metrics=_metrics(totals, report, reported, beats.n_beats, updated_bank),
         model_version=PIPELINE_VERSION,
+        totals=totals,
     )
 
 
 # --------------------------------------------------------------------------- #
 # Traducciones
 # --------------------------------------------------------------------------- #
+
+
+def _frontier_guard_samples(sample_rate: int) -> int:
+    """Franja antes del borde donde un hallazgo de ritmo se vuelve a informar.
+
+    `BEAT_POST_MS` (250 ms): holgada contra los 30-50 ms en que el detector
+    pierde un R al final de la señal, y del mismo largo que la franja donde el
+    bloque anterior no pudo extraer latidos (`morphology.windows_ending_after`).
+    """
+    return int(round(morphology.BEAT_POST_MS * sample_rate / 1000))
 
 
 def _shift(finding: Finding, offset: int) -> Finding:
@@ -304,6 +440,7 @@ def _shift(finding: Finding, offset: int) -> Finding:
         beat_count=finding.beat_count,
         alert_message=finding.alert_message,
         metadata=finding.metadata,
+        beat_samples=tuple(sample + offset for sample in finding.beat_samples),
     )
 
 
@@ -405,24 +542,23 @@ def _recurrent_findings(bank: TemplateBank, config: PipelineConfig) -> list[Find
 
 
 def _metrics(
-    report: QualityReport, rr: RRSeries, analyzed_beats: int, bank: TemplateBank
+    totals: dict[str, float],
+    report: QualityReport,
+    reported: tuple[QualityWindow, ...],
+    analyzed_beats: int,
+    bank: TemplateBank,
 ) -> dict[str, float]:
-    windows = report.windows
-    total = len(windows) or 1
-    levels = [window.level for window in windows]
-    metrics: dict[str, float] = {
-        "windows": float(len(windows)),
-        "goodRatio": round(levels.count(SignalQualityLevel.GOOD) / total, 6),
-        "marginalRatio": round(levels.count(SignalQualityLevel.MARGINAL) / total, 6),
-        "badRatio": round(levels.count(SignalQualityLevel.BAD) / total, 6),
-        "analyzedBeats": float(analyzed_beats),
-        "templates": float(len(bank.templates)),
-        "beatsSeen": float(bank.beats_seen),
-        "unmatchedBeats": float(bank.unmatched_beats),
-        "firmwarePeaks": 1.0 if report.firmware_peaks_available else 0.0,
-    }
-    metrics.update(hrv_summary(rr))
-    bsqi = [window.bsqi for window in windows if window.bsqi is not None]
+    metrics = summary_from_totals(totals)
+    metrics.update(
+        {
+            "analyzedBeats": float(analyzed_beats),
+            "templates": float(len(bank.templates)),
+            "beatsSeen": float(bank.beats_seen),
+            "unmatchedBeats": float(bank.unmatched_beats),
+            "firmwarePeaks": 1.0 if report.firmware_peaks_available else 0.0,
+        }
+    )
+    bsqi = [window.bsqi for window in reported if window.bsqi is not None]
     if bsqi:
         metrics["medianBsqi"] = round(float(np.median(bsqi)), 6)
     return metrics

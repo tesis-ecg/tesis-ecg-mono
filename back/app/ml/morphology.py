@@ -111,13 +111,15 @@ class TemplateBank:
     #: plantilla antes de llegar al tope.
     unmatched_beats: int = 0
     next_cluster_id: int = 0
-    #: Último lote plegado al banco. Es una red de seguridad: volver a plegar ese
-    #: mismo lote **no** suma sus latidos otra vez, porque el banco es un
-    #: acumulador y contarlos dos veces falsearía la carga (`burdenPct`) que el
-    #: médico lee. Solo el último y no la lista de todos: los lotes se pliegan en
-    #: orden, y la lista crecía un UUID por lote (~5.760 por día de registro)
-    #: dentro de `study.ml_state`, que viaja en cada `select(Study)`.
-    last_folded_batch_id: str | None = None
+    #: Clave del último tramo plegado al banco (`fold_key` de `analyze_batch`:
+    #: hoy el id del lote, con el cursor de bloques la posición del bloque). Es
+    #: una red de seguridad: volver a plegar ese mismo tramo **no** suma sus
+    #: latidos otra vez, porque el banco es un acumulador y contarlos dos veces
+    #: falsearía la carga (`burdenPct`) que el médico lee. Solo la última y no la
+    #: lista de todas: los tramos se pliegan en orden, y la lista crecía una clave
+    #: por lote (~5.760 por día de registro) dentro de `study.ml_state`, que
+    #: viaja en cada `select(Study)`.
+    last_fold_key: str | None = None
     score_floor: float = 0.0
 
     def centroids(self) -> Floats:
@@ -196,6 +198,51 @@ def extract_beats(
     )
 
 
+def windows_ending_after(beats: BeatMatrix, boundary: int, sample_rate: int) -> Mask:
+    """Por latido: verdadero si su ventana termina **después** de `boundary`.
+
+    Es el complemento exacto de lo que `extract_beats` pudo sacar de una señal
+    que terminaba en `boundary`: una ventana que no entraba entera ahí quedó
+    afuera. Con eso el pipeline reparte los latidos entre bloques consecutivos
+    sin perder ninguno: el R a menos de `BEAT_POST_MS` del final de un bloque no
+    tiene ventana completa en ese bloque, y si el siguiente lo tratara como
+    contexto por tener el R antes del borde no lo plegaría nadie — uno por
+    borde, justo el ectópico que caiga ahí.
+    """
+    pre = int(round(BEAT_PRE_MS * sample_rate / 1000))
+    return np.asarray(beats.rpeaks - pre + beat_length(sample_rate) > boundary, dtype=bool)
+
+
+def select_beats(beats: BeatMatrix, keep: Mask) -> BeatMatrix:
+    """Las filas de `beats` donde `keep` es verdadera, con su `beat_index` intacto.
+
+    Es como el pipeline separa los latidos del contexto izquierdo de un bloque
+    de los nuevos: el índice sigue apuntando a la serie R-R **completa**, así que
+    la prematuridad de un latido nuevo se sigue leyendo contra los intervalos
+    del contexto.
+    """
+    return BeatMatrix(
+        beat_index=beats.beat_index[keep],
+        rpeaks=beats.rpeaks[keep],
+        waveforms=beats.waveforms[keep],
+    )
+
+
+def concat_beats(first: BeatMatrix, second: BeatMatrix) -> BeatMatrix:
+    """Las filas de `first` seguidas de las de `second`, en ese orden.
+
+    Para volver a juntar el contexto con la parte nueva después de separarlos:
+    `select_beats` sobre la misma matriz y una máscara y su complemento, así que
+    con `first` antes del borde y `second` después el resultado sigue ordenado
+    por R.
+    """
+    return BeatMatrix(
+        beat_index=np.concatenate((first.beat_index, second.beat_index)),
+        rpeaks=np.concatenate((first.rpeaks, second.rpeaks)),
+        waveforms=np.concatenate((first.waveforms, second.waveforms)),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Banco de plantillas
 # --------------------------------------------------------------------------- #
@@ -218,8 +265,8 @@ def _best_match(centroids: Floats, waveforms: Floats) -> tuple[Indices, Floats]:
 def score_only(bank: TemplateBank, beats: BeatMatrix, *, match_threshold: float) -> BeatAssignment:
     """Asigna latidos al banco **sin modificarlo**.
 
-    Es lo que corre si llega otra vez el último lote plegado
-    (`TemplateBank.last_folded_batch_id`): sus latidos se puntúan contra el banco
+    Es lo que corre si llega otra vez el último tramo plegado
+    (`TemplateBank.last_fold_key`): sus latidos se puntúan contra el banco
     actual, pero no se cuentan de nuevo.
     """
     slot, correlation = _best_match(bank.centroids(), beats.waveforms)
@@ -238,7 +285,7 @@ def assign_and_update(
     *,
     match_threshold: float,
     max_templates: int,
-    batch_id: str | None = None,
+    fold_key: str | None = None,
     sample_offset: int = 0,
 ) -> tuple[TemplateBank, BeatAssignment]:
     """Pliega un lote al banco: asigna, crea plantillas nuevas y acumula.
@@ -332,7 +379,7 @@ def assign_and_update(
         beats_seen=bank.beats_seen + beats.n_beats,
         unmatched_beats=bank.unmatched_beats + unmatched,
         next_cluster_id=next_id,
-        last_folded_batch_id=batch_id if batch_id is not None else bank.last_folded_batch_id,
+        last_fold_key=fold_key if fold_key is not None else bank.last_fold_key,
     )
     return updated, BeatAssignment(cluster_ids=cluster_ids, dissimilarity=dissimilarity)
 
@@ -485,7 +532,7 @@ def bank_to_state(bank: TemplateBank) -> tuple[dict[str, Any], bytes]:
         "beatsSeen": bank.beats_seen,
         "unmatchedBeats": bank.unmatched_beats,
         "nextClusterId": bank.next_cluster_id,
-        "lastFoldedBatchId": bank.last_folded_batch_id,
+        "lastFoldKey": bank.last_fold_key,
         "scoreFloor": bank.score_floor,
         "templates": [
             {
@@ -543,12 +590,16 @@ def bank_from_state(state: dict[str, Any], blob: bytes, *, model_version: str) -
         unmatched_beats=int(state.get("unmatchedBeats", 0)),
         next_cluster_id=int(state.get("nextClusterId", len(templates))),
         # Un estado viejo trae `consumedBatchIds` (la lista entera): se ignora y
-        # el próximo `bank_to_state` lo reemplaza.
-        last_folded_batch_id=(
-            str(state["lastFoldedBatchId"]) if state.get("lastFoldedBatchId") else None
-        ),
+        # el próximo `bank_to_state` lo reemplaza. Uno de antes del cursor de
+        # bloques trae la clave con su nombre anterior, `lastFoldedBatchId`.
+        last_fold_key=_last_fold_key(state),
         score_floor=float(state.get("scoreFloor", 0.0)),
     )
+
+
+def _last_fold_key(state: dict[str, Any]) -> str | None:
+    value = state.get("lastFoldKey") or state.get("lastFoldedBatchId")
+    return str(value) if value else None
 
 
 def encode_centroids(blob: bytes) -> str:

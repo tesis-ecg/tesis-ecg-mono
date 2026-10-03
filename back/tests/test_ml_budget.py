@@ -37,7 +37,7 @@ def test_una_hora_de_ecg_entra_en_el_presupuesto_de_computo() -> None:
         start_sample_index=0,
         bank=bank,
         config=config,
-        batch_id="warmup",
+        fold_key="warmup",
     )
 
     started = time.perf_counter()
@@ -47,7 +47,7 @@ def test_una_hora_de_ecg_entra_en_el_presupuesto_de_computo() -> None:
         start_sample_index=0,
         bank=bank,
         config=config,
-        batch_id="una-hora",
+        fold_key="una-hora",
     )
     elapsed = time.perf_counter() - started
 
@@ -79,7 +79,7 @@ def test_el_banco_de_plantillas_no_crece_con_la_duracion_del_estudio() -> None:
             start_sample_index=hora * 300_000,
             bank=bank,
             config=config,
-            batch_id=f"b{hora}",
+            fold_key=f"b{hora}",
         )
         bank = result.bank
         tamaños.append(len(bank.templates))

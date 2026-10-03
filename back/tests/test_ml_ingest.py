@@ -7,7 +7,16 @@ banco de plantillas → hallazgos, calidad y alertas en la base.
 Todo lo que se ingiere es **ECG con morfología real** (`tests/ecg_synth.py`), no
 la onda de prueba del codec: el motor mide si dos formas se parecen, y sobre una
 onda cuadrada esa pregunta no significa nada.
+
+El motor analiza por **bloques** de la corrida (`ml_analysis_block_seconds`,
+300 s) y no por lote. Un registro de 930 s son tres bloques enteros más los
+30 s de contexto derecho que el tercero espera con la corrida abierta
+(`ml_analysis_lookahead_seconds`), y se analiza con el estudio abierto; uno de
+120 s es la cola de una corrida abierta y espera al cierre, así que esos tests
+cierran el estudio y corren la finalización real (`finalizar`).
 """
+
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -20,7 +29,7 @@ from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLev
 from app.ml.decompression import FLAG_LEAD_OFF
 from app.ml.pipeline import PIPELINE_VERSION
 from app.modules.ingest import ml_persistence
-from app.modules.ingest.processing import process_batch
+from app.modules.ingest.processing import process_batch, process_study_task
 from app.modules.patient_app.notifications_service import anomaly_title
 from tests.ecg_synth import SAMPLE_RATE, synth_ecg, to_microvolts
 from tests.frame_builder import Sample, encode_samples
@@ -42,6 +51,33 @@ async def _ingest(client, db, device, api_key, frames):
     body = (await post_frames(client, device, api_key, frames)).json()
     await process_batch(db, body["batchId"])
     return body
+
+
+async def finalizar(db, monkeypatch, study_id, *, cerrar: bool = True) -> None:
+    """Cierra el estudio por el servicio real y corre la finalización con esta sesión.
+
+    `process_study_task` abre su propia sesión contra el engine global, que no
+    vería nada de lo que escribió el test: se la apunta a la sesión del test.
+    `process_study_task` se importa al cargar el módulo, antes de que el fixture
+    `scheduled_batches` (del `client`) reemplace el atributo del módulo por un
+    espía.
+    """
+    from contextlib import asynccontextmanager
+
+    from app.modules.studies import studies_service
+    from app.modules.studies.studies_schemas import StudyIdInput
+
+    if cerrar:
+        await studies_service.complete_study(
+            StudyIdInput(doctor_id=None, study_id=study_id, actor_id=None), db
+        )
+
+    @asynccontextmanager
+    async def _misma_sesion():
+        yield db
+
+    monkeypatch.setattr("app.db.session.async_session_factory", _misma_sesion)
+    await process_study_task(study_id)
 
 
 async def _events(db, study_id) -> list[ECGEvent]:
@@ -69,7 +105,7 @@ async def test_un_foco_ectopico_ingerido_produce_hallazgos_de_morfologia(
 ) -> None:
     """El camino completo, de la trama comprimida al hallazgo agrupado."""
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
-    signal = synth_ecg(duration_s=900.0, ectopic_every=12)
+    signal = synth_ecg(duration_s=930.0, ectopic_every=12)
 
     await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
 
@@ -88,14 +124,15 @@ async def test_un_foco_ectopico_ingerido_produce_hallazgos_de_morfologia(
 
 
 async def test_la_calidad_se_persiste_como_intervalos_y_no_como_eventos(
-    client, s3, db, make_patient, make_device, make_study
+    client, s3, db, monkeypatch, make_patient, make_device, make_study
 ) -> None:
-    """Una hora limpia es UNA fila, no 360. La calidad es una propiedad continua
-    del registro, no un hallazgo puntual."""
+    """Dos minutos limpios son UNA fila, no 12. La calidad es una propiedad
+    continua del registro, no un hallazgo puntual."""
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
     signal = synth_ecg(duration_s=120.0)
 
     await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
+    await finalizar(db, monkeypatch, study.id)
 
     intervals = list(
         (
@@ -112,7 +149,7 @@ async def test_la_calidad_se_persiste_como_intervalos_y_no_como_eventos(
 
 
 async def test_el_electrodo_despegado_parte_la_calidad_en_tres_tramos(
-    client, s3, db, make_patient, make_device, make_study
+    client, s3, db, monkeypatch, make_patient, make_device, make_study
 ) -> None:
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
     signal = synth_ecg(duration_s=120.0)
@@ -120,6 +157,7 @@ async def test_el_electrodo_despegado_parte_la_calidad_en_tres_tramos(
     flags[60 * SAMPLE_RATE : 70 * SAMPLE_RATE] |= FLAG_LEAD_OFF
 
     await _ingest(client, db, device, api_key, _frames(signal.signal_mv, flags))
+    await finalizar(db, monkeypatch, study.id)
 
     intervals = list(
         (
@@ -153,7 +191,7 @@ async def test_un_reintento_despues_de_una_falla_no_duplica_ni_infla_el_banco(
     un lote falsearía la carga (`burdenPct`) que el médico lee como "el 8 % de
     tus latidos".
     """
-    signal = synth_ecg(duration_s=900.0, ectopic_every=12)
+    signal = synth_ecg(duration_s=930.0, ectopic_every=12)
 
     # Referencia: el mismo lote en un estudio que nunca falló.
     _, device, api_key, limpio = await _world(make_patient, make_device, make_study)
@@ -217,7 +255,7 @@ async def test_events_count_cuenta_cada_evento_una_sola_vez(
     solo crece su conteo—, así que un `+= escritos` lo contaría una vez por lote.
     """
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
-    signal = synth_ecg(duration_s=900.0, ectopic_every=12)
+    signal = synth_ecg(duration_s=930.0, ectopic_every=12)
     frames = _frames(signal.signal_mv, signal.flags)
     mitad = len(frames) // 2
 
@@ -231,7 +269,7 @@ async def test_events_count_cuenta_cada_evento_una_sola_vez(
 
 
 async def test_una_pausa_del_motor_notifica_con_su_kind(
-    client, s3, db, sent_pushes, make_patient, make_device, make_study
+    client, s3, db, monkeypatch, sent_pushes, make_patient, make_device, make_study
 ) -> None:
     """El aviso de un hallazgo del motor es el mismo `Pushable` que el de la Capa A.
 
@@ -249,14 +287,20 @@ async def test_una_pausa_del_motor_notifica_con_su_kind(
     flags[inicio : inicio + largo] = 0
 
     await _ingest(client, db, device, api_key, _frames(señal, flags))
+    # La finalización hace rollback de la sesión antes de tomar la fila, y eso
+    # expira los objetos cargados: los ids se leen antes.
+    patient_id, study_id = patient.id, study.id
+    # Dos minutos son la cola de la corrida: el motor los analiza al cierre, y
+    # el aviso sale de la finalización después de su commit.
+    await finalizar(db, monkeypatch, study_id)
 
-    pausa = next(e for e in await _events(db, study.id) if e.event_metadata["kind"] == "pause")
+    pausa = next(e for e in await _events(db, study_id) if e.event_metadata["kind"] == "pause")
     alerta = (await db.scalars(select(Alert).where(Alert.event_id == pausa.id))).one()
     assert alerta.kind == "pause"
     avisos = [item for item in sent_pushes if item[1].data.get("type") == "report_request"]
     assert len(avisos) == 1
     paciente, mensaje = avisos[0]
-    assert paciente == patient.id
+    assert paciente == patient_id
     assert mensaje.data["alertId"] == str(alerta.id)
     assert mensaje.data["kind"] == "pause"
     assert mensaje.title == anomaly_title("pause")
@@ -306,7 +350,7 @@ async def test_los_hallazgos_del_motor_se_distinguen_de_los_manuales(
     from app.db.models.user import UserRole
 
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
-    signal = synth_ecg(duration_s=900.0, ectopic_every=12)
+    signal = synth_ecg(duration_s=930.0, ectopic_every=12)
     flags = signal.flags.copy()
     # Un tramo de electrodo despegado: sin él la Capa A no escribe nada y las
     # afirmaciones sobre ella pasarían en vacío.
@@ -342,13 +386,13 @@ async def test_los_hallazgos_del_motor_se_distinguen_de_los_manuales(
 async def test_persistir_dos_veces_el_mismo_resultado_no_duplica_ni_vuelve_a_avisar(
     client, s3, db, make_patient, make_device, make_study
 ) -> None:
-    """La red de seguridad de `dedupe_key`, sin el rollback de por medio.
+    """La red de seguridad, sin el rollback de por medio.
 
-    Hoy un lote `DONE` no se vuelve a procesar y uno que falla no deja nada, así
-    que este camino no se recorre en producción. Pero es la garantía que tiene
-    que sostener cualquier escritura repetida de un mismo hallazgo: el
-    `ON CONFLICT DO NOTHING` de los episodios y el "solo avisan los recién
-    insertados" de `_create_alerts`.
+    Hoy el cursor no vuelve a analizar un bloque y uno que falla no deja nada,
+    así que este camino no se recorre en producción. Pero es la garantía que
+    tiene que sostener cualquier escritura repetida de un mismo hallazgo: la
+    segunda pausa toca a la primera, así que se empalma sobre ella —no se
+    duplica— y no avisa de nuevo, porque el evento ya tiene su alerta.
     """
     from app.core.config import settings
     from app.db.models.ecg_event import ECGEventSeverity
@@ -379,11 +423,31 @@ async def test_persistir_dos_veces_el_mismo_resultado_no_duplica_ni_vuelve_a_avi
     antes = len(await _events(db, study.id))
     alertas_antes = len((await db.scalars(select(Alert))).all())
 
-    _, primero = await ml_persistence.persist_analysis(db, study, batch, resultado, SAMPLE_RATE)
-    _, segundo = await ml_persistence.persist_analysis(db, study, batch, resultado, SAMPLE_RATE)
+    scope = ml_persistence.BlockScope(
+        batch_id=batch.id,
+        boot_id=batch.boot_id,
+        run_start=0,
+        read_start=0,
+        block_start=0,
+        block_end=60 * SAMPLE_RATE,
+    )
+    _, primero = await ml_persistence.persist_analysis(db, study, resultado, SAMPLE_RATE, scope)
+    _, segundo = await ml_persistence.persist_analysis(db, study, resultado, SAMPLE_RATE, scope)
 
     assert primero is not None
     assert segundo is None
+    assert len(await _events(db, study.id)) == antes + 1
+    assert len((await db.scalars(select(Alert))).all()) == alertas_antes + 1
+
+    # La red de abajo del empalme: si la búsqueda de candidatos no encuentra la
+    # fila —acá, una corrida que arranca después de la pausa—, el `INSERT ... ON
+    # CONFLICT DO NOTHING` por `dedupe_key` no la duplica, y como no la insertó
+    # (sin `RETURNING`) tampoco crea una segunda alerta.
+    sin_candidatos = replace(scope, run_start=40 * SAMPLE_RATE, read_start=40 * SAMPLE_RATE)
+    escritas, tercero = await ml_persistence.persist_analysis(
+        db, study, resultado, SAMPLE_RATE, sin_candidatos
+    )
+    assert (escritas, tercero) == (0, None)
     assert len(await _events(db, study.id)) == antes + 1
     assert len((await db.scalars(select(Alert))).all()) == alertas_antes + 1
 
@@ -425,7 +489,10 @@ async def test_la_finalizacion_funde_las_morfologias_de_un_estudio_completado(
         beats_seen=100,
         next_cluster_id=2,
     )
-    ml_persistence.store_bank(study, bank, 0, {})
+    # Totales de un bloque ya analizado: la fusión no analiza señal nueva y no
+    # los puede perder (`bank_to_state` arma el estado desde cero).
+    totales = {"analyzedSamples": 30_000.0, "windows": 6.0, "windowsGood": 6.0}
+    ml_persistence.store_bank(study, bank, 0, totales)
 
     def _evento(dedupe_key: str, scope: str, cluster_id: int) -> ECGEvent:
         return ECGEvent(
@@ -468,3 +535,9 @@ async def test_la_finalizacion_funde_las_morfologias_de_un_estudio_completado(
     assert eventos["morphology_anomaly:6000"].event_metadata["clusterId"] == 0
     await db.refresh(study)
     assert study.events_count == 2
+    assert study.ml_state["totals"] == totales
+    assert study.ml_state["metrics"]["goodRatio"] == 1.0
+    assert study.ml_state["metrics"]["beatsSeen"] == 100
+    # Clave propia: la del último bloque la sigue referenciando la base hasta
+    # que la fusión commitee.
+    assert study.ml_state["templatesKey"].endswith(".merged.f32")

@@ -108,7 +108,7 @@ def test_los_cluster_id_no_se_renumeran_entre_lotes() -> None:
     for seed in (1, 2, 3, 4):
         _, beats = _beats(duration_s=90.0, ectopic_every=10, seed=seed)
         bank, assignment = assign_and_update(
-            bank, beats, match_threshold=MATCH, max_templates=40, batch_id=f"b{seed}"
+            bank, beats, match_threshold=MATCH, max_templates=40, fold_key=f"b{seed}"
         )
         ids_por_lote.append({int(value) for value in np.unique(assignment.cluster_ids)})
 
@@ -122,10 +122,10 @@ def test_reprocesar_un_lote_ya_plegado_no_infla_el_banco() -> None:
     """El banco es un acumulador: contar dos veces falsearía la carga (`burdenPct`)."""
     _, beats = _beats(duration_s=120.0, ectopic_every=10)
     bank = _empty_bank()
-    bank, _ = assign_and_update(bank, beats, match_threshold=MATCH, max_templates=40, batch_id="b1")
+    bank, _ = assign_and_update(bank, beats, match_threshold=MATCH, max_templates=40, fold_key="b1")
     conteos = {t.cluster_id: t.count for t in bank.templates}
     assert bank.beats_seen > 0
-    assert bank.last_folded_batch_id == "b1"
+    assert bank.last_fold_key == "b1"
 
     # Lo que corre si vuelve a llegar ese lote: puntúa contra el banco actual,
     # no lo modifica.
@@ -236,14 +236,14 @@ def test_la_consolidacion_funde_plantillas_casi_identicas_y_conserva_el_id_mas_v
 def test_el_banco_sobrevive_a_una_vuelta_por_disco() -> None:
     _, beats = _beats(duration_s=120.0, ectopic_every=10)
     bank, _ = assign_and_update(
-        _empty_bank(), beats, match_threshold=MATCH, max_templates=40, batch_id="b1"
+        _empty_bank(), beats, match_threshold=MATCH, max_templates=40, fold_key="b1"
     )
     state, blob = bank_to_state(bank)
     recuperado = bank_from_state(state, blob, model_version="test-1")
 
     assert recuperado.beats_seen == bank.beats_seen
     assert recuperado.next_cluster_id == bank.next_cluster_id
-    assert recuperado.last_folded_batch_id == bank.last_folded_batch_id == "b1"
+    assert recuperado.last_fold_key == bank.last_fold_key == "b1"
     assert len(recuperado.templates) == len(bank.templates)
     for original, vuelto in zip(bank.templates, recuperado.templates, strict=True):
         assert original.cluster_id == vuelto.cluster_id
@@ -273,9 +273,9 @@ def test_el_banco_guarda_solo_el_ultimo_lote_plegado() -> None:
     bank = _empty_bank()
     for indice in range(5):
         bank, _ = assign_and_update(
-            bank, beats, match_threshold=MATCH, max_templates=40, batch_id=f"b{indice}"
+            bank, beats, match_threshold=MATCH, max_templates=40, fold_key=f"b{indice}"
         )
 
     state, _ = bank_to_state(bank)
-    assert state["lastFoldedBatchId"] == "b4"
+    assert state["lastFoldKey"] == "b4"
     assert "consumedBatchIds" not in state

@@ -4680,6 +4680,10 @@
       },
       "StudyQualityIntervalOut": {
         "properties": {
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
           "endOffsetMs": {
             "title": "Endoffsetms",
             "type": "integer"
@@ -4698,6 +4702,10 @@
             "title": "Reason",
             "type": "string"
           },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
           "startOffsetMs": {
             "title": "Startoffsetms",
             "type": "integer"
@@ -4706,6 +4714,8 @@
         "required": [
           "startOffsetMs",
           "endOffsetMs",
+          "startEpochMs",
+          "endEpochMs",
           "level",
           "reason"
         ],

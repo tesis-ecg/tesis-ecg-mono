@@ -154,7 +154,10 @@ def public_data_config() -> pipeline.PipelineConfig:
     mediría un artefacto del formato del archivo y no la señal.
     """
     config = pipeline.build_config(settings, TARGET_RATE)
-    return replace(config, quality=replace(config.quality, flatline_mv=0.0, bassqi_min=0.0))
+    # MIT-BIH y nstdb se grabaron en Boston: la red es de 60 Hz, no los 50 del chaleco.
+    return replace(
+        config, quality=replace(config.quality, flatline_mv=0.0, bassqi_min=0.0, mains_hz=60.0)
+    )
 
 
 def evaluate(record: Record, config: pipeline.PipelineConfig) -> dict[str, float]:
@@ -165,7 +168,7 @@ def evaluate(record: Record, config: pipeline.PipelineConfig) -> dict[str, float
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id=record.name,
+        fold_key=record.name,
     )
 
     # Se recalculan las asignaciones para poder medir la PUREZA de cada cluster,
@@ -257,7 +260,7 @@ def quality_profile(
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id=record.name,
+        fold_key=record.name,
     )
 
     total = float(record.signal_mv.size)
@@ -329,9 +332,15 @@ def run_stage1(base: str = NOISE_BASE, snrs: tuple[str, ...] = NOISE_SNR) -> Non
 
 
 def main() -> int:
+    if "--qtdb" in sys.argv[1:]:
+        # Benchmark de delineación contra la QT Database: tiene su propia CLI (ver README).
+        from tools.physionet import qtdb
+
+        return qtdb.main([arg for arg in sys.argv[1:] if arg != "--qtdb"])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--records", nargs="*", default=None)
+    parser.add_argument("--qtdb", action="store_true", help="delineación vs. QTDB (ver README)")
     parser.add_argument(
         "--stage1",
         action="store_true",

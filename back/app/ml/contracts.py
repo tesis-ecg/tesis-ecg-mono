@@ -145,3 +145,10 @@ class Finding:
     beat_count: int | None = None
     alert_message: str | None = None
     metadata: dict[str, float | int | str] = field(default_factory=dict)
+    #: El R de cada latido que cuenta `beat_count`, en las mismas coordenadas
+    #: que `start_sample`. No se escribe: es lo que deja a la persistencia
+    #: sumar **exacto** los latidos de un episodio que se empalma a través de
+    #: un borde de bloque —cuenta los R que el evento todavía no cubría— en vez
+    #: de estimarlos por el largo, que con latidos agrupados (un foco ectópico
+    #: que se acelera) erraba por varios. Vacío en los que no cuentan latidos.
+    beat_samples: tuple[int, ...] = ()

@@ -6,15 +6,20 @@ Holter de 24 h son 8.640 ventanas de 10 s y escribirlas como eventos llenaría l
 bandeja del médico de filas que no son hallazgos.
 
 Por eso viven en su propia tabla y en forma de *run-length*: ventanas contiguas
-del mismo nivel colapsan en un intervalo. Un registro limpio de una hora es UNA
-fila, no 360.
+del mismo nivel colapsan en un intervalo. Un bloque limpio de cinco minutos es
+UNA fila, no 30.
 
-**Un intervalo nunca cruza el borde de un lote.** `batch_id` es NOT NULL y cada
-fila pertenece a exactamente uno, de modo que reprocesar es
-`DELETE WHERE batch_id = ...` + insert. Fundir el run con la cola del lote
-anterior exigiría un UPDATE sobre una fila de otro lote, y eso rompe la
-idempotencia. La fusión entre lotes se hace **al leer**, que es una pasada
-lineal sobre unos cientos de filas.
+**Un intervalo nunca cruza el borde de un bloque de análisis.** El motor no
+corre por lote (~15 s) sino por bloques de la corrida detrás de un cursor
+(`processing.append_ml_analysis`), y cada bloque escribe solo las ventanas de su
+parte nueva. La clave natural de una fila es `(study_id, start_sample_index)`:
+el cursor garantiza que cada muestra cae en un solo bloque, y el índice único
+parcial hace que escribir dos veces el mismo bloque no duplique nada. `batch_id`
+es atribución —el lote que disparó el análisis, o el que cubre el final del
+bloque en el cierre—, no la clave. Fundir el run con la cola del bloque
+anterior exigiría un UPDATE sobre una fila ya escrita; la fusión entre bloques
+contiguos de la misma corrida se hace **al leer**, que es una pasada lineal
+sobre unos cientos de filas.
 """
 
 from __future__ import annotations
@@ -51,11 +56,12 @@ class SignalQualityInterval(TimestampMixin, Base):
         CheckConstraint("start_sample_index >= 0", name="ck_sqi_start"),
         CheckConstraint("sample_count > 0", name="ck_sqi_count"),
         CheckConstraint("window_count > 0", name="ck_sqi_windows"),
-        Index("ix_sqi_study_start", "study_id", "start_sample_index"),
         Index("ix_sqi_batch", "batch_id"),
+        # Cubre también el listado por estudio en orden de grabación: no hace
+        # falta un índice aparte sobre las mismas columnas.
         Index(
-            "uq_sqi_batch_start",
-            "batch_id",
+            "uq_sqi_study_start",
+            "study_id",
             "start_sample_index",
             unique=True,
             postgresql_where="deleted_at IS NULL",

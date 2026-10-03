@@ -7,7 +7,7 @@ la fila deja de ser un hecho y pasa a ser **una afirmación de un modelo**, y es
 exige poder decir cuál, poder reescribirla sin duplicarla, y poder registrar que
 un médico la miró.
 
-Seis cosas:
+Siete cosas:
 
 - `ANOMALY` en `ecg_event_type`. Es lo único que un motor no supervisado puede
   afirmar sin mentir: "este latido no se parece a los tuyos". `PVC` sería un
@@ -31,6 +31,15 @@ Seis cosas:
   columna se pierden meses de ellas.
 - `signal_quality_interval` + `study.ml_state`. La calidad no es un evento
   puntual sino una propiedad continua del registro; ver el docstring del modelo.
+  Su clave natural es `(study_id, start_sample_index)`: el motor analiza por
+  bloques de la corrida y no por lote, así que el lote es atribución y no clave.
+- `study.ml_analyzed_samples`, el cursor del análisis por bloques. Mismo patrón
+  que `filtered_samples_count`: todo lo anterior ya se analizó una sola vez.
+  Los estudios existentes arrancan con el cursor al final de su señal.
+- Dos índices sobre `ecg_batch` para el barrido de colas viejas del motor
+  (`list_studies_with_stale_tail`), que corre cada minuto sobre cada estudio en
+  curso: `(study_id, received_at)` para saber si llegó un lote reciente sin
+  recorrer la historia del estudio, y uno parcial de los lotes sin terminar.
 
 Revision ID: d0e1f2a3b4c5
 Revises: c9d0e1f2a3b4
@@ -153,14 +162,14 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["batch_id"], ["ecg_batch.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_sqi_study_start", "signal_quality_interval", ["study_id", "start_sample_index"]
-    )
     op.create_index("ix_sqi_batch", "signal_quality_interval", ["batch_id"])
+    # Único por estudio y no por lote: un bloque de análisis abarca muchos lotes,
+    # y reescribir el mismo bloque no puede duplicar sus intervalos. Cubre
+    # también el listado por estudio en orden de grabación.
     op.create_index(
-        "uq_sqi_batch_start",
+        "uq_sqi_study_start",
         "signal_quality_interval",
-        ["batch_id", "start_sample_index"],
+        ["study_id", "start_sample_index"],
         unique=True,
         postgresql_where=sa.text("deleted_at IS NULL"),
     )
@@ -175,14 +184,42 @@ def upgrade() -> None:
             server_default=sa.text("'{}'::jsonb"),
         ),
     )
+    # Los estudios nuevos arrancan en cero. Los que ya existen arrancan **al
+    # final de su señal**: el motor empieza a mirarlos desde el despliegue, como
+    # habría hecho el análisis por lote. Arrancar en cero recorría la historia
+    # entera —un estudio de quince días son ~4.300 bloques de S3 y CPU con la
+    # fila tomada, disparados al abrirlo en el visor— y avisaba al paciente de
+    # pausas de hace semanas. Analizar la historia es una decisión explícita
+    # (volver el cursor a cero), no un efecto de desplegar.
+    op.add_column(
+        "study",
+        sa.Column(
+            "ml_analyzed_samples",
+            sa.BigInteger(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+    )
+    op.execute("UPDATE study SET ml_analyzed_samples = samples_count")
+
+    # --- ecg_batch ------------------------------------------------------------ #
+    op.create_index("ix_ecg_batch_study_received", "ecg_batch", ["study_id", "received_at"])
+    op.create_index(
+        "ix_ecg_batch_study_unprocessed",
+        "ecg_batch",
+        ["study_id"],
+        postgresql_where=sa.text("processing_status <> 'DONE'"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_ecg_batch_study_unprocessed", table_name="ecg_batch")
+    op.drop_index("ix_ecg_batch_study_received", table_name="ecg_batch")
+    op.drop_column("study", "ml_analyzed_samples")
     op.drop_column("study", "ml_state")
 
-    op.drop_index("uq_sqi_batch_start", table_name="signal_quality_interval")
+    op.drop_index("uq_sqi_study_start", table_name="signal_quality_interval")
     op.drop_index("ix_sqi_batch", table_name="signal_quality_interval")
-    op.drop_index("ix_sqi_study_start", table_name="signal_quality_interval")
     op.drop_table("signal_quality_interval")
     sa.Enum(name="signal_quality_level").drop(op.get_bind(), checkfirst=True)
 

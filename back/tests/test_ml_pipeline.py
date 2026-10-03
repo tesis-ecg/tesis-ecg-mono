@@ -45,7 +45,7 @@ def test_un_ecg_limpio_no_produce_ningun_hallazgo() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert result.findings == ()
     assert {interval.level for interval, _ in result.quality_intervals} == {SignalQualityLevel.GOOD}
@@ -63,7 +63,7 @@ def test_un_foco_ectopico_se_detecta_agrupado_y_con_su_carga() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
 
     headers = [f for f in result.findings if f.kind == "recurrent_morphology"]
@@ -102,7 +102,7 @@ def test_el_ruido_no_se_confunde_con_una_anomalia() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
 
     # El tramo se marca como no analizable...
@@ -140,7 +140,7 @@ def test_el_electrodo_despegado_lo_atrapa_la_capa_a_y_no_los_indices_espectrales
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     razones = {
         interval.reason
@@ -165,7 +165,7 @@ def test_las_coordenadas_salen_absolutas_al_estudio() -> None:
         start_sample_index=offset,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert result.findings
     assert all(finding.start_sample >= offset for finding in result.findings)
@@ -186,7 +186,7 @@ def test_el_banco_acumula_entre_lotes_sin_releer_nada() -> None:
             start_sample_index=indice * 300_000,
             bank=bank,
             config=config,
-            batch_id=f"b{indice}",
+            fold_key=f"b{indice}",
         )
         bank = result.bank
         conteos.append(bank.beats_seen)
@@ -206,7 +206,7 @@ def test_un_lote_ya_plegado_no_vuelve_a_sumarse_al_banco() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     segundo = pipeline.analyze_batch(
         signal.signal_mv,
@@ -214,7 +214,7 @@ def test_un_lote_ya_plegado_no_vuelve_a_sumarse_al_banco() -> None:
         start_sample_index=0,
         bank=primero.bank,
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert segundo.bank.beats_seen == primero.bank.beats_seen
     assert {f.dedupe_key for f in segundo.findings} == {f.dedupe_key for f in primero.findings}
@@ -231,7 +231,7 @@ def test_un_estudio_sin_senal_analizable_no_hace_explotar_el_motor() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert result.bank.templates == ()
     assert result.metrics["goodRatio"] == 0.0
@@ -246,7 +246,7 @@ def test_un_lote_mas_corto_que_un_latido_no_rompe_nada() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert result.metrics["analyzedBeats"] == 0.0
 
@@ -269,7 +269,7 @@ def test_una_pausa_real_se_detecta_y_avisa_al_paciente() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     pausas = [f for f in result.findings if f.kind == "pause"]
     assert pausas, "no se detectó la pausa"
@@ -299,7 +299,7 @@ def test_sin_compensar_el_retardo_del_firmware_el_motor_entero_enmudece() -> Non
         start_sample_index=0,
         bank=pipeline.empty_bank(sin_compensar),
         config=sin_compensar,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert mudo.metrics["goodRatio"] == 0.0
     assert {interval.reason for interval, _ in mudo.quality_intervals} == {"bsqi"}
@@ -317,7 +317,7 @@ def test_sin_compensar_el_retardo_del_firmware_el_motor_entero_enmudece() -> Non
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert vivo.metrics["goodRatio"] == 1.0
     assert vivo.metrics["medianBsqi"] == 1.0
@@ -387,7 +387,7 @@ def test_la_refractariedad_no_vuelve_a_fundir_las_bandas_de_calidad() -> None:
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
-        batch_id="b1",
+        fold_key="b1",
     )
     assert [interval.level for interval, _ in result.quality_intervals] == [
         SignalQualityLevel.GOOD,
@@ -416,3 +416,19 @@ def test_ml_mains_hz_solo_acepta_apagado_o_una_red(mains_hz: float) -> None:
         Settings(ml_mains_hz=mains_hz)  # type: ignore[call-arg]
     for valid in (0.0, 50.0, 60.0):
         assert Settings(ml_mains_hz=valid).ml_mains_hz == valid  # type: ignore[call-arg]
+
+
+def test_el_contexto_de_bloque_no_puede_ser_mas_corto_que_una_taquicardia() -> None:
+    """Una taquicardia de 33 s que el borde parte en 25 + 8 no llega a los 30 s
+    de ningún lado si el contexto es de 20: no la informa ningún bloque."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="ML_RHYTHM_MIN_SECONDS"):
+        Settings(ml_analysis_context_seconds=20.0)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError, match="ML_RHYTHM_MIN_SECONDS"):
+        Settings(ml_rhythm_min_seconds=90.0)  # type: ignore[call-arg]
+    assert Settings(ml_analysis_context_seconds=30.0).ml_analysis_context_seconds == 30.0  # type: ignore[call-arg]
+    with pytest.raises(ValidationError, match="ML_ANALYSIS_LOOKAHEAD_SECONDS"):
+        Settings(ml_analysis_lookahead_seconds=400.0)  # type: ignore[call-arg]

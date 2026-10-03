@@ -135,6 +135,54 @@ class Settings(BaseSettings):
     #: es lo que se quiere: dos lotes peleando por CPU tardan lo mismo en total y
     #: el doble en el p50.
     ml_worker_threads: int = Field(default=1, ge=1, le=8)
+    #: Bloque de análisis. Los lotes del chaleco son de ~15 s y una taquicardia
+    #: necesita 30 s sostenidos (`ml_rhythm_min_seconds`): el motor no corre por
+    #: lote sino por bloques de la corrida, detrás de un cursor
+    #: (`processing.append_ml_analysis`). Tiene que ser múltiplo de la ventana
+    #: de calidad para que las ventanas de un bloque no queden cortas.
+    ml_analysis_block_seconds: float = Field(default=300.0, ge=30.0, le=3600.0)
+    #: Señal ya analizada que se le antepone a cada bloque. Es lo que deja ver
+    #: un R-R, una pausa o una taquicardia que cruzan el borde; de esa parte no
+    #: se vuelve a informar nada. No puede superar al bloque, y no puede ser
+    #: más corta que `ml_rhythm_min_seconds`: una taquicardia de 33 s que cruza
+    #: el borde a los 25 s no la veía entera ningún bloque.
+    ml_analysis_context_seconds: float = Field(default=60.0, ge=0.0, le=3600.0)
+    #: Señal del bloque **siguiente** que se lee después de cada uno, para que
+    #: el final del bloque no sea un borde duro (`pipeline.analyze_batch`). De
+    #: ahí no se informa nada; lo que cuesta es que el bloque espera a que la
+    #: corrida lo pase por este tanto. 30 s cubren los dieciséis latidos hacia
+    #: adelante de la mediana de prematuridad (`hrv.LOCAL_WINDOW_BEATS`) hasta
+    #: 32 lpm, y de sobra el R que el detector pierde en el borde y el
+    #: asentamiento del notch. La cola de una corrida cerrada no tiene: después
+    #: no hay señal.
+    ml_analysis_lookahead_seconds: float = Field(default=30.0, ge=0.0, le=3600.0)
+    #: Bloques por pasada con la fila del estudio tomada. Un estudio atrasado
+    #: —el motor se volvió a prender— se pone al día de a esta cantidad por
+    #: lote, en vez de colgar la ingesta de ese estudio. Cada bloque son ~50 GET
+    #: de S3 (crudo y flags de ~26 lotes) más el análisis, ~1 s: la pasada
+    #: además no arranca un bloque que la llevaría más allá de 1,5 s
+    #: (`processing.ML_PASS_BUDGET_SECONDS`), debajo del `lock_timeout` de 3 s
+    #: con que la ingesta del lote siguiente espera la fila. En régimen es un
+    #: bloque cada ~20 lotes y el tope no se toca.
+    ml_analysis_max_blocks_per_pass: int = Field(default=4, ge=1, le=288)
+    #: Minutos sin lotes nuevos después de los cuales la cola de la corrida
+    #: abierta se analiza igual (`processing.flush_stale_tails`). 15 = vez y
+    #: media el ciclo de subida de 10 min: un ciclo normal no la dispara. El
+    #: precio: si la corrida después sigue, sus bloques arrancan donde quedó el
+    #: cursor y no en un múltiplo del bloque, así que dónde caen los bordes
+    #: depende de cuándo dejó de subir. Y ese borde se analizó sin contexto
+    #: derecho —no había señal—: los hallazgos se empalman igual, pero ahí
+    #: vuelve lo que un borde duro cambia (un R perdido o fantasma en los
+    #: totales, la frecuencia extrema de un episodio). 0 lo apaga.
+    ml_open_tail_flush_minutes: float = Field(default=15.0, ge=0.0, le=1440.0)
+    #: Antigüedad máxima, en hora de pared, de un hallazgo del motor que le
+    #: manda un push al paciente. Más viejo, se escribe igual —evento y alerta
+    #: para el médico— pero no despierta a nadie: avisar ahora de una pausa de
+    #: hace horas (el backlog de un día sin WiFi, el motor que se volvió a
+    #: prender y se pone al día) no le sirve al paciente para nada. 60 cubre la
+    #: cadena normal —ciclo de subida de 10 min, bloque de 5, cola vieja a los
+    #: 15— con margen. 0 lo apaga: avisa todo.
+    ml_push_max_age_minutes: float = Field(default=60.0, ge=0.0, le=10080.0)
 
     #: Ventana del gate de calidad. 10 s es el estándar de la literatura de SQI
     #: (Zhao 2018) y entra ~10 latidos, suficiente para que el bSQI tenga sentido.
@@ -249,6 +297,29 @@ class Settings(BaseSettings):
         # pasar por el aviso y el escalón temprano deja de existir.
         if self.device_critical_hours <= self.device_stale_hours:
             raise ValueError("DEVICE_CRITICAL_HOURS tiene que ser mayor que DEVICE_STALE_HOURS")
+        # El contexto es señal del bloque anterior: más largo que el bloque
+        # releería señal que ya no es del anterior sino de dos bloques atrás.
+        if self.ml_analysis_context_seconds > self.ml_analysis_block_seconds:
+            raise ValueError("ML_ANALYSIS_CONTEXT_SECONDS no puede superar al bloque")
+        if self.ml_analysis_lookahead_seconds > self.ml_analysis_block_seconds:
+            raise ValueError("ML_ANALYSIS_LOOKAHEAD_SECONDS no puede superar al bloque")
+        # Un episodio sostenido que cruza un borde lo tiene que ver entero algún
+        # bloque. Con el contexto más corto que la duración mínima, uno de 33 s
+        # que el borde parte en 25 + 8 no llega al mínimo de ningún lado.
+        if self.ml_analysis_context_seconds < self.ml_rhythm_min_seconds:
+            raise ValueError(
+                "ML_ANALYSIS_CONTEXT_SECONDS no puede ser menor que ML_RHYTHM_MIN_SECONDS: "
+                "una taquicardia o bradicardia sostenida que cruza el borde de un bloque "
+                "no la vería entera ningún bloque"
+            )
+        # Con un bloque que no es múltiplo de la ventana, la última ventana de
+        # cada bloque absorbe un resto y la grilla de calidad deja de ser la
+        # misma según dónde cayó el borde.
+        windows = self.ml_analysis_block_seconds / self.ml_quality_window_seconds
+        if abs(windows - round(windows)) > 1e-9:
+            raise ValueError(
+                "ML_ANALYSIS_BLOCK_SECONDS tiene que ser múltiplo de ML_QUALITY_WINDOW_SECONDS"
+            )
         return self
 
 

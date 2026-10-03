@@ -13,13 +13,21 @@ en la hora 24, ~4 GB de tráfico por estudio). Cada lote escribe solo lo suyo.
 **Pirámide incremental exacta.** Todos los buckets son múltiplos de 16, así que
 los niveles gruesos son reducciones min/max de una envolvente base con
 bucket=16 — no hay que volver a decodificar nada para rehacerlos.
+
+**El motor no corre por lote.** Un lote son ~15 s y casi nada de lo clínico
+cabe ahí; el motor analiza bloques de la corrida detrás de un cursor, igual que
+la vista filtrada (`append_ml_analysis`), y relee crudo y flags de los objetos
+que archiva cada lote.
 """
 
 import asyncio
 import hashlib
+import math
+import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -30,11 +38,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.s3 import get_object, put_object
-from app.core.workers import run_cpu
+from app.core.workers import run_cpu, run_io
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.study import Study, StudyStatus
+from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.ml.decompression import (
     FLAG_ADC_SATURATED,
     FLAG_EVENT_MARKER,
@@ -48,9 +57,11 @@ from app.ml.decompression import (
     decode_frame,
     iter_frames,
 )
+from app.ml.morphology import TemplateBank
 from app.ml.pipeline import analyze_batch, build_config
 from app.ml.quality import sample_runs
 from app.ml.status_flags import has_backlog_overflow, has_corrupt_frame
+from app.ml.totals import combine_totals
 from app.modules.ingest import ingest_repository as repo
 from app.modules.ingest import ml_persistence, timeline
 from app.modules.ingest.pushable import PUSH_RANK, Pushable, most_severe
@@ -78,6 +89,17 @@ UV_PER_MV = 1000.0
 
 def segment_key(study_id: uuid.UUID, first_seq: int) -> str:
     return f"studies/{study_id}/segments/{first_seq:012d}.f32"
+
+
+def flags_key(study_id: uuid.UUID, first_seq: int) -> str:
+    """Flags por muestra del lote (`uint8`), al lado de su segmento.
+
+    El visor no los necesita, pero el motor sí: son la Capa A del gate (lead-off,
+    saturación, SQI del firmware) y los picos R del MCU contra los que se mide el
+    bSQI. Antes el motor los leía del lote recién decodificado; ahora analiza
+    bloques de varios lotes y los relee de acá (`_flags_range`).
+    """
+    return f"studies/{study_id}/flags/{first_seq:012d}.u8"
 
 
 def envelope_key(study_id: uuid.UUID, first_seq: int) -> str:
@@ -741,28 +763,103 @@ async def _place_on_timeline(
 
 
 def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
-    """Read a bounded contiguous range from immutable decoded raw segments."""
+    """Read a bounded contiguous range from immutable decoded raw segments.
+
+    Shared by the filtered view and the detection engine (`append_ml_analysis`).
+    """
+    return _raw_range(study.ecg_segments, start, end)
+
+
+def _raw_range(segments: list[dict[str, Any]], start: int, end: int) -> np.ndarray:
+    """`_raw_signal_range` sobre una copia de `study.ecg_segments`.
+
+    Recibe la lista y no el `Study` para poder correr en un hilo (`run_io`): los
+    GET de S3 de un bloque son decenas, y en el event loop lo congelaban con la
+    fila del estudio tomada. Tocar ahí un atributo de una entidad expirada
+    dispararía un refresh lazy de SQLAlchemy fuera del greenlet.
+    """
     parts: list[np.ndarray] = []
     cursor = start
-    for segment in study.ecg_segments:
+    for segment in segments:
         segment_start = int(segment["startSampleIndex"])
         segment_end = segment_start + int(segment["sampleCount"])
         if segment_end <= cursor or segment_start >= end:
             continue
         if segment_start > cursor:
-            raise RuntimeError("La vista filtrada encontró un hueco de segmentos crudos.")
+            raise RuntimeError("Hay un hueco entre los segmentos crudos del estudio.")
         payload = get_object(str(segment["key"]))
         raw = np.frombuffer(payload, dtype="<f4")
         if raw.size != segment_end - segment_start:
-            raise RuntimeError("Segmento crudo incompleto durante el filtrado.")
+            raise RuntimeError("Segmento crudo incompleto.")
         stop = min(end, segment_end)
         parts.append(raw[cursor - segment_start : stop - segment_start])
         cursor = stop
         if cursor == end:
             break
     if cursor != end:
-        raise RuntimeError("Faltan muestras crudas para la vista filtrada.")
+        raise RuntimeError("Faltan muestras crudas para el rango pedido.")
     return np.concatenate(parts) if parts else np.empty(0, dtype="<f4")
+
+
+def _flags_range(
+    study_id: uuid.UUID, segments: list[dict[str, Any]], start: int, end: int
+) -> np.ndarray:
+    """Los flags por muestra del mismo rango, gemelo de `_raw_range`.
+
+    Cada segmento marca con `firstSeq` que su lote archivó los flags
+    (`flags_key`, derivable de esa marca: guardar la clave entera agregaba ~130
+    bytes por lote a un JSONB que se reescribe en cada lote). Un segmento sin la
+    marca —ingerido antes de que cada lote archivara sus flags— aporta
+    **ceros**. Cero no es un valor inventado: es lo que mandaría un equipo sin
+    bits de estado. Sin veto de la Capa A (lead-off, saturación, SQI del
+    firmware) el gate decide con los índices de la señal sola, y sin picos R del
+    firmware no hay bSQI. Para un estudio viejo es la única lectura honesta.
+    """
+    parts: list[np.ndarray] = []
+    cursor = start
+    for segment in segments:
+        segment_start = int(segment["startSampleIndex"])
+        segment_end = segment_start + int(segment["sampleCount"])
+        if segment_end <= cursor or segment_start >= end:
+            continue
+        if segment_start > cursor:
+            raise RuntimeError("Hay un hueco entre los segmentos crudos del estudio.")
+        stop = min(end, segment_end)
+        first_seq = segment.get("firstSeq")
+        if first_seq is None:
+            parts.append(np.zeros(stop - cursor, dtype=np.uint8))
+        else:
+            flags = np.frombuffer(get_object(flags_key(study_id, int(first_seq))), dtype=np.uint8)
+            if flags.size != segment_end - segment_start:
+                raise RuntimeError("Flags incompletos para un segmento crudo.")
+            parts.append(flags[cursor - segment_start : stop - segment_start])
+        cursor = stop
+        if cursor == end:
+            break
+    if cursor != end:
+        raise RuntimeError("Faltan flags para el rango pedido.")
+    return np.concatenate(parts) if parts else np.empty(0, dtype=np.uint8)
+
+
+def _flags_known_range(segments: list[dict[str, Any]], start: int, end: int) -> np.ndarray:
+    """Por muestra del rango: verdadera si sus flags están archivados (`firstSeq`).
+
+    Los ceros con que `_flags_range` rellena un segmento viejo son una lectura
+    honesta para el veto de la Capa A, pero no para el bSQI: "el firmware no
+    marcó ningún R" no es lo mismo que "no sabemos qué marcó". Un bloque que
+    cruza el despliegue tiene de las dos, y decidir el bSQI con los picos del
+    bloque entero volvía MARGINAL el ECG limpio de la parte sin flags. Con esta
+    máscara el gate lo decide ventana por ventana (`quality.assess_quality`).
+    Sale de la metadata, sin tocar S3.
+    """
+    known = np.zeros(max(end - start, 0), dtype=bool)
+    for segment in segments:
+        segment_start = int(segment["startSampleIndex"])
+        segment_end = segment_start + int(segment["sampleCount"])
+        if segment_end <= start or segment_start >= end or segment.get("firstSeq") is None:
+            continue
+        known[max(segment_start, start) - start : min(segment_end, end) - start] = True
+    return known
 
 
 async def append_filtered_view(db: AsyncSession, study: Study) -> None:
@@ -818,6 +915,379 @@ async def append_filtered_view(db: AsyncSession, study: Study) -> None:
         cursor = safe_end
 
 
+# --------------------------------------------------------------------------- #
+# Motor de detección por bloques
+# --------------------------------------------------------------------------- #
+
+
+#: Tiempo de una pasada del motor con la fila del estudio tomada, además del
+#: tope de bloques (`ml_analysis_max_blocks_per_pass`). La ingesta del lote
+#: siguiente espera la fila con un `lock_timeout` de 3 s y, si no la consigue,
+#: el equipo recibe un 503. Un bloque en régimen tarda ~1 s (los ~50 GET de S3
+#: más el análisis) y con S3 lento bastante más. Por eso el corte es
+#: **predictivo**: antes de cada bloque se suma lo que tardó el anterior, y si
+#: el total pasaría este tiempo la pasada termina ahí y deja el resto para la
+#: siguiente, como con el tope. Mirar solo lo transcurrido dejaba arrancar un
+#: bloque a los 1,9 s, que terminaba a los 3. El primer bloque corre siempre:
+#: sin eso, con S3 lento el motor no avanzaría nunca. Va además una sola
+#: pasada por transacción (`process_batch` la corre después de drenar los
+#: lotes, no una por lote).
+ML_PASS_BUDGET_SECONDS = 1.5
+
+
+@dataclass(frozen=True)
+class MlPass:
+    """Lo que dejó una pasada de `append_ml_analysis`."""
+
+    #: Filas escritas, actualizadas o empalmadas, para el log.
+    written: int = 0
+    #: La alerta más severa a notificar después del commit.
+    pushable: Pushable | None = None
+    #: Quedó señal lista para analizar que esta pasada no alcanzó a cubrir
+    #: (`ml_analysis_max_blocks_per_pass`, `ML_PASS_BUDGET_SECONDS`).
+    pending: bool = False
+
+
+def _pending_blocks(
+    runs: list[StudyTimelineSegment],
+    cursor: int,
+    block: int,
+    *,
+    flush_tail: bool,
+    lookahead: int = 0,
+) -> Iterator[tuple[StudyTimelineSegment, int, int, int]]:
+    """`(corrida, inicio, fin, fin de lectura)` de cada bloque listo desde el cursor.
+
+    Mismo recorrido que `append_filtered_view`: las corridas tilean el buffer
+    empaquetado. Un bloque nunca cruza el final de su corrida: entre dos
+    corridas hay un hueco real de grabación, y un R-R que lo atravesara mediría
+    el corte y no el corazón.
+
+    Señal que **ninguna corrida cubre** —un estudio que ya tenía muestras antes
+    de que existiera la línea de tiempo, y al que no se le corrió
+    `backfill_timeline`: su primera corrida arranca en `samples_count`— no se
+    puede analizar por corrida, porque no se sabe dónde están sus huecos. Se
+    salta hasta el inicio de la corrida siguiente. Antes era un `RuntimeError`,
+    y como el cursor no se movía, todos los lotes siguientes del estudio
+    fallaban en el mismo punto: sin Capa A, sin visor, sin vista filtrada.
+
+    La cola de una corrida (lo que no llega a un bloque entero) espera a que la
+    corrida se cierre —que se abra otra después— o a `flush_tail`, que cierra
+    también la última: el estudio ya no está en curso, o la corrida lleva
+    demasiado sin crecer (`flush_stale_tails`). Mientras esté abierta, el lote
+    siguiente la puede completar.
+
+    Cada bloque se lee hasta `lookahead` muestras después de su fin (contexto
+    derecho, `pipeline.analyze_batch`), sin pasar el final de la corrida. En la
+    corrida abierta, un bloque entero espera además a que la corrida lo pase
+    por ese tanto: analizado antes, su final volvería a ser un borde duro y lo
+    que decide ahí ya no se corrige. En una corrida cerrada se lee lo que haya,
+    que es lo mismo que ve el análisis de corrido: después no hay señal.
+    """
+    for index, run in enumerate(runs):
+        run_start = run.start_sample_index
+        run_end = run_start + run.sample_count
+        if cursor >= run_end:
+            continue
+        cursor = max(cursor, run_start)
+        run_closed = flush_tail or index < len(runs) - 1
+        while cursor < run_end:
+            end = min(cursor + block, run_end)
+            read_end = min(end + lookahead, run_end)
+            if not run_closed and (end - cursor < block or read_end - end < lookahead):
+                return
+            yield run, cursor, end, read_end
+            cursor = end
+
+
+def _segment_first_seq(study: Study, sample: int) -> int | None:
+    for segment in study.ecg_segments:
+        start = int(segment["startSampleIndex"])
+        if start <= sample < start + int(segment["sampleCount"]):
+            first_seq = segment.get("firstSeq")
+            return int(first_seq) if first_seq is not None else None
+    return None
+
+
+async def _attribution_batch(
+    db: AsyncSession, study: Study, batch: ECGBatch | None, block_end: int
+) -> uuid.UUID:
+    """El lote al que se atribuye lo que escribe un bloque. Nunca NULL.
+
+    El lote que disparó el análisis, si lo hay. En la finalización no hay: se
+    usa el que archivó la última muestra del bloque (el `firstSeq` de su
+    segmento) y, para segmentos de antes de que existiera esa marca, el último
+    lote del estudio. Las dos reglas son deterministas, así que repetir la
+    finalización atribuye igual.
+    """
+    if batch is not None:
+        return batch.id
+    first_seq = _segment_first_seq(study, block_end - 1)
+    if first_seq is not None:
+        covering = await repo.get_batch_id_by_first_seq(db, study.id, first_seq)
+        if covering is not None:
+            return covering
+    latest = await repo.get_latest_batch_id(db, study.id)
+    if latest is None:
+        raise RuntimeError("El estudio tiene señal pero ningún lote al que atribuirla.")
+    return latest
+
+
+def _block_signal(
+    study_id: uuid.UUID, segments: list[dict[str, Any]], start: int, end: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Crudo y flags de un bloque. **Bloqueante**: corre en un hilo (`run_io`)."""
+    return _raw_range(segments, start, end), _flags_range(study_id, segments, start, end)
+
+
+def _push_from_sample(run: StudyTimelineSegment, rate: int, now: datetime) -> int:
+    """Primera muestra de la corrida cuyo hallazgo todavía merece un push.
+
+    La que cae `ml_push_max_age_minutes` antes de `now` en hora de pared, por
+    la línea de tiempo de la corrida. Antes del inicio de la corrida es su
+    inicio (todo es reciente); después de su final, ninguna muestra llega y no
+    avisa nada. El motor analiza de todo menos señal recién llegada: la cola de
+    una corrida que dejó de crecer, el backlog de horas que el chaleco sube al
+    volver a la casa, los bloques atrasados de cuando el motor estuvo apagado.
+    Todos se escriben y alertan al médico; solo lo reciente despierta al
+    paciente.
+
+    La hora se pasa a muestras con la frecuencia **medida** de la corrida —su
+    duración de pared sobre sus muestras, la misma cuenta que hace
+    `annotations.segment_epoch_ms`— y no con los 500 Hz nominales. El
+    ADS1292R de esta placa corre ~0,25 % lento y hasta ±1,5 % con la
+    temperatura (`INTEGRACION.md` §4.4): a 498,7 Hz, contar a 500 corre el
+    corte ~9 s por hora de corrida, y en una corrida de diez días la ventana
+    de una hora quedaba en veinte minutos —una pausa crítica de hace quince ya
+    no avisaba— o, a -1,5 %, el corte caía en el futuro y no avisaba nada.
+
+    Una corrida sin hora propia no avisa: el backlog de un arranque anterior
+    del equipo (`anchor_matches_boot` en falso) se ancla a la hora en que
+    **llegó**, no a la que se grabó (`ingest_service`), así que horas de
+    backlog parecían recién grabadas y cada pausa vieja despertaba al
+    paciente. Su alerta queda para el médico.
+    """
+    minutes = settings.ml_push_max_age_minutes
+    if minutes <= 0:
+        return 0
+    if run.anchor_matches_boot is False:
+        return run.start_sample_index + run.sample_count + 1
+    span_ms = run.end_epoch_ms - run.start_epoch_ms
+    samples_per_ms = (
+        run.sample_count / span_ms if span_ms > 0 and run.sample_count > 0 else rate / 1000
+    )
+    cutoff_ms = now.timestamp() * 1000 - minutes * 60_000
+    offset = math.ceil((cutoff_ms - run.start_epoch_ms) * samples_per_ms)
+    return run.start_sample_index + max(offset, 0)
+
+
+def _known_or_none(known: np.ndarray) -> np.ndarray | None:
+    """`None` si todos los flags del bloque están archivados, el caso de régimen."""
+    return None if bool(known.all()) else known
+
+
+async def append_ml_analysis(
+    db: AsyncSession, study: Study, batch: ECGBatch | None, *, flush_tail: bool | None = None
+) -> MlPass:
+    """Analiza los bloques que el cursor todavía no cubrió. Mismo patrón que la vista filtrada.
+
+    **Por qué bloques y no lotes.** Un lote son ~15 s (48 tramas del puente) y una
+    taquicardia tiene que sostenerse 30 s (`ml_rhythm_min_seconds`): por lote,
+    el motor no podía ver ninguna, perdía cada pausa y cada R-R que cruzaba un
+    POST y reiniciaba la referencia de prematuridad cada quince latidos. Acá
+    cada corrida de la línea de tiempo se recorre en bloques de
+    `ml_analysis_block_seconds`, cada uno con `ml_analysis_context_seconds` de
+    contexto izquierdo y `ml_analysis_lookahead_seconds` de contexto derecho de
+    la misma corrida (`pipeline.analyze_batch` sabe qué no informar de ahí).
+    `study.ml_analyzed_samples` es el cursor: cada
+    muestra cae en la parte nueva de un solo bloque, y eso es lo que hace que
+    los totales del estudio (`app/ml/totals.py`) se sumen exactos.
+
+    Por bloque: crudo y flags del rango (leídos en un hilo, `_block_signal`),
+    los empalmes de la corrida (`repo.SPLICE_KINDS`, ya persistidos, que el
+    motor saca de lo analizable) y el banco que viene del bloque anterior. El
+    banco se carga una vez por pasada, se enhebra de bloque en bloque y se
+    guarda una vez al final, con clave versionada por el final del último
+    bloque.
+
+    `batch` es el lote que disparó la pasada, al que se atribuyen las filas; en
+    la finalización (`process_study_task`) es `None` y se atribuye al lote que
+    cubre el final de cada bloque (`_attribution_batch`). Las alertas se
+    escriben siempre; el push al paciente, solo por lo que terminó hace menos
+    de `ml_push_max_age_minutes` (`_push_from_sample`).
+
+    `flush_tail` decide si la cola de la **última** corrida se analiza aunque no
+    llegue a un bloque entero. Por omisión, solo sin lote y con el estudio
+    cerrado. Desde un lote nunca, aunque el estudio ya esté cerrado: un estudio
+    se cierra con lotes en cola, y si cada lote drenado después del cierre
+    analizara su propia "cola", el análisis volvería a ser por lote —15 s con
+    60 s de contexto— y dependería del tamaño de los lotes. La cola la analiza
+    una sola vez `process_study_task`, que corre después de drenarlos.
+
+    Con `ml_enabled` en falso no hace nada y **no mueve el cursor**: al volver a
+    prenderlo, el motor retoma desde donde quedó y se pone al día de a
+    `ml_analysis_max_blocks_per_pass` bloques por lote, con la Capa A intacta
+    mientras tanto (`_persist_events` no depende de esto).
+    """
+    if not settings.ml_enabled:
+        return MlPass()
+    if flush_tail is None:
+        flush_tail = batch is None and study.status is not StudyStatus.IN_PROGRESS
+    runs = await repo.list_timeline_segments(db, study.id)
+    rate = study.sample_rate or 500
+    block = max(round(settings.ml_analysis_block_seconds * rate), 1)
+    context = round(settings.ml_analysis_context_seconds * rate)
+    lookahead = round(settings.ml_analysis_lookahead_seconds * rate)
+    budget = settings.ml_analysis_max_blocks_per_pass
+    state: dict[str, Any] = study.ml_state or {}
+    score_floor = float(state.get("scoreFloor", 0.0))
+    totals: dict[str, float] = dict(state.get("totals") or {})
+    bank: TemplateBank | None = None
+    splices: list[tuple[int, int, str]] = []
+    segments: list[dict[str, Any]] = []
+    written, analyzed, last_end = 0, 0, study.ml_analyzed_samples
+    pushable: Pushable | None = None
+    now = datetime.now(UTC)
+    started = time.monotonic()
+    last_block_seconds = 0.0
+
+    for run, block_start, block_end, read_end in _pending_blocks(
+        runs, study.ml_analyzed_samples, block, flush_tail=flush_tail, lookahead=lookahead
+    ):
+        block_started = time.monotonic()
+        if analyzed == budget or (
+            analyzed and block_started - started + last_block_seconds > ML_PASS_BUDGET_SECONDS
+        ):
+            return _finish_ml_pass(study, bank, last_end, totals, written, pushable, True)
+        if block_start > last_end:
+            _log_skipped(study, last_end, block_start)
+        read_start = max(run.start_sample_index, block_start - context)
+        if bank is None:
+            # Una sola vez por pasada, y solo si hay algo que analizar: la mayoría
+            # de los lotes de una corrida abierta no completan un bloque.
+            bank = ml_persistence.load_bank(state, build_config(settings, rate))
+            splices = await repo.list_splices(db, study.id, read_start, rate)
+            segments = list(study.ecg_segments)
+        config = build_config(settings, rate, score_floor=score_floor)
+        existing = await ml_persistence.count_anomalies(db, study.id)
+        raw, flags = await run_io(_block_signal, study.id, segments, read_start, read_end)
+        # LA frontera. Todo el análisis corre acá adentro, fuera del event loop,
+        # en una sola llamada auditable. Del otro lado no cruza nada del ORM:
+        # arrays, el banco (un dataclass), la config y los empalmes.
+        result = await run_cpu(
+            analyze_batch,
+            raw,
+            flags,
+            start_sample_index=read_start,
+            bank=bank,
+            config=config,
+            # Única por bloque y estable entre reintentos: un bloque que se
+            # vuelve a correr sobre el banco ya guardado no se pliega dos veces.
+            fold_key=f"{block_start}:{block_end}",
+            existing_anomalies=existing,
+            context_samples=block_start - read_start,
+            lookahead_samples=read_end - block_end,
+            flags_known=_known_or_none(_flags_known_range(segments, read_start, read_end)),
+            # El motor ubica cada empalme por su inicio; el largo es tiempo que
+            # falta, no muestras del buffer.
+            gap_samples=tuple(
+                (start - read_start, count)
+                for start, count, kind in splices
+                if read_start <= start < read_end
+                and not (kind in repo.BOUNDARY_SPLICE_KINDS and start == run.start_sample_index)
+            ),
+        )
+        scope = ml_persistence.BlockScope(
+            batch_id=await _attribution_batch(db, study, batch, block_end),
+            boot_id=run.boot_id,
+            run_start=run.start_sample_index,
+            read_start=read_start,
+            block_start=block_start,
+            block_end=block_end,
+            push_from=_push_from_sample(run, rate, now),
+        )
+        count, block_pushable = await ml_persistence.persist_analysis(
+            db, study, result, rate, scope
+        )
+        written += count
+        pushable = most_severe(pushable, block_pushable)
+        bank = result.bank
+        score_floor = bank.score_floor
+        totals = combine_totals(totals, result.totals)
+        study.ml_analyzed_samples = last_end = block_end
+        analyzed += 1
+        last_block_seconds = time.monotonic() - block_started
+
+    if flush_tail and last_end < study.samples_count:
+        # Lo que queda detrás de la última corrida en un estudio cerrado —o el
+        # estudio entero, si nunca tuvo línea de tiempo (los seeds, uno viejo
+        # sin `backfill_timeline`)— no se va a poder analizar nunca. Sin mover
+        # el cursor, la recuperación del manifest lo volvería a intentar en
+        # cada vista.
+        _log_skipped(study, last_end, study.samples_count)
+        study.ml_analyzed_samples = last_end = study.samples_count
+    return _finish_ml_pass(study, bank, last_end, totals, written, pushable, False)
+
+
+def _log_skipped(study: Study, start: int, end: int) -> None:
+    logger.warning(
+        "ml_signal_without_run_skipped",
+        study_id=str(study.id),
+        start_sample=start,
+        end_sample=end,
+    )
+
+
+def _finish_ml_pass(
+    study: Study,
+    bank: TemplateBank | None,
+    last_end: int,
+    totals: dict[str, float],
+    written: int,
+    pushable: Pushable | None,
+    pending: bool,
+) -> MlPass:
+    if bank is not None:
+        ml_persistence.store_bank(study, bank, last_end, totals)
+    return MlPass(written=written, pushable=pushable, pending=pending)
+
+
+async def _guarded_ml_pass(
+    db: AsyncSession, study: Study, batch: ECGBatch | None, *, flush_tail: bool | None = None
+) -> MlPass:
+    """`append_ml_analysis` en un SAVEPOINT: si el motor falla, falla solo el motor.
+
+    Comparte la transacción con lo que el lote o el cierre ya escribieron —el
+    segmento, la Capa A, la línea de tiempo, la vista filtrada, la
+    compactación—, y un error del motor (un objeto que no está en S3, un caso
+    que NeuroKit no soporta) no puede llevárselos puestos: el lote quedaba
+    `FAILED`, y como el cursor no avanzaba, cada lote siguiente del estudio
+    fallaba en el mismo bloque. Con el SAVEPOINT se deshace solo lo del motor,
+    el cursor queda donde estaba y el próximo lote o la próxima finalización lo
+    vuelve a intentar.
+
+    Deshacer el SAVEPOINT expira lo que se modificó adentro (el estudio:
+    `ml_state`, el cursor), y en una sesión async un atributo expirado no se
+    puede recargar solo; por eso el `refresh` explícito y los ids leídos antes.
+    """
+    study_id, cursor = study.id, study.ml_analyzed_samples
+    try:
+        async with db.begin_nested():
+            return await append_ml_analysis(db, study, batch, flush_tail=flush_tail)
+    except DBAPIError as error:
+        if isinstance(getattr(error, "orig", None), LockNotAvailableError):
+            raise
+        await _log_ml_failure(study_id, cursor)
+    except Exception:  # noqa: BLE001 — el motor no puede frenar la ingesta
+        await _log_ml_failure(study_id, cursor)
+    await db.refresh(study)
+    return MlPass()
+
+
+async def _log_ml_failure(study_id: uuid.UUID, cursor: int) -> None:
+    await logger.aexception("ml_analysis_failed", study_id=str(study_id), cursor=cursor)
+
+
 async def _process_one_batch(
     db: AsyncSession, study: Study, batch: ECGBatch
 ) -> tuple[int, int, Pushable | None]:
@@ -835,6 +1305,9 @@ async def _process_one_batch(
     payload = decoded.signal_mV.tobytes()
     key = segment_key(study.id, batch.first_seq or 0)
     put_object(key, payload)
+    flags_payload = decoded.flags.astype(np.uint8).tobytes()
+    flags_object = flags_key(study.id, batch.first_seq or 0)
+    put_object(flags_object, flags_payload)
 
     segments = [segment for segment in study.ecg_segments if segment.get("key") != key]
     segments.append(
@@ -843,6 +1316,11 @@ async def _process_one_batch(
             payload,
             startSampleIndex=start_sample_index,
             sampleCount=decoded.n_samples,
+            # Marca que este lote archivó sus flags (`flags_key` sale de acá) y
+            # por qué lote atribuir lo que el motor escriba en el cierre. Un
+            # número y no las dos claves: este JSONB se reescribe entero en cada
+            # lote y viaja en cada `select(Study)`.
+            firstSeq=batch.first_seq or 0,
         )
     )
     segments.sort(key=lambda item: int(item["startSampleIndex"]))
@@ -904,61 +1382,12 @@ async def _process_one_batch(
         start_sample_index,
         sample_rate,
     )
-    ml_created, ml_pushable = await _persist_ml_analysis(
-        db, study, batch, decoded, start_sample_index, sample_rate
-    )
-    pushable = most_severe(pushable, ml_pushable)
-    # Recuento y no `+=`: los encabezados por morfología del motor se upsertean
-    # (la fila ya existe y solo crece su conteo), así que "filas escritas" no es
-    # "eventos nuevos". Contar las filas del estudio cuenta cada evento una sola
-    # vez, lo haya escrito la Capa A o el motor.
-    await ml_persistence.recount_events(db, study)
+    # El motor no corre acá sino una vez por transacción, después de drenar
+    # todos los lotes pendientes (`process_batch`).
     batch.num_samples = decoded.n_samples
     batch.processing_status = ProcessingStatus.DONE
     batch.processing_error = None
-    return decoded.n_samples, created + ml_created, pushable
-
-
-async def _persist_ml_analysis(
-    db: AsyncSession,
-    study: Study,
-    batch: ECGBatch,
-    decoded: _DecodedBatch,
-    start_sample_index: int,
-    sample_rate: int,
-) -> tuple[int, Pushable | None]:
-    """El motor completo sobre el lote, solo si está habilitado.
-
-    Con `ml_enabled` en falso el sistema queda exactamente como antes de que el
-    motor existiera —la Capa A y la pérdida de señal se escriben igual en
-    `_persist_events`—, que es lo que permite apagarlo en producción sin
-    desplegar código si algo sale mal.
-
-    Un lote que falla hace rollback de todo lo de acá junto con el resto del
-    lote (`_mark_failed`): el reintento arranca desde el mismo estado del estudio
-    y del banco, así que no hay reproceso parcial que deduplicar.
-    """
-    if not settings.ml_enabled:
-        return 0, None
-
-    state = study.ml_state or {}
-    config = build_config(settings, sample_rate, score_floor=float(state.get("scoreFloor", 0.0)))
-    bank = ml_persistence.load_bank(state, config)
-    existing = await ml_persistence.count_anomalies(db, study.id)
-    # LA frontera. Todo el análisis corre acá adentro, fuera del event loop, en
-    # una sola llamada auditable. Del otro lado no cruza nada del ORM: arrays,
-    # el banco (un dataclass) y la config.
-    result = await run_cpu(
-        analyze_batch,
-        decoded.signal_mV,
-        decoded.flags,
-        start_sample_index=start_sample_index,
-        bank=bank,
-        config=config,
-        batch_id=str(batch.id),
-        existing_anomalies=existing,
-    )
-    return await ml_persistence.persist_analysis(db, study, batch, result, sample_rate)
+    return decoded.n_samples, created, pushable
 
 
 #: Intentos de tomar la fila del estudio antes de dejar el lote para más tarde.
@@ -1027,6 +1456,29 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
             processed.append((pending, samples, events))
             pushable = most_severe(pushable, batch_pushable)
 
+        if processed:
+            # Después de `_persist_events` a propósito: los `frame_gap` /
+            # `internal_gap` de los lotes drenados ya están en la sesión, y el
+            # motor los lee como empalmes del bloque. Analiza solo los bloques
+            # que esos lotes completaron (casi siempre ninguno: un bloque son
+            # ~20 lotes); el resto espera al siguiente o al cierre. **Una**
+            # pasada por transacción y no una por lote: el presupuesto de la
+            # pasada (`ML_PASS_BUDGET_SECONDS`) es lo que mantiene la fila
+            # debajo del `lock_timeout`, y con una pasada por lote un drenaje de
+            # N lotes atrasados lo multiplicaba por N. El cursor hace que el
+            # resultado sea el mismo; lo escrito se atribuye al último lote. En
+            # un SAVEPOINT: una falla del motor no puede tirar abajo los lotes.
+            last_batch, last_samples, last_events = processed[-1]
+            ml_pass = await _guarded_ml_pass(db, study, last_batch)
+            pushable = most_severe(pushable, ml_pass.pushable)
+            processed[-1] = (last_batch, last_samples, last_events + ml_pass.written)
+            # Recuento y no `+=`: los encabezados por morfología del motor se
+            # upsertean (la fila ya existe y solo crece su conteo), así que
+            # "filas escritas" no es "eventos nuevos". Contar las filas del
+            # estudio cuenta cada evento una sola vez, lo haya escrito la Capa A
+            # o el motor.
+            await ml_persistence.recount_events(db, study)
+
         patient_id = study.patient_id
         await db.commit()
         for done, samples, events in processed:
@@ -1089,12 +1541,25 @@ async def process_batch_task(batch_id: uuid.UUID) -> None:
         await process_batch(session, batch_id)
 
 
-async def process_study_task(study_id: uuid.UUID) -> None:
-    """Retry archived batches and finish the filtered tail after study close.
+async def process_study_task(study_id: uuid.UUID, *, flush_open_tail: bool = False) -> None:
+    """Retry archived batches and finish the filtered and analyzed tails after close.
 
     The study row lock and DONE status keep concurrent retries idempotent. This
     also gives a failed final background job a recovery path through the
     manifest request or an explicit study close.
+
+    El motor corre acá con `batch=None`: con el estudio cerrado, la cola de la
+    última corrida —lo que no llegó a un bloque entero— ya se puede analizar.
+    `flush_open_tail` la analiza también con el estudio en curso: es lo que usa
+    `flush_stale_tails` cuando la corrida lleva demasiado sin crecer.
+    Una pasada analiza como mucho `ml_analysis_max_blocks_per_pass` bloques con
+    la fila tomada; si quedó más (un estudio que el motor nunca vio), commitea,
+    suelta la fila y vuelve a tomarla, así la ingesta de otro lote no espera
+    minutos detrás de esto. La fusión de morfologías y la compactación van
+    recién cuando el motor terminó: fundir antes vería un banco incompleto.
+
+    El motor corre en un SAVEPOINT (`_guarded_ml_pass`): si falla, la cola de la
+    vista filtrada y la compactación del cierre se commitean igual.
     """
     from app.db.session import async_session_factory
 
@@ -1104,27 +1569,104 @@ async def process_study_task(study_id: uuid.UUID) -> None:
             await process_batch(session, pending[0].id)
         await session.rollback()
         try:
-            study = await _lock_study(session, study_id)
-            if study is None:
-                return
-            await append_filtered_view(session, study)
-            if study.status is StudyStatus.COMPLETED:
-                # Acá y no en el cierre: es el único punto por el que pasan todos
-                # los caminos que completan un estudio (el médico, la
-                # desasignación del equipo y el rebobinado de `seq` de la
-                # ingesta), y corre después de drenar los lotes pendientes. Un
-                # estudio se puede cerrar con lotes en cola, y fundir antes vería
-                # un banco incompleto. Sin plantillas que fundir no escribe nada.
-                await ml_persistence.consolidate_morphologies(session, study)
-            if study.status is not StudyStatus.IN_PROGRESS:
-                study.ecg_pyramid_levels = await asyncio.to_thread(
-                    compact_pyramid, study, force=True
+            while True:
+                study = await _lock_study(session, study_id)
+                if study is None:
+                    return
+                await append_filtered_view(session, study)
+                ml_pass = await _guarded_ml_pass(
+                    session,
+                    study,
+                    None,
+                    flush_tail=flush_open_tail or study.status is not StudyStatus.IN_PROGRESS,
                 )
-                if study.filter_view_enabled:
-                    study.ecg_filtered_pyramid_levels = await asyncio.to_thread(
-                        compact_pyramid, study, force=True, filtered=True
+                if ml_pass.written:
+                    await ml_persistence.recount_events(session, study)
+                if not ml_pass.pending:
+                    await _finalize_closed_study(study, session)
+                patient_id = study.patient_id
+                await session.commit()
+                # Igual que `process_batch`: el aviso sale con la transacción
+                # cerrada, cuando el `alertId` ya existe.
+                if ml_pass.pushable is not None:
+                    await notify_patient_task(
+                        patient_id,
+                        anomaly_message(
+                            ml_pass.pushable.alert_id,
+                            datetime.now(UTC).isoformat(),
+                            ml_pass.pushable.kind,
+                        ),
                     )
-            await session.commit()
+                if not ml_pass.pending:
+                    return
         except Exception:
             await session.rollback()
             logger.exception("process_study_recovery_failed", study_id=str(study_id))
+
+
+async def flush_stale_tails(now: datetime | None = None) -> list[uuid.UUID]:
+    """Analiza la cola de las corridas abiertas que hace rato no crecen. Devuelve los estudios.
+
+    El motor deja la cola de la corrida abierta —hasta un bloque menos una
+    muestra— esperando a que el lote siguiente complete el bloque. Mientras el
+    chaleco sube cada diez minutos, eso es una demora de un ciclo. Pero si deja
+    de subir —el paciente salió de su casa, se cayó el router, se agotó la
+    batería y el estudio sigue en curso—, una pausa crítica que **ya llegó** al
+    servidor no se analizaba hasta que volvieran los datos o el médico cerrara
+    el estudio: horas o días sin aviso. Por lote, antes, se avisaba al subir.
+
+    Una corrida sin lotes nuevos desde hace `ml_open_tail_flush_minutes` se
+    analiza hasta su última muestra como si estuviera cerrada, después de
+    drenar los lotes que llegaron y quedaron sin procesar (un `BackgroundTask`
+    perdido, una pasada que no consiguió la fila). Si después sigue
+    creciendo, el bloque siguiente arranca en el cursor con su contexto
+    izquierdo, y un episodio que cruce ese borde se empalma como cualquier otro:
+    lo único que depende del reloj es dónde cae ese borde.
+    """
+    from app.db.session import async_session_factory
+
+    minutes = settings.ml_open_tail_flush_minutes
+    if not settings.ml_enabled or minutes <= 0:
+        return []
+    cutoff = (now or datetime.now(UTC)) - timedelta(minutes=minutes)
+    async with async_session_factory() as session:
+        study_ids = await repo.list_studies_with_stale_tail(session, cutoff)
+    for study_id in study_ids:
+        await process_study_task(study_id, flush_open_tail=True)
+    return study_ids
+
+
+#: Cada cuánto busca colas viejas el lazo del `lifespan`. Es una consulta
+#: sobre los estudios en curso, que son pocos.
+STALE_TAIL_SWEEP_SECONDS = 60.0
+
+
+async def sweep_stale_tails_forever() -> None:
+    """El lazo que corre `flush_stale_tails` mientras viva el proceso (`app.main.lifespan`).
+
+    Con varios procesos corre en cada uno: el lock de la fila y el cursor hacen
+    que el segundo que llega no encuentre nada que analizar.
+    """
+    while True:
+        await asyncio.sleep(STALE_TAIL_SWEEP_SECONDS)
+        try:
+            await flush_stale_tails()
+        except Exception:  # noqa: BLE001 — el lazo no puede morir por una pasada
+            logger.exception("stale_tail_sweep_failed")
+
+
+async def _finalize_closed_study(study: Study, session: AsyncSession) -> None:
+    if study.status is StudyStatus.COMPLETED:
+        # Acá y no en el cierre: es el único punto por el que pasan todos los
+        # caminos que completan un estudio (el médico, la desasignación del
+        # equipo y el rebobinado de `seq` de la ingesta), y corre después de
+        # drenar los lotes pendientes y de analizar la cola de la última
+        # corrida. Un estudio se puede cerrar con lotes en cola, y fundir antes
+        # vería un banco incompleto. Sin plantillas que fundir no escribe nada.
+        await ml_persistence.consolidate_morphologies(session, study)
+    if study.status is not StudyStatus.IN_PROGRESS:
+        study.ecg_pyramid_levels = await asyncio.to_thread(compact_pyramid, study, force=True)
+        if study.filter_view_enabled:
+            study.ecg_filtered_pyramid_levels = await asyncio.to_thread(
+                compact_pyramid, study, force=True, filtered=True
+            )

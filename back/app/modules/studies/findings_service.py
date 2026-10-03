@@ -17,6 +17,7 @@ preguntas con dos formas distintas:
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Sequence
 
 from fastapi import HTTPException
@@ -26,12 +27,15 @@ from app.db.models.audit_event import AuditEventType
 from app.db.models.ecg_event import ECGEvent
 from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.study import Study
+from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.annotations import (
     STUDY_SCOPE,
     EventView,
+    WallClockResolver,
     event_view,
+    segment_epoch_ms,
     wall_clock_resolver,
 )
 from app.modules.studies.studies_schemas import (
@@ -122,24 +126,50 @@ def _build_group(key: str, views: list[EventView], items_per_group: int) -> Stud
 
 
 def _quality_summary(
-    study: Study, intervals: Sequence[SignalQualityInterval]
+    study: Study,
+    intervals: Sequence[SignalQualityInterval],
+    runs: Sequence[StudyTimelineSegment],
+    to_epoch_ms: WallClockResolver,
 ) -> StudyQualitySummaryOut:
-    """Fusiona los intervalos entre lotes y resume la cobertura del registro."""
-    merged: list[tuple[int, int, SignalQualityLevel, str]] = []
+    """Fusiona los intervalos entre bloques y resume la cobertura del registro.
+
+    Solo se funden intervalos de la **misma corrida**. Dos corridas son
+    contiguas en el buffer empaquetado —el final de una es el inicio de la
+    otra—, pero entre ellas hay un hueco real de grabación: fundirlas dibujaría
+    un tramo "bueno" continuo encima de horas en las que el equipo no grabó.
+
+    Cada intervalo lleva su hora de pared, como los hallazgos: el panel lleva al
+    visor por `startEpochMs`. Se resuelve contra el tramo del intervalo y no
+    eligiendo el tramo por la muestra, porque el final exclusivo de un intervalo
+    que cierra su corrida caería en la corrida siguiente, después del hueco.
+    """
+    starts = [run.start_sample_index for run in runs]
+
+    def run_of(sample: int) -> int:
+        return max(bisect_right(starts, sample) - 1, 0)
+
+    merged: list[tuple[int, int, SignalQualityLevel, str, int]] = []
     for interval in intervals:
         start = interval.start_sample_index
         end = start + interval.sample_count
-        if merged and merged[-1][2] is interval.level and merged[-1][1] == start:
+        run = run_of(start)
+        if (
+            merged
+            and merged[-1][2] is interval.level
+            and merged[-1][1] == start
+            and merged[-1][4] == run
+        ):
             previous = merged[-1]
-            # Mismo nivel y contiguo: se funden. El motivo del primero manda —si
-            # el tramo pasó de `psqi` a `ksqi` o a `no_beats` sin dejar de ser
-            # malo, lo que el médico necesita saber es que ahí no se pudo leer.
-            merged[-1] = (previous[0], end, previous[2], previous[3])
+            # Mismo nivel, contiguo y en la misma corrida: se funden. El motivo
+            # del primero manda —si el tramo pasó de `psqi` a `ksqi` o a
+            # `no_beats` sin dejar de ser malo, lo que el médico necesita saber
+            # es que ahí no se pudo leer.
+            merged[-1] = (previous[0], end, previous[2], previous[3], run)
         else:
-            merged.append((start, end, interval.level, interval.reason))
+            merged.append((start, end, interval.level, interval.reason, run))
 
     by_level: dict[SignalQualityLevel, int] = {}
-    for start, end, level, _ in merged:
+    for start, end, level, _, _ in merged:
         by_level[level] = by_level.get(level, 0) + (end - start)
     evaluated = sum(by_level.values()) or 1
 
@@ -147,6 +177,12 @@ def _quality_summary(
         return round(by_level.get(level, 0) / evaluated, 6)
 
     rate = study.sample_rate or 500
+
+    def epoch_ms(sample: int, run: int) -> int:
+        if runs:
+            return segment_epoch_ms(runs[run], sample)
+        return to_epoch_ms(round(sample * 1000 / rate))
+
     return StudyQualitySummaryOut(
         analyzableRatio=ratio(SignalQualityLevel.GOOD),
         goodRatio=ratio(SignalQualityLevel.GOOD),
@@ -157,10 +193,12 @@ def _quality_summary(
             StudyQualityIntervalOut(
                 startOffsetMs=round(start * 1000 / rate),
                 endOffsetMs=round(end * 1000 / rate),
+                startEpochMs=epoch_ms(start, run),
+                endEpochMs=epoch_ms(end, run),
                 level=level.value,
                 reason=reason,
             )
-            for start, end, level, reason in merged
+            for start, end, level, reason, run in merged
         ],
     )
 
@@ -183,7 +221,8 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
     # La misma traducción a hora de pared que el manifest: el panel lleva al
     # visor por `startEpochMs`, y si las dos resoluciones difirieran el click
     # caería al lado de la banda en cuanto el estudio tenga un hueco.
-    to_epoch_ms = wall_clock_resolver(study, await repo.list_timeline_segments(db, study.id))
+    runs = await repo.list_timeline_segments(db, study.id)
+    to_epoch_ms = wall_clock_resolver(study, runs)
     views = [
         view
         for view in (event_view(event, study, to_epoch_ms) for event in events)
@@ -231,7 +270,7 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
         sampleCount=study.samples_count,
         durationMs=round(study.samples_count * 1000 / (study.sample_rate or 500)),
         modelVersion=_model_version(events),
-        quality=_quality_summary(study, intervals),
+        quality=_quality_summary(study, intervals, runs, to_epoch_ms),
         groups=groups,
         ungrouped=[_finding_out(view) for view in ungrouped],
         totals=totals,

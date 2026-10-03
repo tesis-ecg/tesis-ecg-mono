@@ -6,11 +6,13 @@ congela la API entera: mientras un lote se procesa, ningún request del dashboar
 avanza.
 
 Lo único que cruza a este pool es el motor de detección (`analyze_batch`, desde
-`processing._persist_ml_analysis`), que es el trabajo CPU-bound grande. La
-decodificación (`decode_batch`) y las lecturas de S3 del procesamiento corren en
+`processing.append_ml_analysis`), que es el trabajo CPU-bound grande. La
+decodificación (`decode_batch`) y las lecturas de S3 de cada lote corren en
 línea, como en el flujo de ingesta de `main`: con lotes de ~15 s es poco
-trabajo por lote. `run_io` queda disponible para I/O bloqueante, sin llamadores
-hoy.
+trabajo por lote. Las del motor no: un bloque de 300 s más su contexto son
+~48 GET (crudo y flags de ~24 lotes), y en el event loop congelaban la API con
+la fila del estudio tomada más allá del `lock_timeout`. Van a un hilo con
+`run_io` (`processing._block_signal`).
 
 Un pool propio y no `asyncio.to_thread`, por dos razones:
 

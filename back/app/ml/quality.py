@@ -161,6 +161,78 @@ def window_bounds(n_samples: int, window_samples: int) -> list[tuple[int, int]]:
     return bounds
 
 
+def block_window_bounds(
+    n_samples: int, window_samples: int, context_samples: int = 0, lookahead_samples: int = 0
+) -> list[tuple[int, int]]:
+    """`window_bounds` en tres tramos: contexto izquierdo, parte nueva y contexto derecho.
+
+    Cada tramo se cubre desde su propio inicio, así que siempre hay un borde de
+    ventana **exactamente** en `context_samples` y otro en el final de la parte
+    nueva (`n_samples - lookahead_samples`), sean o no múltiplos del largo de
+    ventana. Es lo que permite reportar solo las ventanas de la parte nueva sin
+    que ninguna mezcle muestras de dos lados: una ventana a caballo del borde la
+    evaluarían los dos bloques que lo comparten, contada dos veces en los
+    totales del estudio. La última ventana de cada tramo absorbe su remanente,
+    igual que en `window_bounds`.
+    """
+    total = max(n_samples, 0)
+    context = min(max(context_samples, 0), total)
+    end = max(total - max(lookahead_samples, 0), context)
+    bounds = window_bounds(context, window_samples)
+    for offset, size in ((context, end - context), (end, total - end)):
+        bounds.extend(
+            (start + offset, length) for start, length in window_bounds(size, window_samples)
+        )
+    return bounds
+
+
+#: Margen que se saca de la máscara de analizable a cada lado de un empalme
+#: (`exclude_splices`). Alcanza con una muestra para que el R-R que lo cruza
+#: quede inválido; el resto cubre el corrimiento de un R que el detector ubicó
+#: sobre el salto mismo.
+SPLICE_GUARD_MS = 200
+
+#: Cuánto puede estar el empalme **después** del índice declarado. Un
+#: `internal_gap` se ancla al inicio de su trama porque la cabecera solo dice
+#: que falta señal adentro, no dónde (`FrameInfo.gap_beyond_clock_ms`). Una
+#: trama de ECG real trae 0,3-0,4 s (140-180 muestras a 500 Hz); una más larga
+#: solo sale de señal casi plana, que el gate ya rechaza por su cuenta.
+SPLICE_SPAN_MS = 1000
+
+
+def exclude_splices(analyzable: Mask, splices: Sequence[tuple[int, int]], sample_rate: int) -> Mask:
+    """Saca de la máscara de analizable el entorno de cada empalme del buffer.
+
+    Un `frame_gap` o un `internal_gap` es adquisición perdida **sin muestras
+    que la representen**: el buffer del estudio es continuo y las muestras de
+    los dos lados del hueco quedan pegadas. Un R-R que cruza el empalme no mide
+    nada —le faltan los latidos del hueco— y un latido cuya ventana lo cruza
+    mezcla dos instantes distintos. Con el entorno fuera de la máscara,
+    `build_rr` invalida ese intervalo y `extract_beats` descarta ese latido, sin
+    que ninguno de los dos tenga que saber de huecos.
+
+    `splices` son pares `(inicio, largo)` relativos a la señal, tal como los
+    guarda la Capa A en `startSampleIndex`/`sampleCount`. **El largo no se usa
+    para ubicar nada**: es tiempo perdido, no muestras del buffer. Los que caen
+    enteros fuera de la señal se ignoran; los demás se recortan a sus bordes.
+    Las ventanas de calidad no cambian: el empalme no dice nada de la señal de
+    cada lado.
+    """
+    if not splices:
+        return analyzable
+    n_samples = int(analyzable.size)
+    guard = int(np.ceil(SPLICE_GUARD_MS * sample_rate / 1000))
+    span = int(np.ceil(SPLICE_SPAN_MS * sample_rate / 1000))
+    masked = analyzable.copy()
+    for start, _length in splices:
+        if start >= n_samples or start + span <= 0:
+            continue
+        low = max(start - guard, 0)
+        high = min(start + span + guard, n_samples)
+        masked[low:high] = False
+    return masked
+
+
 # --------------------------------------------------------------------------- #
 # Capa A — bits del hardware
 # --------------------------------------------------------------------------- #
@@ -455,6 +527,9 @@ def assess_quality(
     *,
     sample_rate: int,
     thresholds: QualityThresholds,
+    context_samples: int = 0,
+    lookahead_samples: int = 0,
+    flags_known: Mask | None = None,
 ) -> QualityReport:
     """Evalúa el lote ventana por ventana y devuelve la máscara de analizable.
 
@@ -469,6 +544,23 @@ def assess_quality(
     índices espectrales ven la señal sin red; la línea plana y la Capa A miran la
     cruda: preguntan si el AFE entrega señal, no si esa señal es un ECG, y la
     respuesta no cambia porque sea red.
+
+    `context_samples` y `lookahead_samples` parten las ventanas en tres tramos
+    (`block_window_bounds`): el reporte trae las de todos, y es el pipeline el
+    que decide cuáles informa. La red sí se quita de corrido sobre todo el
+    bloque, los dos contextos incluidos: así ni el arranque ni el final de la
+    parte nueva son un borde de filtrado, y la curtosis no les descarta el
+    margen de asentamiento de `deinterfere`, que queda solo en los extremos de
+    lo leído —ahí sí hay un borde—. Sin contexto derecho, la última ventana de
+    cada bloque se juzgaba contra ese borde y nadie la volvía a evaluar: en
+    MIT-BIH, 5 de 180 cambiaban de nivel respecto del análisis de corrido.
+
+    El bSQI se pide en una ventana si el firmware marca R en el bloque **y**
+    los flags de esa ventana están archivados (`flags_known`, `None` = todos).
+    Una ventana de un segmento viejo trae flags en cero: sin la máscara, un
+    bloque que mezclaba segmentos con y sin flags comparaba el ECG limpio de
+    la parte sin flags contra un firmware "que no vio ningún R" y lo dejaba
+    MARGINAL/bsqi, fuera del ritmo, la morfología y los totales.
     """
     n_samples = int(signal.size)
     analyzable = np.zeros(n_samples, dtype=bool)
@@ -476,19 +568,35 @@ def assess_quality(
     windows: list[QualityWindow] = []
     deinterfered, settled = deinterfere(signal, flags, sample_rate, thresholds.mains_hz)
 
-    for start, length in window_bounds(n_samples, thresholds.window_samples):
+    for start, length in block_window_bounds(
+        n_samples, thresholds.window_samples, context_samples, lookahead_samples
+    ):
         end = start + length
+        # La parte nueva más corta que una ventana —la cola de una corrida que
+        # se cerró a 0,4 s de un múltiplo del bloque— se **evalúa** sobre la
+        # última ventana entera, prestándose señal del contexto, y se informa
+        # con sus propios bordes. Evaluada sola, 0,4 s de ECG limpio no llegan
+        # a mostrar la potencia del QRS y salían BAD/psqi con una banda de ruido
+        # inventada; de una sola vez, ese remanente lo absorbía la ventana
+        # anterior (`window_bounds`). Lo mismo un contexto derecho corto, que
+        # se presta señal de la parte nueva.
+        low = (
+            max(end - thresholds.window_samples, 0)
+            if 0 < start and start >= context_samples and length < thresholds.window_samples
+            else start
+        )
         level, reason, metrics = _assess_window(
-            signal[start:end],
-            deinterfered[start:end],
-            settled[start:end],
-            flags[start:end],
-            cleaned[start:end] if cleaned.size == n_samples else signal[start:end],
-            firmware_peaks[(firmware_peaks >= start) & (firmware_peaks < end)] - start,
-            detected_peaks[(detected_peaks >= start) & (detected_peaks < end)] - start,
+            signal[low:end],
+            deinterfered[low:end],
+            settled[low:end],
+            flags[low:end],
+            cleaned[low:end] if cleaned.size == n_samples else signal[low:end],
+            firmware_peaks[(firmware_peaks >= low) & (firmware_peaks < end)] - low,
+            detected_peaks[(detected_peaks >= low) & (detected_peaks < end)] - low,
             sample_rate=sample_rate,
             thresholds=thresholds,
-            firmware_available=firmware_available,
+            firmware_available=firmware_available
+            and (flags_known is None or bool(flags_known[low:end].all())),
         )
         windows.append(
             QualityWindow(

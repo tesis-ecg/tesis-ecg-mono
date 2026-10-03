@@ -494,6 +494,12 @@ class StudyFindingGroupOut(CamelModel):
 class StudyQualityIntervalOut(CamelModel):
     startOffsetMs: int
     endOffsetMs: int
+    #: Hora de pared, igual que los hallazgos: los offsets son del buffer
+    #: empaquetado y se despegan de la hora en cuanto el estudio tiene un hueco.
+    #: Un intervalo nunca cruza una corrida, así que sus dos bordes se resuelven
+    #: contra el mismo tramo.
+    startEpochMs: int
+    endEpochMs: int
     level: Literal["good", "marginal", "bad", "unknown"]
     #: `lead_off`, `saturated`, `firmware_sqi`, `flatline`, `psqi`, `ksqi`,
     #: `bassqi`, `no_beats`, `bsqi`, `ok`; `spectral` en estudios analizados antes

@@ -189,7 +189,7 @@ def run_capture(path: Path, mains_hz: float | None) -> CaptureResult:
         start_sample_index=0,
         bank=empty_bank(config),
         config=config,
-        batch_id=path.stem,
+        fold_key=path.stem,
     )
 
     # `analyze_batch` devuelve las ventanas ya fusionadas. Para el detalle por

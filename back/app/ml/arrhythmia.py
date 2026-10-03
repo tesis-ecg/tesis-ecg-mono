@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 
 from app.db.models.ecg_event import ECGEventSeverity, ECGEventType
-from app.ml.contracts import Finding, Floats, RhythmThresholds
+from app.ml.contracts import Finding, Floats, Mask, RhythmThresholds
 from app.ml.hrv import RRSeries, instantaneous_bpm
 from app.ml.quality import sample_runs
 
@@ -31,6 +31,14 @@ TACHYCARDIA_HIGH_BPM = 150.0
 BRADYCARDIA_HIGH_BPM = 40.0
 #: Una pausa de 3 s o más es un hallazgo crítico en cualquier informe de Holter.
 PAUSE_CRITICAL_SECONDS = 3.0
+
+#: Tramo máximo de R-R **inválidos** que se puentea dentro de un episodio
+#: sostenido (`_bridged_runs`). Un empalme del buffer (`frame_gap`,
+#: `internal_gap`) saca ~1,4 s de lo analizable (`quality.exclude_splices`) e
+#: invalida los dos o tres R-R que lo tocan: hasta ~4,4 s a 40 lpm. Más que eso
+#: ya no es un empalme sino señal que no se pudo leer, y ahí el episodio se
+#: corta como antes.
+MAX_INVALID_BRIDGE_SECONDS = 5.0
 
 #: Texto del aviso al paciente. Solo los hallazgos severos lo llevan: el push
 #: existe para preguntarle cómo se sentía, y una taquicardia de 105 lpm mientras
@@ -48,6 +56,33 @@ def _smooth_bpm(rr_seconds: Floats) -> Floats:
     padded = np.pad(bpm.astype(np.float64), (SMOOTH_BEATS // 2, SMOOTH_BEATS // 2), mode="edge")
     windows = np.lib.stride_tricks.sliding_window_view(padded, SMOOTH_BEATS + 1)
     return np.asarray(np.median(windows, axis=-1), dtype=np.float32)[: bpm.size]
+
+
+def _bridged_runs(mask: Mask, rr: RRSeries, sample_rate: int) -> list[tuple[int, int]]:
+    """`sample_runs(mask)` con los tramos cortados solo por R-R inválidos vueltos a unir.
+
+    Un empalme de 50 ms en medio de una taquicardia de 56 s invalida dos o tres
+    R-R, y eso partía el episodio en dos mitades de menos de
+    `min_duration_seconds` cada una: ninguna llegaba al mínimo, y la
+    refractariedad —que las habría fundido— corre después. Se unen dos tramos
+    del mismo tipo si **todo** lo que hay entre ellos son R-R inválidos y ese
+    hueco no pasa de `MAX_INVALID_BRIDGE_SECONDS`. Un R-R válido que no cumple
+    el umbral sí corta: es el ritmo que cambió.
+    """
+    max_gap = MAX_INVALID_BRIDGE_SECONDS * sample_rate
+    runs: list[tuple[int, int]] = []
+    for first, count in sample_runs(mask):
+        if runs:
+            previous_first, previous_count = runs[-1]
+            gap_start = previous_first + previous_count
+            if (
+                not rr.valid[gap_start:first].any()
+                and int(rr.rpeaks[first]) - int(rr.rpeaks[gap_start]) <= max_gap
+            ):
+                runs[-1] = (previous_first, first + count - previous_first)
+                continue
+        runs.append((first, count))
+    return runs
 
 
 def detect_rhythm(rr: RRSeries, thresholds: RhythmThresholds, sample_rate: int) -> list[Finding]:
@@ -72,13 +107,15 @@ def detect_rhythm(rr: RRSeries, thresholds: RhythmThresholds, sample_rate: int) 
             ECGEventType.BRADYCARDIA,
         ),
     ):
-        for first, count in sample_runs(mask):
+        for first, count in _bridged_runs(mask, rr, sample_rate):
             start_sample = int(rr.rpeaks[first])
             end_sample = int(rr.rpeaks[min(first + count, rr.n_beats - 1)])
             length = end_sample - start_sample
             if length < min_samples:
                 continue
-            segment = bpm[first : first + count]
+            # Las frecuencias, solo de los R-R válidos: el que cruza un empalme
+            # mide el hueco y no el corazón.
+            segment = bpm[first : first + count][valid[first : first + count]]
             extreme = float(np.max(segment) if kind == "tachycardia" else np.min(segment))
             severe = (
                 extreme >= TACHYCARDIA_HIGH_BPM
@@ -96,6 +133,7 @@ def detect_rhythm(rr: RRSeries, thresholds: RhythmThresholds, sample_rate: int) 
                     score=None,
                     beat_count=int(count) + 1,
                     alert_message=_ALERT_MESSAGES[kind] if severe else None,
+                    beat_samples=tuple(int(peak) for peak in rr.rpeaks[first : first + count + 1]),
                     metadata={
                         "peakBpm" if kind == "tachycardia" else "minBpm": round(extreme, 2),
                         "medianBpm": round(float(np.median(segment)), 2),
@@ -123,6 +161,7 @@ def detect_rhythm(rr: RRSeries, thresholds: RhythmThresholds, sample_rate: int) 
                 score=None,
                 beat_count=2,
                 alert_message="Se detectó una pausa en el ritmo.",
+                beat_samples=(start_sample, int(rr.rpeaks[index + 1])),
                 metadata={"pauseSeconds": round(seconds, 3)},
             )
         )

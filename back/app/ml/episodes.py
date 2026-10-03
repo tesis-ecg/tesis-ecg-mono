@@ -54,8 +54,15 @@ def group_beats(
     *,
     sample_rate: int,
     budget: EpisodeBudget,
+    owned: Mask | None = None,
 ) -> list[Finding]:
-    """Agrupa latidos positivos en episodios. Coordenadas **relativas al lote**."""
+    """Agrupa latidos positivos en episodios. Coordenadas **relativas al lote**.
+
+    `owned` marca los latidos de la parte nueva de un bloque con contexto: los
+    del contexto entran en el agrupamiento —un episodio no se corta en el borde
+    del bloque— pero un grupo que no tiene **ningún** latido nuevo se descarta,
+    porque ya lo informó el bloque anterior. Sin `owned`, todos son nuevos.
+    """
     if rpeaks.size == 0 or not positive.any():
         return []
 
@@ -84,6 +91,8 @@ def group_beats(
 
     findings: list[Finding] = []
     for group in groups:
+        if owned is not None and not owned[group].any():
+            continue
         cluster_id = int(cluster_ids[group[0]])
         is_recurrent = cluster_id in recurrent
         if len(group) < budget.min_beats and not is_recurrent:
@@ -106,6 +115,7 @@ def group_beats(
                     "meanScore": round(float(np.mean(scores[group])), 6),
                     "recurrent": int(is_recurrent),
                 },
+                beat_samples=tuple(int(rpeaks[index]) for index in group),
             )
         )
     return findings
@@ -143,6 +153,10 @@ def apply_refractory(
             merged.append(finding)
             continue
         end = max(previous_end, finding.start_sample + finding.length_samples)
+        length = end - previous.start_sample
+        # Los latidos son la unión: dos pausas seguidas comparten el R del medio,
+        # y sumar los conteos lo contaba dos veces.
+        beat_samples = tuple(sorted(set(previous.beat_samples) | set(finding.beat_samples)))
         merged[-1] = Finding(
             kind=previous.kind,
             event_type=previous.event_type,
@@ -152,17 +166,57 @@ def apply_refractory(
                 key=lambda value: _SEVERITY_RANK[value],
             ),
             start_sample=previous.start_sample,
-            length_samples=end - previous.start_sample,
+            length_samples=length,
             dedupe_key=previous.dedupe_key,
             score=max(previous.score or 0.0, finding.score or 0.0),
             scope=previous.scope,
             cluster_id=previous.cluster_id,
-            beat_count=(previous.beat_count or 0) + (finding.beat_count or 0),
+            beat_count=len(beat_samples)
+            if beat_samples
+            else (previous.beat_count or 0) + (finding.beat_count or 0),
             alert_message=previous.alert_message or finding.alert_message,
-            metadata={**finding.metadata, **previous.metadata},
+            metadata=_merge_metadata(previous.metadata, finding.metadata, length, sample_rate),
+            beat_samples=beat_samples,
         )
     merged.sort(key=lambda item: item.start_sample)
     return merged
+
+
+#: Metadata que resume un extremo del episodio: al fundir dos, manda el más
+#: extremo de los dos y no el del primero.
+_METADATA_MAX = ("peakBpm", "pauseSeconds")
+_METADATA_MIN = ("minBpm",)
+
+
+def _merge_metadata(
+    previous: dict[str, float | int | str],
+    finding: dict[str, float | int | str],
+    length_samples: int,
+    sample_rate: int,
+) -> dict[str, float | int | str]:
+    """La metadata del hallazgo fundido, recalculada donde depende del largo.
+
+    Antes mandaba la del primero entera, y una taquicardia fundida con la que la
+    seguía declaraba la duración de la primera sola. Ahora `durationSeconds` sale
+    del largo fundido, `peakBpm` y `pauseSeconds` toman el máximo de los dos y
+    `minBpm` el mínimo. `medianBpm` **se saca**: una mediana no se puede
+    recomponer a partir de dos, y quedarse con la del primero describía solo el
+    arranque — una taquicardia de veinte minutos que pasa de 110 a 150 lpm
+    declaraba una mediana de 110. El resto sigue siendo el del primero.
+    """
+    metadata = {**finding, **previous}
+    metadata.pop("medianBpm", None)
+    for key in _METADATA_MAX:
+        values = [float(item[key]) for item in (previous, finding) if key in item]
+        if values:
+            metadata[key] = max(values)
+    for key in _METADATA_MIN:
+        values = [float(item[key]) for item in (previous, finding) if key in item]
+        if values:
+            metadata[key] = min(values)
+    if "durationSeconds" in metadata:
+        metadata["durationSeconds"] = round(length_samples / sample_rate, 2)
+    return metadata
 
 
 _SEVERITY_RANK = {
