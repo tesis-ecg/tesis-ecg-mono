@@ -44,6 +44,7 @@ import type {
   ECGViewportChange,
 } from '../types'
 import { formatWallClock, formatWallClockShort } from '../utils/formatEcgTimestamp'
+import { latestTimestampMs, unprocessedTailStartMs } from '../utils/processedRange'
 import { sampleRangeForSeconds } from '../utils/sampleRange'
 
 /**
@@ -161,9 +162,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // re-creen en cada render cuando el padre pasa un closure nuevo.
   const onViewportChangeRef = useRef(onViewportChange)
   const onCursorChangeRef = useRef(onCursorChange)
-  const cursorTimestampRef = useRef<number>(
-    initialCursorMs ?? signal.timestampsMs[signal.timestampsMs.length - 1] ?? signal.startTimestamp,
-  )
+  const cursorTimestampRef = useRef<number>(initialCursorMs ?? latestTimestampMs(signal))
   const hasCursorAnchorRef = useRef(initialCursorMs != null)
   useEffect(() => {
     onViewportChangeRef.current = onViewportChange
@@ -497,8 +496,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         ) {
           pendingInitialSpanRef.current = false
           if (followsLatestRef.current) {
-            cursorTimestampRef.current =
-              signal.timestampsMs[signal.timestampsMs.length - 1] ?? signal.startTimestamp
+            cursorTimestampRef.current = latestTimestampMs(signal)
           }
           setCursorAtTimestamp(inst, cursorTimestampRef.current, startTimestamp, durationSec)
           isInitializingFrameRef.current = false
@@ -773,6 +771,12 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     [signal, durationSec],
   )
 
+  const unprocessedStartMs = unprocessedTailStartMs(signal)
+  const unprocessedBand =
+    plotArea && overlayViewport && unprocessedStartMs !== null
+      ? unprocessedBandPx(unprocessedStartMs, overlayViewport, plotArea.width)
+      : null
+
   return (
     <div className="relative w-full" style={{ height }}>
       <div
@@ -781,6 +785,27 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         aria-label="Gráfico ECG interactivo"
         tabIndex={0}
       />
+      {plotArea && unprocessedBand ? (
+        <div
+          role="note"
+          data-testid="ecg-unprocessed-band"
+          className="pointer-events-none absolute flex items-center justify-center overflow-hidden border-l border-dashed border-border bg-bg-muted/80"
+          style={{
+            left: plotArea.left + unprocessedBand.leftPx,
+            top: plotArea.top,
+            width: unprocessedBand.widthPx,
+            height: plotArea.height,
+          }}
+        >
+          {unprocessedBand.widthPx >= 120 ? (
+            <span className="rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-fg-muted shadow-sm">
+              Sin datos procesados
+            </span>
+          ) : (
+            <span className="sr-only">Sin datos procesados</span>
+          )}
+        </div>
+      ) : null}
       {plotArea && annotationLabelLayouts.length > 0 ? (
         <div
           ref={labelsOverlayRef}
@@ -840,6 +865,21 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     </div>
   )
 })
+
+/**
+ * Porción visible del tramo sin procesar, en px dentro del área de trazado.
+ * `null` si el viewport no llega a ese tramo.
+ */
+function unprocessedBandPx(
+  startMs: number,
+  viewport: ECGViewportChange,
+  plotWidth: number,
+): { leftPx: number; widthPx: number } | null {
+  const spanMs = viewport.endMs - viewport.startMs
+  if (spanMs <= 0 || plotWidth <= 0 || startMs >= viewport.endMs) return null
+  const leftPx = Math.max(0, ((startMs - viewport.startMs) / spanMs) * plotWidth)
+  return leftPx < plotWidth ? { leftPx, widthPx: plotWidth - leftPx } : null
+}
 
 /**
  * Eje X en segundos desde el inicio del estudio, derivado de la hora real de

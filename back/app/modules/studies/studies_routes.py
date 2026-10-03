@@ -8,6 +8,7 @@ from app.dependencies.auth_dependencies import RoleScope, get_doctor_scope
 from app.dependencies.common_dependencies import get_db
 from app.modules.studies import studies_service as service
 from app.modules.studies.studies_schemas import (
+    HolterMetricsOut,
     SimulateAnomalyInput,
     SimulateAnomalyOut,
     SimulateAnomalyRequest,
@@ -102,6 +103,17 @@ async def cancel_study(
         ),
         db,
         background,
+    )
+
+
+@router.get("/{study_id}/holter-metrics", response_model=HolterMetricsOut)
+async def get_holter_metrics(
+    study_id: uuid.UUID,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> HolterMetricsOut:
+    return await service.get_holter_metrics(
+        StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
     )
 
 

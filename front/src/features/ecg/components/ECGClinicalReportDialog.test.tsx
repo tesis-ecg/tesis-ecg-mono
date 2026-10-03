@@ -265,7 +265,7 @@ describe('ECGClinicalReportDialog preview', () => {
     expect(
       screen.getByRole('button', { name: 'Generar informe final' }).hasAttribute('disabled'),
     ).toBe(true)
-    expect(screen.getByText('Faltan datos para generar la versión final')).toBeTruthy()
+    expect(screen.getByText('Falta 1 requisito para la versión final')).toBeTruthy()
   })
 
   it('muestra la simulación como advertencia sin bloquear la generación', () => {
@@ -281,6 +281,6 @@ describe('ECGClinicalReportDialog preview', () => {
     expect(
       screen.getByRole('button', { name: 'Generar informe final' }).hasAttribute('disabled'),
     ).toBe(false)
-    expect(screen.getByText('Advertencias')).toBeTruthy()
+    expect(screen.getByText('La señal fue generada con un chaleco simulado.')).toBeTruthy()
   })
 })

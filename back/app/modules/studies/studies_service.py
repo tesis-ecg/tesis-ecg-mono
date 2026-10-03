@@ -30,6 +30,13 @@ from app.db.models.study import Study, StudyStatus
 from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User
+from app.ml.holter_metrics import (
+    BREAK_KINDS,
+    ECTOPY_UNAVAILABLE,
+    EXCLUSION_KINDS,
+    TimelineRun,
+    compute_holter_metrics,
+)
 from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
 from app.modules.patient_app import patient_app_repository as patient_app_repo
@@ -37,6 +44,8 @@ from app.modules.patient_app import patient_app_service
 from app.modules.patient_app.catalogs import activity_label, symptom_label
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.studies_schemas import (
+    HolterMetricsOut,
+    MetricEvidenceOut,
     PatientStudiesInput,
     PatientStudiesResponse,
     PatientStudyOut,
@@ -604,10 +613,18 @@ async def get_study_ecg_manifest(
     if background is not None:
         from app.modules.ingest.processing import process_study_task
 
-        if pending or (
-            study.filter_view_enabled
-            and study.status is not StudyStatus.IN_PROGRESS
-            and study.filtered_samples_count < study.samples_count
+        if (
+            pending
+            or (
+                study.filter_view_enabled
+                and study.status is not StudyStatus.IN_PROGRESS
+                and study.filtered_samples_count < study.samples_count
+            )
+            or (
+                study.status is not StudyStatus.IN_PROGRESS
+                and bool(study.ecg_segments)
+                and study.beats_analyzed_samples < study.samples_count
+            )
         ):
             background.add_task(process_study_task, study.id)
     # El manifest puede estar vacío mientras se procesa el primer lote. Se
@@ -1551,6 +1568,157 @@ def _report_window_plans(
     return plans
 
 
+#: Tiras de evidencia de las métricas, en el orden en que las lee el médico.
+_METRIC_WINDOW_KINDS = ("hr_min", "hr_max", "pause_longest")
+_METRIC_STRIP_MS = 10_000
+_PAUSE_MARGIN_MS = 2_000
+
+
+def _metric_evidence(metrics: HolterMetricsOut, kind: str) -> MetricEvidenceOut | None:
+    if kind == "hr_min":
+        return metrics.heartRate.min if metrics.heartRate else None
+    if kind == "hr_max":
+        return metrics.heartRate.max if metrics.heartRate else None
+    return metrics.pauses.longest if metrics.pauses else None
+
+
+def _metric_window_plans(metrics: HolterMetricsOut) -> list[StudyClinicalReportWindowPlanOut]:
+    """Tiras de la FC mínima, la FC máxima y la pausa más larga.
+
+    Son las de «Eventos ECG relevantes» de un informe Holter: la estadística sin
+    su trazado no se puede auditar.
+    """
+    plans: list[StudyClinicalReportWindowPlanOut] = []
+    for kind in _METRIC_WINDOW_KINDS:
+        evidence = _metric_evidence(metrics, kind)
+        if evidence is None:
+            continue
+        duration = evidence.durationMs or 0
+        if duration:
+            start = evidence.epochMs - _PAUSE_MARGIN_MS
+            end = min(evidence.epochMs + duration + _PAUSE_MARGIN_MS, start + 60_000)
+        else:
+            start = evidence.epochMs - _METRIC_STRIP_MS // 2
+            end = start + _METRIC_STRIP_MS
+        plans.append(
+            StudyClinicalReportWindowPlanOut(
+                id=f"metric:{kind}",
+                findingId=None,
+                kind=kind,
+                category="metric",
+                severity="medium" if kind == "pause_longest" else "low",
+                findingStartEpochMs=evidence.epochMs,
+                findingEndEpochMs=evidence.epochMs + duration,
+                findingDurationMs=duration,
+                startEpochMs=start,
+                endEpochMs=end,
+                blockIndex=1,
+                blockCount=1,
+                confidenceScore=None,
+                description=None,
+                relatedSymptoms=[],
+            )
+        )
+    return plans
+
+
+def _metric_runs(study: Study, timeline: list[StudyTimelineSegment]) -> list[TimelineRun]:
+    """Los tramos con su hora de pared, con el mismo fallback que `_wall_clock_resolver`."""
+    if timeline:
+        return [
+            TimelineRun(
+                segment.start_sample_index,
+                segment.sample_count,
+                segment.start_epoch_ms,
+                segment.end_epoch_ms,
+            )
+            for segment in timeline
+        ]
+    started = int(study.started_at.timestamp() * 1000)
+    rate = study.sample_rate or 500
+    return [
+        TimelineRun(0, study.samples_count, started, started + study.samples_count * 1000 // rate)
+    ]
+
+
+def _metric_quality_marks(
+    events: list[ECGEvent],
+) -> tuple[list[tuple[int, int]], list[int]]:
+    """Tramos excluidos y cortes puntuales, desde los eventos de calidad."""
+    exclusions: list[tuple[int, int]] = []
+    breaks: list[int] = []
+    for event in events:
+        metadata = event.event_metadata or {}
+        start = _finite_number(metadata.get("startSampleIndex"))
+        if start is None:
+            continue
+        kind = metadata.get("kind")
+        if kind in EXCLUSION_KINDS:
+            count = _finite_number(metadata.get("sampleCount")) or 0
+            exclusions.append((int(start), int(start + count)))
+        elif kind in BREAK_KINDS:
+            breaks.append(int(start))
+    return exclusions, breaks
+
+
+def _metrics_unavailable(status: str, reason: str) -> HolterMetricsOut:
+    return HolterMetricsOut(
+        status=cast(Literal["pending", "unavailable"], status),
+        unavailableReason=reason,
+        analysis=None,
+        heartRate=None,
+        pauses=None,
+        supraventricular=None,
+        ventricular=None,
+        ectopyUnavailableReason=ECTOPY_UNAVAILABLE,
+        hrvTime=None,
+        hrvFrequency=None,
+        st=[],
+        hourly=[],
+        rrHistogram=None,
+    )
+
+
+async def _holter_metrics(
+    study: Study, events: list[ECGEvent], timeline: list[StudyTimelineSegment]
+) -> HolterMetricsOut:
+    """Métricas recalculadas desde los latidos persistidos.
+
+    No se cachean: el cálculo es determinista y lineal en la cantidad de
+    latidos, y el informe final congela el resultado en su snapshot.
+    """
+    from app.modules.ingest.processing import load_beats
+
+    if not study.ecg_segments:
+        return _metrics_unavailable("unavailable", "SIGNAL_NOT_SEGMENTED")
+    if study.beats_analyzed_samples <= 0:
+        return _metrics_unavailable("pending", "ANALYSIS_PENDING")
+    exclusions, breaks = _metric_quality_marks(events)
+    beats = await asyncio.to_thread(load_beats, study)
+    raw = await asyncio.to_thread(
+        compute_holter_metrics,
+        beats,
+        _metric_runs(study, timeline),
+        exclusions,
+        breaks,
+        study.sample_rate or 500,
+        study.beats_analyzed_samples,
+    )
+    return HolterMetricsOut.model_validate(raw)
+
+
+async def get_holter_metrics(input_data: StudyIdInput, db: AsyncSession) -> HolterMetricsOut:
+    result = await repo.get_detail(db, input_data.study_id, input_data.doctor_id)
+    if result is None:
+        raise _not_found()
+    study = result[0]
+    return await _holter_metrics(
+        study,
+        await repo.list_ecg_events(db, study.id),
+        await repo.list_timeline_segments(db, study.id),
+    )
+
+
 def _summarize_annotations(
     annotations: list[StudyEcgAnnotationOut], categories: set[str]
 ) -> list[dict[str, Any]]:
@@ -1594,14 +1762,16 @@ async def _clinical_report_snapshot(
 ]:
     timeline = await repo.list_timeline_segments(db, study.id)
     reports = await patient_app_repo.list_reports_for_study(db, study.id)
+    events = await repo.list_ecg_events(db, study.id)
     annotations = _study_annotations(
         study,
-        await repo.list_ecg_events(db, study.id),
+        events,
         reports,
         _wall_clock_resolver(study, timeline),
         timeline,
     )
-    windows = _report_window_plans(annotations)
+    metrics = await _holter_metrics(study, events, timeline)
+    windows = _metric_window_plans(metrics) + _report_window_plans(annotations)
     doctor_info = await repo.get_responsible_doctor(db, patient.doctor_id)
     doctor, doctor_user = doctor_info if doctor_info is not None else (None, None)
     updated_by = await auth_repo.get_user_by_id(db, draft.updated_by) if draft else None
@@ -1620,7 +1790,7 @@ async def _clinical_report_snapshot(
     )
 
     snapshot: dict[str, Any] = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "version": version,
         "study": {
             "id": str(study.id),
@@ -1661,6 +1831,7 @@ async def _clinical_report_snapshot(
             "synchronizationSources": sorted({item.anchor_source.value for item in timeline}),
             "maxSynchronizationUncertaintyMs": max_time_uncertainty,
         },
+        "metrics": metrics.model_dump(mode="json"),
         "findings": _summarize_annotations(annotations, {"clinical", "patient_marker"}),
         "technicalEvents": _summarize_annotations(annotations, {"signal_quality", "technical"}),
         "patientReports": [
@@ -1732,6 +1903,17 @@ async def _clinical_report_snapshot(
                 message=(
                     "El estudio no tiene señal cruda disponible para "
                     "finalizar las tiras del informe."
+                ),
+                severity="blocking",
+            )
+        )
+    if study.ecg_segments and study.beats_analyzed_samples < study.samples_count:
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="BEAT_ANALYSIS_PENDING",
+                message=(
+                    "El análisis de latidos todavía no cubre toda la señal. "
+                    "Esperá a que termine o ejecutá el backfill antes de emitir el informe final."
                 ),
                 severity="blocking",
             )

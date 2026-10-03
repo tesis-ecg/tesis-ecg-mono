@@ -24,15 +24,17 @@ from typing import Any
 
 import numpy as np
 import structlog
-from asyncpg.exceptions import LockNotAvailableError
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.s3 import get_object, put_object
+from app.core.s3 import get_object, list_keys, put_object
+from app.db.errors import is_lock_contention
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.study import Study, StudyStatus
+from app.ml.beats import analyze_window, decode_beats, encode_beats
 from app.ml.decompression import (
     FLAG_ADC_SATURATED,
     FLAG_EVENT_MARKER,
@@ -214,6 +216,20 @@ def reduce_envelope_exact(base: np.ndarray, factor: int) -> tuple[np.ndarray, np
     return merged.astype("<f4"), base[complete * 2 :]
 
 
+def beat_chunk_key(study_id: uuid.UUID, start_sample: int) -> str:
+    return f"studies/{study_id}/beats/{start_sample:012d}.bin"
+
+
+def beat_compacted_key(study_id: uuid.UUID, end_sample: int) -> str:
+    """Latidos fundidos hasta `end_sample`.
+
+    La clave cambia con cada compactación en vez de pisarse: si la transacción
+    que la registra se revierte, la metadata vieja sigue apuntando a objetos que
+    no cambiaron y ningún latido queda contado dos veces.
+    """
+    return f"studies/{study_id}/beats/compacted-{end_sample:012d}.bin"
+
+
 def _object_meta(key: str, payload: bytes, **extra: object) -> dict[str, Any]:
     return {
         "key": key,
@@ -254,12 +270,18 @@ def append_level_chunks(
     El nivel base (bucket 16) no escribe objeto propio: sus chunks **son** las
     envolventes que ya escribe el caller.
     """
-    levels: list[dict[str, Any]] = list(
-        study.ecg_filtered_pyramid_levels if filtered else study.ecg_pyramid_levels or []
-    )
-    by_bucket = {int(level["samplesPerBucket"]): level for level in levels}
+    # Copias, nunca los dicts cargados: SQLAlchemy guarda esos mismos objetos
+    # como valor original de la columna JSONB. Mutarlos en el lugar dejaba la
+    # lista nueva igual a la "original", el flush no emitía el UPDATE y la
+    # pirámide se congelaba en el último lote que había agregado un nivel.
+    by_bucket: dict[int, dict[str, Any]] = {
+        int(level["samplesPerBucket"]): {**level, "chunks": list(level.get("chunks", []))}
+        for level in (
+            (study.ecg_filtered_pyramid_levels if filtered else study.ecg_pyramid_levels) or []
+        )
+    }
     carry_state: dict[str, str] = dict(
-        study.ecg_filtered_level_carry if filtered else study.ecg_level_carry or {}
+        (study.ecg_filtered_level_carry if filtered else study.ecg_level_carry) or {}
     )
 
     for bucket in PYRAMID_BUCKETS:
@@ -287,12 +309,8 @@ def append_level_chunks(
         if bucket != BASE_BUCKET:
             put_object(key, payload)
 
-        level = by_bucket.get(bucket)
-        if level is None:
-            level = {"samplesPerBucket": bucket, "pointCount": 0, "chunks": []}
-            by_bucket[bucket] = level
-            levels.append(level)
-        chunks = [c for c in level.get("chunks", []) if c.get("key") != key]
+        level = by_bucket.get(bucket, {"samplesPerBucket": bucket, "chunks": []})
+        chunks = [c for c in level["chunks"] if c.get("key") != key]
         chunks.append(_object_meta(key, payload, pointCount=int(chunk.size)))
         # Ordenados y no en orden de llegada: el cliente concatena los chunks tal
         # como vienen, así que el orden ES la señal. Un lote reprocesado entra por
@@ -302,8 +320,11 @@ def append_level_chunks(
         chunks.sort(
             key=lambda item: _chunk_order(study, bucket, str(item["key"]), filtered=filtered)
         )
-        level["chunks"] = chunks
-        level["pointCount"] = sum(int(c["pointCount"]) for c in chunks)
+        by_bucket[bucket] = {
+            **level,
+            "chunks": chunks,
+            "pointCount": sum(int(c["pointCount"]) for c in chunks),
+        }
 
     if filtered:
         study.ecg_filtered_level_carry = carry_state
@@ -311,7 +332,50 @@ def append_level_chunks(
         study.ecg_level_carry = carry_state
     # Un nivel que no comprime no vale los objetos que ocupa en S3.
     total = study.filtered_samples_count if filtered else study.samples_count
-    return [level for level in levels if int(level["pointCount"]) < max(total, 1)]
+    return [level for level in by_bucket.values() if int(level["pointCount"]) < max(total, 1)]
+
+
+def rebuild_level_metadata(study: Study, *, filtered: bool = False) -> list[dict[str, Any]]:
+    """Rearma la metadata de la pirámide a partir de los chunks que hay en S3.
+
+    Repara los estudios que quedaron con la pirámide congelada: la metadata
+    dejaba de persistirse, pero cada lote siguió escribiendo sus chunks. Los
+    chunks nunca se borran —tampoco al compactar—, así que listarlos alcanza
+    para reconstruir el nivel completo. El objeto compactado se ignora: puede
+    contener solo el prefijo congelado, y vive fuera del prefijo de chunks.
+
+    Lanza `ValueError` si lo que hay en S3 no cubre exactamente lo procesado.
+    """
+    processed = study.filtered_samples_count if filtered else study.samples_count
+    levels: list[dict[str, Any]] = []
+    for bucket in PYRAMID_BUCKETS:
+        if bucket == BASE_BUCKET:
+            prefix = (
+                f"studies/{study.id}/filtered/envelopes/" if filtered else envelope_prefix(study.id)
+            )
+        else:
+            prefix = (
+                f"studies/{study.id}/filtered/levels/{bucket}/"
+                if filtered
+                else level_chunk_prefix(study.id, bucket)
+            )
+        chunks = []
+        for key in list_keys(prefix):
+            payload = get_object(key)
+            chunks.append(_object_meta(key, payload, pointCount=len(payload) // 4))
+        if not chunks:
+            continue
+        chunks.sort(
+            key=lambda item: _chunk_order(study, bucket, str(item["key"]), filtered=filtered)
+        )
+        point_count = sum(int(chunk["pointCount"]) for chunk in chunks)
+        if point_count // 2 != processed // bucket:
+            raise ValueError(
+                f"El nivel {bucket} en S3 cubre {point_count // 2} buckets y se esperaban "
+                f"{processed // bucket}."
+            )
+        levels.append({"samplesPerBucket": bucket, "pointCount": point_count, "chunks": chunks})
+    return [level for level in levels if int(level["pointCount"]) < max(processed, 1)]
 
 
 def compact_level(study: Study, level: dict[str, Any], *, filtered: bool = False) -> dict[str, Any]:
@@ -763,7 +827,115 @@ async def append_filtered_view(db: AsyncSession, study: Study) -> None:
             study, envelope, cursor, filtered=True
         )
         study.ecg_filtered_pyramid_levels = compact_pyramid(study, filtered=True)
+        # Red de seguridad: las columnas JSONB no rastrean mutaciones internas.
+        flag_modified(study, "ecg_filtered_segments")
+        flag_modified(study, "ecg_filtered_pyramid_levels")
         cursor = safe_end
+
+
+#: Señal a cada lado del tramo que se analiza. Alcanza para que el umbral
+#: adaptativo del detector arranque aprendido y para que el pasa-altos de
+#: 0,05 Hz del ST no deje transitorio dentro del tramo conservado.
+BEAT_CONTEXT_SECONDS = 30
+#: Tope por pasada durante la ingesta. Un estudio anterior a esta función tiene
+#: todo su historial sin analizar; recorrerlo de una dentro del procesamiento de
+#: un lote retendría la fila del estudio el tiempo que el chaleco no puede
+#: esperar. Se pone al día de a dos horas por lote, o con el backfill.
+BEAT_SAMPLES_PER_PASS = 2 * 3600 * 500
+
+
+def _analysis_runs(study: Study, segments: list[Any]) -> list[tuple[int, int]]:
+    if segments:
+        return [(segment.start_sample_index, segment.sample_count) for segment in segments]
+    return [(0, study.samples_count)] if study.ecg_segments else []
+
+
+async def append_beat_analysis(
+    db: AsyncSession, study: Study, *, max_samples: int | None = BEAT_SAMPLES_PER_PASS
+) -> None:
+    """Detecta latidos en lo que falta analizar, tramo por tramo de la línea de tiempo.
+
+    Mismo esquema que `append_filtered_view`: el cursor avanza solo sobre señal
+    que ya tiene contexto a los dos lados, y la cola del tramo activo espera al
+    lote siguiente. Nada cruza un corte de la línea de tiempo.
+    """
+    runs = _analysis_runs(study, await repo.list_timeline_segments(db, study.id))
+    if not runs:
+        return
+    rate = study.sample_rate or 500
+    context = BEAT_CONTEXT_SECONDS * rate
+    cursor = study.beats_analyzed_samples
+    budget = max_samples
+    chunks = list(study.ecg_beat_chunks or [])
+    for index, (run_start, run_count) in enumerate(runs):
+        run_end = run_start + run_count
+        if cursor >= run_end:
+            continue
+        if cursor < run_start:
+            raise RuntimeError("El análisis de latidos dejó muestras sin procesar entre tramos.")
+        is_active_run = index == len(runs) - 1 and study.status is StudyStatus.IN_PROGRESS
+        safe_end = max(run_start, run_end - context) if is_active_run else run_end
+        if budget is not None:
+            safe_end = min(safe_end, cursor + budget)
+        if safe_end <= cursor:
+            break
+        read_start = max(run_start, cursor - context)
+        read_end = min(run_end, safe_end + context)
+        raw = _raw_signal_range(study, read_start, read_end)
+        beats = analyze_window(raw, rate, offset=read_start, keep_start=cursor, keep_end=safe_end)
+        if beats.size:
+            key = beat_chunk_key(study.id, cursor)
+            payload = encode_beats(beats)
+            put_object(key, payload)
+            chunks = [chunk for chunk in chunks if chunk.get("key") != key]
+            chunks.append(
+                _object_meta(
+                    key,
+                    payload,
+                    startSampleIndex=cursor,
+                    sampleCount=safe_end - cursor,
+                    beatCount=int(beats.size),
+                )
+            )
+        if budget is not None:
+            budget -= safe_end - cursor
+        cursor = safe_end
+        if safe_end < run_end:
+            break
+    chunks.sort(key=lambda item: int(item["startSampleIndex"]))
+    study.ecg_beat_chunks = chunks
+    study.beats_analyzed_samples = cursor
+    study.ecg_beat_chunks = compact_beat_chunks(study)
+    flag_modified(study, "ecg_beat_chunks")
+
+
+def compact_beat_chunks(study: Study, *, force: bool = False) -> list[dict[str, Any]]:
+    """Funde los chunks de latidos en uno, al cruzar el umbral o al cerrar."""
+    chunks = list(study.ecg_beat_chunks or [])
+    if len(chunks) <= 1 or (not force and len(chunks) < LEVEL_COMPACTION_THRESHOLD):
+        return chunks
+    payload = b"".join(get_object(str(chunk["key"])) for chunk in chunks)
+    start = int(chunks[0]["startSampleIndex"])
+    end = int(chunks[-1]["startSampleIndex"]) + int(chunks[-1]["sampleCount"])
+    key = beat_compacted_key(study.id, end)
+    put_object(key, payload)
+    return [
+        _object_meta(
+            key,
+            payload,
+            startSampleIndex=start,
+            sampleCount=end - start,
+            beatCount=sum(int(chunk["beatCount"]) for chunk in chunks),
+        )
+    ]
+
+
+def load_beats(study: Study) -> np.ndarray:
+    """Todos los latidos analizados del estudio, en orden de muestra."""
+    parts = [decode_beats(get_object(str(chunk["key"]))) for chunk in study.ecg_beat_chunks or []]
+    if not parts:
+        return decode_beats(b"")
+    return np.concatenate(parts)
 
 
 async def _process_one_batch(
@@ -812,10 +984,14 @@ async def _process_one_batch(
     # crecía con el estudio y corría con la fila bloqueada.
     study.ecg_pyramid_levels = append_level_chunks(study, envelope, batch.first_seq or 0)
     study.ecg_pyramid_levels = compact_pyramid(study)
+    # Red de seguridad: las columnas JSONB no rastrean mutaciones internas.
+    flag_modified(study, "ecg_segments")
+    flag_modified(study, "ecg_pyramid_levels")
 
     # --- Línea de tiempo de pared ------------------------------------------ #
     gap_ms = await _place_on_timeline(db, study, batch, decoded, start_sample_index)
     await append_filtered_view(db, study)
+    await append_beat_analysis(db, study)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
     # perdió la carrera contra complete/cancel no puede reabrir ni reescribir el
@@ -870,7 +1046,7 @@ async def _lock_study(db: AsyncSession, study_id: uuid.UUID) -> Study | None:
         try:
             return await repo.get_study_for_update(db, study_id)
         except DBAPIError as error:
-            if not isinstance(getattr(error, "orig", None), LockNotAvailableError):
+            if not is_lock_contention(error):
                 raise
             await db.rollback()
             if attempt == LOCK_ATTEMPTS:
@@ -937,10 +1113,11 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
                 anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
             )
     except DBAPIError as error:
-        if not isinstance(getattr(error, "orig", None), LockNotAvailableError):
+        if not is_lock_contention(error):
             await _mark_failed(db, batch_id, failed_batch_id, error)
             return
-        # No se pudo tomar la fila ni después de los reintentos. El lote NO es
+        # No se pudo tomar la fila ni después de los reintentos, o Postgres
+        # cortó un deadlock eligiendo esta transacción. El lote NO es
         # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
         # pendiente para que lo drene la próxima pasada — marcarlo fallido sería
         # declarar rota una señal que está entera.
@@ -982,11 +1159,11 @@ async def process_batch_task(batch_id: uuid.UUID) -> None:
 
 
 async def process_study_task(study_id: uuid.UUID) -> None:
-    """Retry archived batches and finish the filtered tail after study close.
+    """Retry archived batches, finish the filtered tail, and advance beat analysis.
 
     The study row lock and DONE status keep concurrent retries idempotent. This
-    also gives a failed final background job a recovery path through the
-    manifest request or an explicit study close.
+    also gives a failed or incomplete background job a recovery path through
+    the manifest request or an explicit study close.
     """
     from app.db.session import async_session_factory
 
@@ -1000,7 +1177,15 @@ async def process_study_task(study_id: uuid.UUID) -> None:
             if study is None:
                 return
             await append_filtered_view(session, study)
+            # También al cerrar hay que acotar la pasada: un estudio anterior a
+            # este análisis puede tener días de señal pendiente. El backfill o
+            # una visita posterior al manifest retoman desde el cursor guardado.
+            await append_beat_analysis(session, study, max_samples=BEAT_SAMPLES_PER_PASS)
             if study.status is not StudyStatus.IN_PROGRESS:
+                if study.beats_analyzed_samples >= study.samples_count:
+                    study.ecg_beat_chunks = await asyncio.to_thread(
+                        compact_beat_chunks, study, force=True
+                    )
                 study.ecg_pyramid_levels = await asyncio.to_thread(
                     compact_pyramid, study, force=True
                 )

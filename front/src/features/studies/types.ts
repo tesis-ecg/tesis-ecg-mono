@@ -1,4 +1,8 @@
 import type { PatientStudySessionStatus } from '@/features/patients/types'
+import type { HolterMetricsOut } from '@/generated/openapi'
+
+/** Métricas del informe Holter (`GET /studies/:id/holter-metrics`). */
+export type HolterMetrics = HolterMetricsOut
 
 /**
  * Metadata expandida de un estudio individual. Diferencia con
@@ -124,9 +128,10 @@ export interface StudyClinicalReportDraftUpdate {
 
 export interface StudyClinicalReportWindowPlan {
   id: string
-  findingId: string
+  /** `null` en las tiras de evidencia de una métrica (FC mínima, pausa más larga…). */
+  findingId: string | null
   kind: string
-  category: 'clinical' | 'patient_marker'
+  category: 'clinical' | 'patient_marker' | 'metric'
   severity: 'low' | 'medium' | 'high' | 'critical'
   findingStartEpochMs: number
   findingEndEpochMs: number
@@ -189,6 +194,8 @@ export interface StudyClinicalReportSnapshot {
     synchronizationSources: string[]
     maxSynchronizationUncertaintyMs: number | null
   }
+  /** Desde `schemaVersion` 2. Un snapshot anterior no la trae. */
+  metrics?: HolterMetrics | null
   findings: StudyClinicalReportFindingSummary[]
   technicalEvents: StudyClinicalReportFindingSummary[]
   patientReports: Array<{
