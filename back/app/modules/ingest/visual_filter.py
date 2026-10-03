@@ -19,7 +19,10 @@ def filter_visualization(signal_mv: np.ndarray, sample_rate: int) -> np.ndarray:
     """50 Hz notch and 0.05–40 Hz band-pass, forward and backward.
 
     The 40 Hz ceiling deliberately makes this a display-only view: it must not
-    feed QRS amplitude measurements or a future diagnostic classifier.
+    feed QRS amplitude measurements or a future diagnostic classifier. The ST
+    level (`app/ml/st_analysis.py`) is the one measurement it does feed: ST is a
+    low-frequency feature, and the 0.05 Hz high-pass is the AHA recommendation
+    for preserving it.
     """
     if signal_mv.size == 0:
         return np.empty(0, dtype="<f4")

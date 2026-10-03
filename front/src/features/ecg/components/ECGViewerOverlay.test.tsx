@@ -162,6 +162,39 @@ describe('ECGViewer annotation overlay', () => {
     expect(refreshedPlot.scales.x).toEqual({ min: 20, max: 22 })
   })
 
+  it('marca el tramo sin procesar en vez de dejarlo vacío', () => {
+    const ref = createRef<ECGViewerHandle>()
+    render(<ECGViewer ref={ref} signal={partialSignal()} />)
+
+    // El encuadre inicial va al final del estudio, que está entero sin procesar.
+    const band = screen.getByTestId('ecg-unprocessed-band')
+    expect(band.textContent).toBe('Sin datos procesados')
+    expect(band.getAttribute('style')).toContain('width: 500px')
+
+    act(() => ref.current?.zoomToRange(1_700_000_020_000, 1_700_000_040_000))
+    expect(screen.getByTestId('ecg-unprocessed-band').getAttribute('style')).toContain(
+      'width: 250px',
+    )
+
+    act(() => ref.current?.zoomToRange(1_700_000_000_000, 1_700_000_010_000))
+    expect(screen.queryByTestId('ecg-unprocessed-band')).toBeNull()
+  })
+
+  it('el seguimiento en vivo se queda al final aunque falte procesar el tramo', () => {
+    const partial = partialSignal()
+    const { rerender } = render(<ECGViewer signal={partial} followLatest />)
+    const plot = uPlotMock.instances.at(-1) as {
+      scales: { x: { min: number; max: number } }
+    }
+    expect(plot.scales.x).toEqual({ min: 50, max: 60 })
+
+    // Cambiar la velocidad del papel reencuadra alrededor del cursor. Anclado al
+    // último punto dibujado, saltaba a la señal vieja del segundo 29.
+    rerender(<ECGViewer signal={partial} followLatest paperSpeed={50} />)
+    expect(uPlotMock.instances.at(-1)).toBe(plot)
+    expect(plot.scales.x).toEqual({ min: 55, max: 60 })
+  })
+
   it('no consume el primer click real después de un pan sin click sintético', () => {
     vi.useFakeTimers()
     const onSelect = vi.fn()
@@ -203,5 +236,25 @@ function signal(): ECGSignal {
         description: null,
       },
     ],
+  }
+}
+
+/** La vista general cubre solo los primeros 30 s de un estudio de 60 s. */
+function partialSignal(): ECGSignal {
+  const base = signal()
+  return {
+    ...base,
+    samples: new Float32Array(30),
+    timestampsMs: base.timestampsMs.slice(0, 30),
+    annotations: [],
+    metadata: {
+      formatVersion: 3,
+      encoding: 'float32-le',
+      sampleCount: 60,
+      isSimulated: false,
+      overviewSamplesPerBucket: null,
+      processedSampleCount: 30,
+      processedEndMs: base.startTimestamp + 30_000,
+    },
   }
 }

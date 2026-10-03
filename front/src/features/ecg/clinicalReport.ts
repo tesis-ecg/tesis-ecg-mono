@@ -1,19 +1,29 @@
 import { jsPDF } from 'jspdf'
 
-import type { StudyClinicalReportFindingSummary } from '@/features/studies/types'
-import { CLINICAL_TIME_ZONE } from '@/lib/time'
+import type {
+  HolterMetrics,
+  StudyClinicalReportFindingSummary,
+  StudyClinicalReportWindowPlan,
+} from '@/features/studies/types'
 
 import { annotationLabel } from './annotationMeta'
 import type { EcgReportWindow } from './api/ecgApi'
+import {
+  clamp,
+  CONTENT_WIDTH,
+  formatAxisTime,
+  formatDate,
+  formatDuration,
+  formatMetricValue,
+  GRID,
+  INK,
+  MARGIN,
+  PAGE_HEIGHT,
+  PAGE_WIDTH,
+} from './clinicalReportFormat'
+import { drawSummaryPage, drawTrendsPage, hasTrends } from './clinicalReportSummary'
 import type { ClinicalReportInput } from './clinicalReportTypes'
 import type { ECGAnnotation } from './types'
-
-const PAGE_WIDTH = 210
-const PAGE_HEIGHT = 297
-const MARGIN = 12
-const CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2
-const INK = [18, 46, 92] as const
-const GRID = [238, 198, 198] as const
 
 export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
@@ -78,40 +88,30 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   }
 
   header()
-  title('Informe de monitoreo electrocardiográfico ambulatorio')
+  drawSummaryPage(doc, input, 28)
+  if (hasTrends(snapshot.metrics)) {
+    nextPage()
+    drawTrendsPage(doc, snapshot.metrics, y)
+  }
+
+  nextPage()
+  title('Detalle del estudio')
   row(
     'Estado / versión',
     `${input.documentStatus === 'final' ? 'FINAL' : 'BORRADOR'} · v${snapshot.version}`,
   )
   row('Generado', formatDate(input.generatedAt))
   row('Estudio', snapshot.study.id)
-  row('Paciente', snapshot.patient.fullName)
-  row('DNI', snapshot.patient.dni)
-  row(
-    'Nacimiento / edad',
-    snapshot.patient.birthDate
-      ? `${formatCalendarDate(snapshot.patient.birthDate)} / ${age(snapshot.patient.birthDate)} años`
-      : '—',
-  )
-  row('Sexo', snapshot.patient.sex)
-  row(
-    'Inicio',
-    snapshot.study.startedAtVerified === false
-      ? 'Hora no verificada'
-      : formatDate(snapshot.study.startedAt),
-  )
-  row('Fin', snapshot.study.endedAt ? formatDate(snapshot.study.endedAt) : 'Estudio en curso')
-  row(
-    'Duración / dispositivo',
-    `${formatDuration(snapshot.study.durationMs)} · ${snapshot.study.deviceSerial}`,
-  )
   row(
     'Médico responsable',
-    [snapshot.responsibleDoctor.fullName, snapshot.responsibleDoctor.specialty]
+    [
+      snapshot.responsibleDoctor.fullName,
+      snapshot.responsibleDoctor.specialty,
+      snapshot.responsibleDoctor.licenseNumber,
+    ]
       .filter(Boolean)
       .join(' · '),
   )
-  row('Matrícula', snapshot.responsibleDoctor.licenseNumber)
 
   heading('Contexto clínico')
   row('Indicación', snapshot.clinicalContext.indication)
@@ -171,13 +171,19 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
     if (!window) continue
     nextPage()
     title(`Trazado · ${annotationLabel(plan.kind)}`)
+    const isMetric = plan.category === 'metric'
     row(
       'Clasificación',
-      `${categoryLabel(plan.category)} · severidad ${severityLabel(plan.severity)}`,
+      isMetric
+        ? categoryLabel(plan.category)
+        : `${categoryLabel(plan.category)} · severidad ${severityLabel(plan.severity)}`,
     )
+    if (isMetric) row('Valor', metricWindowValue(plan, snapshot.metrics))
     row('Fecha / hora', formatDate(plan.findingStartEpochMs))
-    row('Duración total', formatDuration(plan.findingDurationMs))
-    row('Bloque', `${plan.blockIndex} de ${plan.blockCount}`)
+    if (!isMetric || plan.findingDurationMs > 0) {
+      row('Duración total', formatDuration(plan.findingDurationMs))
+    }
+    if (!isMetric) row('Bloque', `${plan.blockIndex} de ${plan.blockCount}`)
     row(
       'Señal',
       window.source === 'filtered_visualization'
@@ -186,12 +192,14 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
           ? 'Envolvente de visualización'
           : 'Señal sin filtrar',
     )
-    row(
-      'Confianza',
-      plan.confidenceScore === null
-        ? 'No informada'
-        : `${Math.round(plan.confidenceScore * 100)} %`,
-    )
+    if (!isMetric) {
+      row(
+        'Confianza',
+        plan.confidenceScore === null
+          ? 'No informada'
+          : `${Math.round(plan.confidenceScore * 100)} %`,
+      )
+    }
     row(
       'Síntomas / detalle relacionado',
       [...plan.relatedSymptoms, plan.description].filter(Boolean).join(' · '),
@@ -327,10 +335,14 @@ function mergeWindowPieces(windows: EcgReportWindow[]): Map<string, EcgReportWin
 }
 
 function drawDraftMark(doc: jsPDF) {
+  // Translúcida: se dibuja después del contenido y, opaca, tapaba los títulos
+  // de los recuadros de la hoja resumen.
+  doc.setGState(doc.GState({ opacity: 0.12 }))
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(42)
-  doc.setTextColor(235, 238, 243)
+  doc.setTextColor(...INK)
   doc.text('BORRADOR', PAGE_WIDTH / 2, PAGE_HEIGHT / 2, { align: 'center', angle: 35 })
+  doc.setGState(doc.GState({ opacity: 1 }))
   doc.setTextColor(0)
 }
 
@@ -368,63 +380,23 @@ function roleLabel(role: string | undefined): string {
   return role === 'admin' ? 'Administrador' : role === 'medico' ? 'Médico' : role || '—'
 }
 
-function categoryLabel(category: 'clinical' | 'patient_marker'): string {
+function categoryLabel(category: StudyClinicalReportWindowPlan['category']): string {
+  if (category === 'metric') return 'Evidencia de métrica del Holter'
   return category === 'clinical' ? 'Hallazgo clínico' : 'Registro sintomático'
+}
+
+function metricWindowValue(
+  plan: StudyClinicalReportWindowPlan,
+  metrics: HolterMetrics | null | undefined,
+): string {
+  if (plan.kind === 'pause_longest') {
+    return `R-R de ${formatMetricValue(plan.findingDurationMs / 1000, 2, 's')}`
+  }
+  const evidence = plan.kind === 'hr_min' ? metrics?.heartRate?.min : metrics?.heartRate?.max
+  const window = metrics?.heartRate?.windowBeats ?? 8
+  return `${formatMetricValue(evidence?.value, 0, 'lpm')} (promedio de ${window} latidos)`
 }
 
 function severityLabel(severity: string): string {
   return { low: 'baja', medium: 'media', high: 'alta', critical: 'crítica' }[severity] ?? severity
-}
-
-function formatDate(value: string | number): string {
-  return new Intl.DateTimeFormat('es-AR', {
-    dateStyle: 'short',
-    timeStyle: 'medium',
-    timeZone: CLINICAL_TIME_ZONE,
-    hour12: false,
-  }).format(new Date(value))
-}
-
-function formatAxisTime(value: number): string {
-  return new Intl.DateTimeFormat('es-AR', {
-    timeZone: CLINICAL_TIME_ZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(new Date(value))
-}
-
-function formatCalendarDate(value: string): string {
-  const [year, month, day] = value.split('-').map(Number)
-  return new Intl.DateTimeFormat('es-AR', {
-    dateStyle: 'short',
-    timeZone: CLINICAL_TIME_ZONE,
-  }).format(new Date(Date.UTC(year, month - 1, day, 12)))
-}
-
-function formatDuration(ms: number): string {
-  if (ms > 0 && ms < 1000) return `${Math.round(ms)} ms`
-  const seconds = Math.max(0, Math.round(ms / 1000))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const remaining = seconds % 60
-  return `${hours} h ${minutes} min ${remaining} s`
-}
-
-function age(birthDate: string): number {
-  const birth = new Date(birthDate)
-  const now = new Date()
-  let value = now.getFullYear() - birth.getFullYear()
-  if (
-    now.getMonth() < birth.getMonth() ||
-    (now.getMonth() === birth.getMonth() && now.getDate() < birth.getDate())
-  ) {
-    value--
-  }
-  return Math.max(0, value)
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value))
 }
