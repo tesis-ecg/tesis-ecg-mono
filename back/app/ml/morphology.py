@@ -111,10 +111,13 @@ class TemplateBank:
     #: plantilla antes de llegar al tope.
     unmatched_beats: int = 0
     next_cluster_id: int = 0
-    #: Lotes ya plegados al banco. Reprocesar uno de estos **no** vuelve a sumar
-    #: sus latidos: el banco es un acumulador y contarlos dos veces falsearía la
-    #: carga (`burdenPct`) que el médico lee.
-    consumed_batch_ids: tuple[str, ...] = ()
+    #: Último lote plegado al banco. Es una red de seguridad: volver a plegar ese
+    #: mismo lote **no** suma sus latidos otra vez, porque el banco es un
+    #: acumulador y contarlos dos veces falsearía la carga (`burdenPct`) que el
+    #: médico lee. Solo el último y no la lista de todos: los lotes se pliegan en
+    #: orden, y la lista crecía un UUID por lote (~5.760 por día de registro)
+    #: dentro de `study.ml_state`, que viaja en cada `select(Study)`.
+    last_folded_batch_id: str | None = None
     score_floor: float = 0.0
 
     def centroids(self) -> Floats:
@@ -215,8 +218,9 @@ def _best_match(centroids: Floats, waveforms: Floats) -> tuple[Indices, Floats]:
 def score_only(bank: TemplateBank, beats: BeatMatrix, *, match_threshold: float) -> BeatAssignment:
     """Asigna latidos al banco **sin modificarlo**.
 
-    Es el camino del reprocesamiento: un lote que ya se plegó al banco se vuelve
-    a puntuar contra el banco actual, pero sus latidos no se cuentan de nuevo.
+    Es lo que corre si llega otra vez el último lote plegado
+    (`TemplateBank.last_folded_batch_id`): sus latidos se puntúan contra el banco
+    actual, pero no se cuentan de nuevo.
     """
     slot, correlation = _best_match(bank.centroids(), beats.waveforms)
     matched = (slot >= 0) & (correlation >= match_threshold)
@@ -322,17 +326,13 @@ def assign_and_update(
         np.float32
     )
 
-    consumed = bank.consumed_batch_ids
-    if batch_id is not None and batch_id not in consumed:
-        consumed = (*consumed, batch_id)
-
     updated = replace(
         bank,
         templates=tuple(templates),
         beats_seen=bank.beats_seen + beats.n_beats,
         unmatched_beats=bank.unmatched_beats + unmatched,
         next_cluster_id=next_id,
-        consumed_batch_ids=consumed,
+        last_folded_batch_id=batch_id if batch_id is not None else bank.last_folded_batch_id,
     )
     return updated, BeatAssignment(cluster_ids=cluster_ids, dissimilarity=dissimilarity)
 
@@ -414,7 +414,7 @@ def consolidate(
 ) -> tuple[TemplateBank, dict[int, int]]:
     """Funde plantillas que derivaron hacia la misma forma. Devuelve `viejo → nuevo`.
 
-    Corre **una vez, al cerrar el estudio**, y sobre ≤ 40 centroides — no sobre
+    Corre **al finalizar el estudio**, y sobre ≤ 40 centroides — no sobre
     100.000 latidos. Existe porque el banco es *greedy*: si en la hora 2 aparece
     una forma intermedia entre dos plantillas, el banco puede haber abierto dos
     donde había una sola morfología. Al final se ve completo y se corrige.
@@ -485,7 +485,7 @@ def bank_to_state(bank: TemplateBank) -> tuple[dict[str, Any], bytes]:
         "beatsSeen": bank.beats_seen,
         "unmatchedBeats": bank.unmatched_beats,
         "nextClusterId": bank.next_cluster_id,
-        "consumedBatchIds": list(bank.consumed_batch_ids),
+        "lastFoldedBatchId": bank.last_folded_batch_id,
         "scoreFloor": bank.score_floor,
         "templates": [
             {
@@ -542,7 +542,11 @@ def bank_from_state(state: dict[str, Any], blob: bytes, *, model_version: str) -
         beats_seen=int(state.get("beatsSeen", 0)),
         unmatched_beats=int(state.get("unmatchedBeats", 0)),
         next_cluster_id=int(state.get("nextClusterId", len(templates))),
-        consumed_batch_ids=tuple(str(item) for item in state.get("consumedBatchIds", [])),
+        # Un estado viejo trae `consumedBatchIds` (la lista entera): se ignora y
+        # el próximo `bank_to_state` lo reemplaza.
+        last_folded_batch_id=(
+            str(state["lastFoldedBatchId"]) if state.get("lastFoldedBatchId") else None
+        ),
         score_floor=float(state.get("scoreFloor", 0.0)),
     )
 

@@ -31,7 +31,6 @@ from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User
 from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
-from app.modules.ingest import ml_persistence
 from app.modules.patient_app import patient_app_repository as patient_app_repo
 from app.modules.patient_app import patient_app_service
 from app.modules.patient_app.catalogs import activity_label, symptom_label
@@ -901,12 +900,9 @@ async def _transition(
         raise _not_started()
 
     _close(study, target)
-    if target is StudyStatus.COMPLETED:
-        # El estudio ya no va a recibir más lotes: es el único momento en que se
-        # puede ver el banco de morfologías completo y fundir las plantillas que
-        # el algoritmo greedy abrió de más. Antes sería prematuro; después ya no
-        # hay quién lo dispare.
-        await ml_persistence.consolidate_morphologies(db, study)
+    # La fusión de morfologías del motor no corre acá sino en la finalización
+    # (`processing.process_study_task`): el cierre puede dejar lotes en cola y la
+    # fusión tiene que ver el banco completo.
     await _sync_patient_status(db, patient, target)
     await auth_repo.log_audit_event(
         db,
@@ -1010,6 +1006,10 @@ async def simulate_anomaly(
 
     event = ECGEvent(
         batch_id=batch.id,
+        # `ml_persistence.recount_events` cuenta por esta columna: sin ella el
+        # hallazgo se ve en el visor (que llega por el lote) pero no entra en
+        # `events_count`.
+        study_id=study.id,
         event_type=ECGEventType[kind.upper()],
         severity=severity,
         timestamp_in_recording=start_sample / sample_rate,
@@ -1038,6 +1038,11 @@ async def simulate_anomaly(
     )
     db.add(alert)
     await db.flush()
+    # Import perezoso: `ml_persistence` arrastra numpy, y este módulo lo importa
+    # cada arranque en frío de la API (ver `app/ml/frame_header.py`).
+    from app.modules.ingest import ml_persistence
+
+    await ml_persistence.recount_events(db, study)
 
     alert_id = alert.id
     event_id = event.id

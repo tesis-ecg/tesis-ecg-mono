@@ -17,11 +17,13 @@ Seis cosas:
   los dos caminos. Queda NULLABLE a propósito: `ecg_batch.study_id` también lo
   es, así que el backfill puede no resolver todas las filas y un NOT NULL haría
   fallar la migración sobre cualquier base con datos demo.
-- `model_version`. Es el predicado que define "esto lo escribió el motor": lo que
-  se puede borrar y recalcular al reprocesar un lote. Los hallazgos de
-  `simulate-anomaly` y los seeds legacy lo tienen en NULL y quedan intactos.
-- `dedupe_key` con índice único parcial. Reprocesar un lote no puede duplicar
-  hallazgos, y no puede depender de que el DELETE previo haya corrido.
+- `model_version`. Es el predicado que define "esto lo escribió el motor": lo
+  único que el motor reescribe (encabezados por morfología, fusión al cierre).
+  Los hallazgos de `simulate-anomaly`, la Capa A y los seeds legacy lo tienen en
+  NULL y quedan intactos.
+- `dedupe_key` con índice único parcial. Escribir dos veces el mismo hallazgo no
+  puede duplicarlo. Un lote que falla hace rollback de todo y uno `DONE` no se
+  reprocesa, así que el índice es una red de seguridad, no el mecanismo.
 - `validation_status` / `validated_by` / `validated_at` / `validation_note`. La
   UI de validación es de una fase posterior, pero la columna va ahora: cada
   "descartado" del médico es una etiqueta de ruido revisada por un especialista
@@ -116,8 +118,9 @@ def upgrade() -> None:
     )
 
     op.create_index("ix_ecg_event_study_ts", "ecg_event", ["study_id", "timestamp_in_recording"])
-    # No existía ninguno: `ecg_event.batch_id` es NOT NULL y se filtra por él en
-    # cada reproceso, pero se resolvía con seq scan.
+    # No existía ninguno: `ecg_event.batch_id` es NOT NULL y es la columna de los
+    # JOIN con `ecg_batch` (`list_ecg_events`, el estudio de una alerta) y de las
+    # bajas de los seeds, que se resolvían con seq scan.
     op.create_index("ix_ecg_event_batch", "ecg_event", ["batch_id"])
     op.create_index(
         "uq_ecg_event_dedupe",

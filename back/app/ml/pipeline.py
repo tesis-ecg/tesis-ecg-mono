@@ -58,7 +58,9 @@ PIPELINE_VERSION = "ml-1.0.0"
 #: bits del hardware y duplicarlos llenaría la traza de bandas repetidas.
 _QUALITY_EVENT_KINDS = {
     "flatline": ("flatline", ECGEventSeverity.MEDIUM),
-    "spectral": ("noise_burst", ECGEventSeverity.LOW),
+    "psqi": ("noise_burst", ECGEventSeverity.LOW),
+    "ksqi": ("noise_burst", ECGEventSeverity.LOW),
+    "bassqi": ("noise_burst", ECGEventSeverity.LOW),
     "bsqi": ("noise_burst", ECGEventSeverity.LOW),
     "no_beats": ("noise_burst", ECGEventSeverity.LOW),
 }
@@ -114,6 +116,7 @@ def build_config(
             firmware_refractory_samples=int(
                 settings.ml_firmware_peak_refractory_ms * sample_rate / 1000.0
             ),
+            mains_hz=settings.ml_mains_hz,
         ),
         rhythm=RhythmThresholds(
             tachycardia_bpm=settings.ml_tachycardia_bpm,
@@ -151,15 +154,15 @@ def analyze_batch(
     bank: TemplateBank,
     config: PipelineConfig,
     batch_id: str,
-    fold_into_bank: bool = True,
     existing_anomalies: int = 0,
 ) -> PipelineResult:
     """Analiza un lote. **Bloqueante y CPU-bound**: llamar desde un hilo.
 
-    `fold_into_bank` en falso es el camino del reprocesamiento: los latidos se
-    puntúan contra el banco actual pero no se suman a sus conteos. Un lote ya
-    plegado que se vuelve a plegar duplicaría sus miembros y falsearía la carga
-    (`burdenPct`) que lee el médico.
+    `batch_id` es una red de seguridad: si coincide con el último lote plegado
+    al banco, los latidos se puntúan contra el banco pero no se vuelven a sumar
+    —contarlos dos veces falsearía la carga (`burdenPct`) que lee el médico—.
+    Hoy no se dispara: un lote `DONE` no se reprocesa y uno que falla hace
+    rollback de `study.ml_state` junto con todo lo demás.
     """
     sample_rate = config.sample_rate
     cleaned = clean_signal(signal_mv, sample_rate)
@@ -182,11 +185,11 @@ def analyze_batch(
 
     rr = build_rr(detected_peaks, report.analyzable, sample_rate)
     findings: list[Finding] = detect_rhythm(rr, config.rhythm, sample_rate)
-    findings.extend(_quality_findings(report.windows, sample_rate))
+    quality_findings = _quality_findings(report.windows, sample_rate)
 
     # --- Etapa 2 ------------------------------------------------------------- #
     beats = morphology.extract_beats(cleaned, detected_peaks, report.analyzable, sample_rate)
-    if fold_into_bank and batch_id not in bank.consumed_batch_ids:
+    if batch_id != bank.last_folded_batch_id:
         updated_bank, assignment = morphology.assign_and_update(
             bank,
             beats,
@@ -227,6 +230,11 @@ def analyze_batch(
     # que en su enorme mayoría es normal. Para morfología la agregación correcta
     # ya existe y es otra: `gap_beats` dentro del episodio y el hallazgo de
     # estudio por cluster, que cuenta ocurrencias sin mentir sobre la extensión.
+    #
+    # Los de calidad tampoco pasan: no avisan a nadie y ya salen agrupados por
+    # contigüidad exacta. Con la refractariedad de 10 s, dos tramos malos
+    # separados por UNA ventana buena (hueco de 10 s justos) se volvían a fundir
+    # en una banda de ruido pintada encima de la señal buena del medio.
     alerting = [item for item in findings if item.event_type is not ECGEventType.ANOMALY]
     morphology_findings = [item for item in findings if item.event_type is ECGEventType.ANOMALY]
     findings = (
@@ -236,6 +244,7 @@ def analyze_batch(
             refractory_seconds=config.budget.refractory_seconds,
         )
         + morphology_findings
+        + quality_findings
     )
     findings, score_floor = enforce_budget(
         findings, budget=config.budget, existing_anomalies=existing_anomalies
@@ -305,26 +314,47 @@ def _quality_findings(windows: tuple[QualityWindow, ...], sample_rate: int) -> l
     `derive_events` sobre el mismo tramo, y pintar dos bandas encima de la misma
     zona no le dice nada nuevo al médico. Lo que sí es información nueva es
     "los electrodos estaban bien y aun así no se pudo leer".
+
+    Se agrupa por **tipo de evento y contigüidad**, no por motivo: una ventana
+    `psqi` seguida de una `ksqi` es el mismo ruido y va en una sola banda (manda
+    el motivo de la primera). Y nunca se cruza una ventana que no generó evento:
+    dos tramos malos separados por uno bueno son dos bandas, no una que pinta
+    de ruido la señal buena del medio.
     """
     findings: list[Finding] = []
-    for interval in merge_windows(
-        [window for window in windows if window.level is SignalQualityLevel.BAD]
-    ):
-        mapped = _QUALITY_EVENT_KINDS.get(interval.reason)
+    for window in windows:
+        mapped = (
+            _QUALITY_EVENT_KINDS.get(window.reason)
+            if window.level is SignalQualityLevel.BAD
+            else None
+        )
         if mapped is None:
             continue
         kind, severity = mapped
+        last = findings[-1] if findings else None
+        if (
+            last is not None
+            and last.kind == kind
+            and last.start_sample + last.length_samples == window.start_sample
+        ):
+            length = last.length_samples + window.length_samples
+            findings[-1] = replace(
+                last,
+                length_samples=length,
+                metadata={**last.metadata, "durationSeconds": round(length / sample_rate, 2)},
+            )
+            continue
         findings.append(
             Finding(
                 kind=kind,
                 event_type=ECGEventType.NOISE,
                 severity=severity,
-                start_sample=interval.start_sample,
-                length_samples=interval.length_samples,
-                dedupe_key=f"{kind}:{interval.start_sample}",
+                start_sample=window.start_sample,
+                length_samples=window.length_samples,
+                dedupe_key=f"{kind}:{window.start_sample}",
                 metadata={
-                    "reason": interval.reason,
-                    "durationSeconds": round(interval.length_samples / sample_rate, 2),
+                    "reason": window.reason,
+                    "durationSeconds": round(window.length_samples / sample_rate, 2),
                 },
             )
         )

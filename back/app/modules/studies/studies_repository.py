@@ -331,9 +331,9 @@ async def list_quality_intervals(
 ) -> list[SignalQualityInterval]:
     """Intervalos de calidad del estudio, en orden de grabación.
 
-    Vienen troceados por lote —un intervalo nunca cruza el borde de uno, para que
-    reprocesar sea un DELETE por `batch_id`—, así que la fusión entre lotes
-    contiguos se hace al leer. Son unos cientos de filas: una pasada lineal.
+    Vienen troceados por lote —el motor analiza lote a lote y un intervalo nunca
+    cruza el borde de uno—, así que la fusión entre lotes contiguos se hace al
+    leer. Son unos cientos de filas: una pasada lineal.
     """
     result = await db.scalars(
         select(SignalQualityInterval)

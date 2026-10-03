@@ -117,7 +117,7 @@ class Study(TimestampMixin, Base):
     # --- Motor de detección --------------------------------------------------- #
     #: Estado acumulado del banco de plantillas y las métricas del pipeline.
     #: `{schemaVersion, modelVersion, templatesKey, templates[], beatsSeen,
-    #:   unmatchedBeats, nextClusterId, consumedBatchIds[], scoreFloor, metrics{}}`.
+    #:   unmatchedBeats, nextClusterId, lastFoldedBatchId, scoreFloor, metrics{}}`.
     #:
     #: Los **centroides** no viven acá sino en S3 (`templatesKey`): `select(Study)`
     #: trae todas las columnas, y 40 KB de vectores TOASTeados se leerían en cada

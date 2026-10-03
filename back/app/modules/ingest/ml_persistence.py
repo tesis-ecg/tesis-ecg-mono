@@ -17,8 +17,10 @@ Tres reglas:
    lo tienen en NULL y **nunca se tocan**.
 2. `dedupe_key` hace idempotente la escritura de un mismo hallazgo: los episodios
    entran con `ON CONFLICT DO NOTHING` y los encabezados por morfología se
-   upsertean, así que su conteo refleja el total del estudio.
-3. El banco no vuelve a plegar un lote que ya plegó (`consumedBatchIds`).
+   upsertean, así que su conteo refleja el total del estudio. Con la regla de
+   arriba es una red de seguridad, no el mecanismo del reintento.
+3. El banco no vuelve a plegar el último lote que plegó (`lastFoldedBatchId`):
+   la misma red de seguridad, del lado de los conteos de plantillas.
 """
 
 from __future__ import annotations
@@ -65,9 +67,11 @@ def templates_key(study_id: uuid.UUID, first_seq: int) -> str:
 def load_bank(state: dict[str, Any], config: PipelineConfig) -> TemplateBank:
     """Reconstruye el banco del estudio. Vacío si no hay o si no es compatible.
 
-    Recibe el dict de `study.ml_state` y no el `Study`: corre en un hilo, y tocar
-    un atributo de una entidad expirada ahí dispara un refresh lazy de SQLAlchemy
-    fuera del greenlet.
+    Hoy corre en línea, en el event loop y con la fila del estudio tomada: el
+    GET de S3 bloquea mientras dura, igual que el resto de los `get_object` del
+    procesamiento. Recibe el dict de `study.ml_state` y no el `Study` para poder
+    sacarlo a un hilo sin cambiar la firma: tocar ahí un atributo de una entidad
+    expirada dispararía un refresh lazy de SQLAlchemy fuera del greenlet.
     """
     key = state.get("templatesKey")
     blob = b""
@@ -306,11 +310,14 @@ async def recount_events(db: AsyncSession, study: Study) -> None:
 async def consolidate_morphologies(db: AsyncSession, study: Study) -> dict[int, int]:
     """Funde morfologías que derivaron hacia la misma forma. Devuelve `viejo → nuevo`.
 
-    Corre **una vez, al cerrar el estudio**, y sobre ≤ 40 centroides — nunca
-    sobre los 100.000 latidos. Existe porque el banco es *greedy*: si en la hora
-    2 aparece una forma intermedia entre dos plantillas, puede haber abierto dos
-    donde había una sola morfología. Al final se ve el estudio completo y se
-    corrige.
+    Corre en la finalización de un estudio completado
+    (`processing.process_study_task`, después de drenar los lotes en cola) y
+    sobre ≤ 40 centroides — nunca sobre los 100.000 latidos. Existe porque el
+    banco es *greedy*: si en la hora 2 aparece una forma intermedia entre dos
+    plantillas, puede haber abierto dos donde había una sola morfología. Al
+    final se ve el estudio completo y se corrige. La finalización puede volver
+    a correr (un lote que llegó tarde, la recuperación desde el manifest): sin
+    nada que fundir no escribe nada.
 
     Los `ecg_event` de las plantillas absorbidas se reescriben al id
     sobreviviente —el más viejo—, así que las filas escritas con ese id siguen

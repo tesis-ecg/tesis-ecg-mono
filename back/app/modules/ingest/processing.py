@@ -397,12 +397,20 @@ MIN_FRAME_GAP_MS = 20
 FIRMWARE_SOURCE = "firmware_flags"
 
 
-def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
+def derive_events(
+    batch: _DecodedBatch, sample_rate: int, *, previous_end_ms: int | None = None
+) -> list[DerivedEvent]:
     """Lo que el médico va a mirar, que no son las 43 M de muestras.
 
     Las reglas de interpretación son las de `INTEGRACION.md` §4.5:
     `LEAD_OFF` invalida el tramo (pero las muestras **se conservan**, marcadas),
     `RLD_OFF` no invalida nada, y con SQI = 1 no se cuentan latidos.
+
+    `previous_end_ms` es el `t0Ms` en que terminó el lote anterior cuando éste
+    continúa su tramo (`_place_on_timeline`). Con él, el hueco entre lotes se
+    mide igual que el hueco entre dos tramas del mismo lote: un lote de ~15 s
+    tiene ~48 tramas, así que de otro modo uno de cada 48 bordes quedaba sin
+    mirar.
     """
     flags = batch.flags
     events: list[DerivedEvent] = []
@@ -468,7 +476,6 @@ def derive_events(batch: _DecodedBatch, sample_rate: int) -> list[DerivedEvent]:
     # exceso chico sí es reloj: el ADS1292R muestrea con su propio oscilador y
     # `durationMs` es millis(), así que solo cuenta lo que excede esa tolerancia.
     offset = 0
-    previous_end_ms: int | None = None
     for frame in batch.frames:
         # Hueco ENTRE tramas. El `gap_beyond_clock_ms` de abajo solo ve lo que
         # falta *adentro* de una trama; lo que el equipo dejó de adquirir entre el
@@ -672,16 +679,24 @@ async def _place_on_timeline(
     batch: ECGBatch,
     decoded: _DecodedBatch,
     start_sample_index: int,
-) -> int:
+) -> tuple[int, int | None]:
     """Abre o extiende el tramo al que pertenece este lote.
 
     `start_sample_index` es la posición del lote dentro del buffer empaquetado
     del estudio, que es lo que después permite traducir índice de muestra a hora
     de pared y al revés.
 
-    Devuelve **cuántos milisegundos de hueco** quedaron antes de este lote (0 si
-    se pegó al tramo anterior). Sale de acá y no de una función aparte porque es
-    el único punto del procesamiento que tiene el tramo previo a la vista.
+    Devuelve `(gap_ms, previous_end_t0_ms)`:
+
+    - **cuántos milisegundos de hueco** quedaron antes de este lote (0 si se pegó
+      al tramo anterior);
+    - si se pegó, el `t0Ms` en que terminó la última trama del lote anterior. Un
+      salto chico (por debajo de la tolerancia que abre tramo) entre ese final y
+      la primera trama de este lote es adquisición perdida igual que uno entre
+      dos tramas del mismo lote, y `derive_events` lo marca como `frame_gap`.
+
+    Sale de acá y no de una función aparte porque es el único punto del
+    procesamiento que tiene el tramo previo a la vista.
     """
     first = decoded.frames[0].info
     last = decoded.frames[-1].info
@@ -697,7 +712,15 @@ async def _place_on_timeline(
                 study, batch, timing, ordinal, start_sample_index, decoded.n_samples
             ),
         )
-        return gap_ms
+        return gap_ms, None
+
+    # Antes de extender: `extend_segment` corre `end_epoch_ms` al final de este
+    # lote. Mismo cálculo que `timeline.starts_new_segment` (mismo `bootId`, en
+    # el reloj del equipo); sin `t0Ms` crudo, el tramo del backfill viejo no da
+    # una referencia exacta y no se compara.
+    previous_end_t0_ms = (
+        timeline.t0_at(current, current.end_epoch_ms) if current.last_t0_ms is not None else None
+    )
 
     # `list_boot_anchors` ya filtra las filas sin ancla completa, así que las dos
     # columnas están; el `or 0` es solo para el tipo.
@@ -714,7 +737,7 @@ async def _place_on_timeline(
     ):
         study.started_at = datetime.fromtimestamp(current.start_epoch_ms / 1000, tz=UTC)
         study.started_at_verified = True
-    return 0
+    return 0, previous_end_t0_ms
 
 
 def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
@@ -843,7 +866,15 @@ async def _process_one_batch(
     study.ecg_pyramid_levels = compact_pyramid(study)
 
     # --- Línea de tiempo de pared ------------------------------------------ #
-    gap_ms = await _place_on_timeline(db, study, batch, decoded, start_sample_index)
+    gap_ms, previous_end_t0_ms = await _place_on_timeline(
+        db, study, batch, decoded, start_sample_index
+    )
+    if batch.preceding_seq_gap_frames > 0:
+        # Faltan tramas antes de este lote: el salto de `t0Ms` ya lo explica el
+        # evento de `signal_loss_events`, y marcarlo además como `frame_gap`
+        # sería contar dos veces el mismo hueco. `frame_gap` es adquisición
+        # perdida **con `seq` contiguo**, igual que adentro de un lote.
+        previous_end_t0_ms = None
     await append_filtered_view(db, study)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
@@ -868,7 +899,8 @@ async def _process_one_batch(
         db,
         batch,
         study,
-        signal_loss_events(batch, gap_ms) + derive_events(decoded, sample_rate),
+        signal_loss_events(batch, gap_ms)
+        + derive_events(decoded, sample_rate, previous_end_ms=previous_end_t0_ms),
         start_sample_index,
         sample_rate,
     )
@@ -1076,6 +1108,14 @@ async def process_study_task(study_id: uuid.UUID) -> None:
             if study is None:
                 return
             await append_filtered_view(session, study)
+            if study.status is StudyStatus.COMPLETED:
+                # Acá y no en el cierre: es el único punto por el que pasan todos
+                # los caminos que completan un estudio (el médico, la
+                # desasignación del equipo y el rebobinado de `seq` de la
+                # ingesta), y corre después de drenar los lotes pendientes. Un
+                # estudio se puede cerrar con lotes en cola, y fundir antes vería
+                # un banco incompleto. Sin plantillas que fundir no escribe nada.
+                await ml_persistence.consolidate_morphologies(session, study)
             if study.status is not StudyStatus.IN_PROGRESS:
                 study.ecg_pyramid_levels = await asyncio.to_thread(
                     compact_pyramid, study, force=True

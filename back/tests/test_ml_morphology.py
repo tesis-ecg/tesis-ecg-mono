@@ -125,9 +125,10 @@ def test_reprocesar_un_lote_ya_plegado_no_infla_el_banco() -> None:
     bank, _ = assign_and_update(bank, beats, match_threshold=MATCH, max_templates=40, batch_id="b1")
     conteos = {t.cluster_id: t.count for t in bank.templates}
     assert bank.beats_seen > 0
-    assert "b1" in bank.consumed_batch_ids
+    assert bank.last_folded_batch_id == "b1"
 
-    # El camino del reproceso: puntúa contra el banco actual, no lo modifica.
+    # Lo que corre si vuelve a llegar ese lote: puntúa contra el banco actual,
+    # no lo modifica.
     assignment = score_only(bank, beats, match_threshold=MATCH)
     assert {t.cluster_id: t.count for t in bank.templates} == conteos
     assert assignment.cluster_ids.size == beats.n_beats
@@ -242,7 +243,7 @@ def test_el_banco_sobrevive_a_una_vuelta_por_disco() -> None:
 
     assert recuperado.beats_seen == bank.beats_seen
     assert recuperado.next_cluster_id == bank.next_cluster_id
-    assert recuperado.consumed_batch_ids == bank.consumed_batch_ids
+    assert recuperado.last_folded_batch_id == bank.last_folded_batch_id == "b1"
     assert len(recuperado.templates) == len(bank.templates)
     for original, vuelto in zip(bank.templates, recuperado.templates, strict=True):
         assert original.cluster_id == vuelto.cluster_id
@@ -260,3 +261,21 @@ def test_un_banco_de_otra_version_del_modelo_se_descarta_en_vez_de_migrarse() ->
     otro = bank_from_state(state, blob, model_version="test-2")
     assert otro.templates == ()
     assert otro.beats_seen == 0
+
+
+def test_el_banco_guarda_solo_el_ultimo_lote_plegado() -> None:
+    """`study.ml_state` viaja en cada `select(Study)`: no puede crecer por lote.
+
+    Con lotes de ~15 s, una lista de todos los lotes plegados sumaba ~5.760 UUID
+    por día de registro.
+    """
+    _, beats = _beats(duration_s=60.0, ectopic_every=10)
+    bank = _empty_bank()
+    for indice in range(5):
+        bank, _ = assign_and_update(
+            bank, beats, match_threshold=MATCH, max_templates=40, batch_id=f"b{indice}"
+        )
+
+    state, _ = bank_to_state(bank)
+    assert state["lastFoldedBatchId"] == "b4"
+    assert "consumedBatchIds" not in state

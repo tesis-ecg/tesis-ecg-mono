@@ -118,9 +118,9 @@ async def test_el_resumen_dice_que_fraccion_del_registro_no_se_pudo_evaluar(
 async def test_los_intervalos_de_calidad_se_fusionan_entre_lotes(
     client, s3, db, as_user, make_user, make_patient, make_device
 ) -> None:
-    """Un intervalo nunca cruza el borde de un lote —para que reprocesar sea un
-    DELETE por `batch_id`—, así que la fusión se hace al leer. Si no, dos horas
-    limpias se verían como dos tramos distintos sin ningún motivo."""
+    """Un intervalo nunca cruza el borde de un lote —el motor analiza lote a
+    lote—, así que la fusión se hace al leer. Si no, dos tramos limpios
+    contiguos se verían como dos tramos distintos sin ningún motivo."""
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     study_id = None

@@ -282,6 +282,7 @@ async def seed_showcase(db: AsyncSession, doctor_email: str) -> Study:
         sample_count = max(round(spec.duration_s * SAMPLE_RATE), 1)
         event = ECGEvent(
             batch_id=batch.id,
+            study_id=study.id,
             event_type=spec.event_type,
             severity=spec.severity,
             timestamp_in_recording=spec.start_s,

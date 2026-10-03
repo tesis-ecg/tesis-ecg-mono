@@ -3,8 +3,14 @@
 `process_batch_task` es una **corrutina** que Starlette `await`ea en el event
 loop desde `BackgroundTasks`. Todo lo que corre adentro y no cede el control
 congela la API entera: mientras un lote se procesa, ningún request del dashboard
-avanza. Hoy eso ya pasa con `decode_batch` —un bucle Python sobre 1,8 M de
-muestras— y el motor de detección le suma el suyo.
+avanza.
+
+Lo único que cruza a este pool es el motor de detección (`analyze_batch`, desde
+`processing._persist_ml_analysis`), que es el trabajo CPU-bound grande. La
+decodificación (`decode_batch`) y las lecturas de S3 del procesamiento corren en
+línea, como en el flujo de ingesta de `main`: con lotes de ~15 s es poco
+trabajo por lote. `run_io` queda disponible para I/O bloqueante, sin llamadores
+hoy.
 
 Un pool propio y no `asyncio.to_thread`, por dos razones:
 
@@ -14,13 +20,11 @@ Un pool propio y no `asyncio.to_thread`, por dos razones:
 2. `max_workers=1` **serializa** el análisis a propósito. Dos lotes peleando por
    CPU tardan lo mismo en total y el doble en el p50.
 
-Advertencia honesta sobre el GIL: `decode_frame` es Python puro y lo retiene, así
-que moverlo a un hilo no lo hace desaparecer del event loop — lo trocea en
-quantums de `sys.setswitchinterval` (5 ms). El efecto real es pasar de "la API
-congelada N segundos seguidos" a "la API con ~5 ms de latencia extra por
-request". Es una mejora grande pero no es paralelismo. Lo que sí paraleliza de
-verdad es el motor nuevo: `filtfilt`, `welch` y los matmul de numpy **liberan el
-GIL** en sus bucles de C.
+Advertencia honesta sobre el GIL: lo que haya de Python puro en el motor lo
+retiene, así que moverlo a un hilo no lo hace desaparecer del event loop — lo
+trocea en quantums de `sys.setswitchinterval` (5 ms). Lo que sí paraleliza de
+verdad son `filtfilt`, `welch` y los matmul de numpy, que **liberan el GIL** en
+sus bucles de C.
 """
 
 from __future__ import annotations

@@ -295,22 +295,176 @@ async def test_con_el_motor_apagado_la_ingesta_sigue_funcionando(
 
 
 async def test_los_hallazgos_del_motor_se_distinguen_de_los_manuales(
-    client, s3, db, make_patient, make_device, make_study
+    client, s3, db, as_user, make_user, make_patient, make_device, make_study
 ) -> None:
     """`model_version IS NOT NULL` es el único predicado que dice "esto lo
-    escribió el motor y se puede reescribir"."""
+    escribió el motor y se puede reescribir".
+
+    Los tres escritores en el mismo estudio: el motor, la Capa A (los bits del
+    hardware, que escribe la ingesta) y un hallazgo manual de `simulate-anomaly`.
+    """
+    from app.db.models.user import UserRole
+
     _, device, api_key, study = await _world(make_patient, make_device, make_study)
     signal = synth_ecg(duration_s=900.0, ectopic_every=12)
-    await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
+    flags = signal.flags.copy()
+    # Un tramo de electrodo despegado: sin él la Capa A no escribe nada y las
+    # afirmaciones sobre ella pasarían en vacío.
+    flags[100 * SAMPLE_RATE : 110 * SAMPLE_RATE] |= FLAG_LEAD_OFF
+    await _ingest(client, db, device, api_key, _frames(signal.signal_mv, flags))
+    admin = as_user(await make_user(role=UserRole.ADMIN))
+    response = await admin.post(
+        f"/studies/{study.id}/simulate-anomaly",
+        json={"eventType": "pause", "secondsBeforeEnd": 30},
+    )
+    assert response.status_code == 200, response.text
 
     events = await _events(db, study.id)
-    motor = [event for event in events if event.event_metadata["source"] == "ml"]
+    sources = [(event.event_metadata or {}).get("source") for event in events]
+    motor = [event for event, source in zip(events, sources, strict=True) if source == "ml"]
     assert motor
     assert all(event.model_version == PIPELINE_VERSION for event in motor)
     assert all(event.dedupe_key is not None for event in motor)
     assert all(event.study_id == study.id for event in events)
     # La Capa A la escribe la ingesta y no el motor: sin versión de modelo, y
     # nada que la reescriba.
-    hardware = [event for event in events if event.event_metadata["source"] == "firmware_flags"]
+    hardware = [
+        event for event, source in zip(events, sources, strict=True) if source == "firmware_flags"
+    ]
+    assert "lead_off" in _kinds(hardware)
     assert all(event.model_version is None for event in hardware)
-    assert len(motor) + len(hardware) == len(events)
+    manual = [event for event in events if (event.event_metadata or {}).get("simulated")]
+    assert len(manual) == 1
+    assert manual[0].model_version is None
+    assert len(motor) + len(hardware) + len(manual) == len(events)
+
+
+async def test_persistir_dos_veces_el_mismo_resultado_no_duplica_ni_vuelve_a_avisar(
+    client, s3, db, make_patient, make_device, make_study
+) -> None:
+    """La red de seguridad de `dedupe_key`, sin el rollback de por medio.
+
+    Hoy un lote `DONE` no se vuelve a procesar y uno que falla no deja nada, así
+    que este camino no se recorre en producción. Pero es la garantía que tiene
+    que sostener cualquier escritura repetida de un mismo hallazgo: el
+    `ON CONFLICT DO NOTHING` de los episodios y el "solo avisan los recién
+    insertados" de `_create_alerts`.
+    """
+    from app.core.config import settings
+    from app.db.models.ecg_event import ECGEventSeverity
+    from app.ml.contracts import Finding
+    from app.ml.pipeline import PipelineResult, build_config, empty_bank
+
+    _, device, api_key, study = await _world(make_patient, make_device, make_study)
+    signal = synth_ecg(duration_s=60.0)
+    body = await _ingest(client, db, device, api_key, _frames(signal.signal_mv, signal.flags))
+    batch = await db.get(ECGBatch, body["batchId"])
+    assert batch is not None
+    pausa = Finding(
+        kind="pause",
+        event_type=ECGEventType.PAUSE,
+        severity=ECGEventSeverity.HIGH,
+        start_sample=30 * SAMPLE_RATE,
+        length_samples=int(2.6 * SAMPLE_RATE),
+        dedupe_key=f"pause:{30 * SAMPLE_RATE}",
+        alert_message="Se detectó una pausa en el ritmo.",
+    )
+    resultado = PipelineResult(
+        quality_intervals=(),
+        findings=(pausa,),
+        bank=empty_bank(build_config(settings, SAMPLE_RATE)),
+        metrics={},
+        model_version=PIPELINE_VERSION,
+    )
+    antes = len(await _events(db, study.id))
+    alertas_antes = len((await db.scalars(select(Alert))).all())
+
+    _, primero = await ml_persistence.persist_analysis(db, study, batch, resultado, SAMPLE_RATE)
+    _, segundo = await ml_persistence.persist_analysis(db, study, batch, resultado, SAMPLE_RATE)
+
+    assert primero is not None
+    assert segundo is None
+    assert len(await _events(db, study.id)) == antes + 1
+    assert len((await db.scalars(select(Alert))).all()) == alertas_antes + 1
+
+
+async def test_la_finalizacion_funde_las_morfologias_de_un_estudio_completado(
+    s3, db, monkeypatch, make_patient, make_device, make_study
+) -> None:
+    """La fusión corre en `process_study_task` y no en el endpoint de cierre.
+
+    Así la ve cualquier camino que complete el estudio —el médico, la
+    desasignación del equipo, el rebobinado de `seq` de la ingesta, que cierra
+    sin pasar por el servicio de estudios— y la ve después de drenar los lotes
+    que quedaron en cola.
+    """
+    from contextlib import asynccontextmanager
+
+    from app.db.models.ecg_event import ECGEventSeverity
+    from app.db.models.study import StudyStatus
+    from app.ml.morphology import Template, TemplateBank, beat_length
+    from app.modules.ingest.processing import process_study_task
+    from tests.test_studies_simulate_anomaly import _batch
+
+    _, device, _, study = await _world(make_patient, make_device, make_study)
+    batch = await _batch(db, device, study, SAMPLE_RATE * 60)
+    largo = beat_length(SAMPLE_RATE)
+    rng = np.random.default_rng(7)
+    base = rng.standard_normal(largo).astype(np.float32)
+    base /= np.linalg.norm(base)
+    # La misma forma con un poco de ruido: dos plantillas donde había una.
+    gemela = base + 0.02 * rng.standard_normal(largo).astype(np.float32)
+    gemela /= np.linalg.norm(gemela)
+    bank = TemplateBank(
+        model_version=PIPELINE_VERSION,
+        beat_length=largo,
+        templates=(
+            Template(0, base, 90, 85.0, 0, 20_000),
+            Template(1, gemela, 10, 9.5, 5_000, 25_000),
+        ),
+        beats_seen=100,
+        next_cluster_id=2,
+    )
+    ml_persistence.store_bank(study, bank, 0, {})
+
+    def _evento(dedupe_key: str, scope: str, cluster_id: int) -> ECGEvent:
+        return ECGEvent(
+            batch_id=batch.id,
+            study_id=study.id,
+            event_type=ECGEventType.ANOMALY,
+            severity=ECGEventSeverity.LOW,
+            timestamp_in_recording=10.0,
+            event_metadata={
+                "kind": "recurrent_morphology",
+                "scope": scope,
+                "clusterId": cluster_id,
+            },
+            model_version=PIPELINE_VERSION,
+            dedupe_key=dedupe_key,
+        )
+
+    db.add_all(
+        [
+            _evento("cluster:0", "study", 0),
+            _evento("cluster:1", "study", 1),
+            _evento("morphology_anomaly:6000", "batch", 1),
+        ]
+    )
+    # Como lo deja `ingest_service._recover_from_seq_rewind`: COMPLETED sin
+    # pasar por `studies_service`.
+    study.status = StudyStatus.COMPLETED
+    await db.commit()
+
+    @asynccontextmanager
+    async def _misma_sesion():
+        yield db
+
+    monkeypatch.setattr("app.db.session.async_session_factory", _misma_sesion)
+    await process_study_task(study.id)
+
+    eventos = {event.dedupe_key: event for event in await _events(db, study.id)}
+    assert set(eventos) == {"cluster:0", "morphology_anomaly:6000"}
+    assert eventos["cluster:0"].event_metadata["beatCount"] == 100
+    assert eventos["morphology_anomaly:6000"].event_metadata["clusterId"] == 0
+    await db.refresh(study)
+    assert study.events_count == 2

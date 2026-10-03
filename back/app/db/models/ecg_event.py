@@ -106,12 +106,15 @@ class ECGEvent(TimestampMixin, Base):
     # --- Trazabilidad del motor ---------------------------------------------- #
     #: Versión del pipeline que produjo la fila. **Es el único predicado que
     #: define "esto lo escribió el motor y se puede reescribir"**: los hallazgos
-    #: manuales de `simulate-anomaly` y los seeds legacy lo tienen en NULL y
-    #: nunca se tocan al reprocesar.
+    #: manuales de `simulate-anomaly`, la Capa A y los seeds legacy lo tienen en
+    #: NULL y el motor nunca los toca (ni al upsertear encabezados ni al fundir
+    #: morfologías en el cierre).
     model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: Clave natural del hallazgo dentro del estudio (`kind:startSample`,
-    #: `cluster:3`). Hace idempotente el reprocesamiento sin depender de que el
-    #: borrado previo haya corrido.
+    #: `cluster:3`). Es la clave del upsert de los encabezados por morfología y
+    #: la red de seguridad contra escribir dos veces el mismo episodio: el
+    #: reintento de un lote que falló no la necesita, porque el rollback ya se
+    #: llevó todo.
     dedupe_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     validation_status: Mapped[ECGEventValidation] = mapped_column(
         Enum(

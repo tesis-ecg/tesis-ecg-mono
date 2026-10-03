@@ -236,3 +236,33 @@ async def test_el_hallazgo_aparece_en_el_manifest_del_estudio(
     assert len(events) == 1
     assert events[0].severity.value == "CRITICAL"
     assert events[0].duration_seconds == 10
+
+
+async def test_el_hallazgo_simulado_entra_en_el_conteo_del_estudio(
+    db: Any,
+    as_user: Any,
+    make_user: Any,
+    make_patient: Any,
+    make_device: Any,
+    make_study: Any,
+    sent_pushes: list[tuple[Any, PushMessage]],
+) -> None:
+    """`events_count` se recalcula contando `ecg_event.study_id`.
+
+    El visor encuentra el hallazgo por el lote, así que sin `study_id` el médico
+    vería una banda que el contador del estudio no cuenta — y el próximo lote
+    procesado lo dejaría afuera al recalcular.
+    """
+    _, _, study = await _recorded_study(db, make_patient, make_device, make_study)
+    client: AsyncClient = as_user(await _admin(db, make_user))
+
+    response = await client.post(
+        URL.format(study_id=study.id), json={"eventType": "pause", "secondsBeforeEnd": 30}
+    )
+
+    assert response.status_code == 200, response.text
+    event = await db.get(ECGEvent, response.json()["eventId"])
+    assert event is not None
+    assert event.study_id == study.id
+    await db.refresh(study)
+    assert study.events_count == 1
