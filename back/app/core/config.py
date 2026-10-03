@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, model_validator
+from pydantic import AnyHttpUrl, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     ml_firmware_peak_refractory_ms: float = Field(default=300.0, ge=0.0, le=1000.0)
     #: Amplitud pico a pico por debajo de la cual la ventana es una línea plana.
     ml_flatline_uv: float = Field(default=20.0, ge=1.0, le=1000.0)
+    #: Red eléctrica que se quita (notch en la fundamental y sus armónicas) antes
+    #: de los índices espectrales. 50 Hz en Argentina; 0 apaga la remoción. Sin
+    #: esto ~2 mV pico a pico de red sobre un ECG perfectamente visible bajan la
+    #: curtosis por debajo del umbral: medido en el chaleco, de 0 a 26 ventanas
+    #: buenas de 29 (`tools/vest/evaluate.py`). Solo 0 o 45-65 Hz: ver
+    #: `_mains_is_a_grid`.
+    ml_mains_hz: float = Field(default=50.0, ge=0.0, le=65.0)
 
     #: 50 y no 60: la bradicardia sinusal nocturna a 55 lpm es normal en un adulto
     #: sano, y con 60 se marcaría media noche de todos los Holter.
@@ -211,6 +218,16 @@ class Settings(BaseSettings):
     @property
     def rate_limit_secret(self) -> str:
         return self.auth_rate_limit_secret or self.jwt_secret
+
+    @field_validator("ml_mains_hz")
+    @classmethod
+    def _mains_is_a_grid(cls, value: float) -> float:
+        # Entre 0 y 45 no hay ninguna red: con 0,5 Hz el notch se come el
+        # fundamental cardíaco y con 25 cae adentro de la banda de los índices.
+        # Un valor ínfimo (1e-6) haría que el bucle de armónicas no termine.
+        if 0.0 < value < 45.0:
+            raise ValueError("ML_MAINS_HZ tiene que ser 0 (apagado) o una red de 45-65 Hz")
+        return value
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":

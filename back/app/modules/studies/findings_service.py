@@ -132,8 +132,8 @@ def _quality_summary(
         if merged and merged[-1][2] is interval.level and merged[-1][1] == start:
             previous = merged[-1]
             # Mismo nivel y contiguo: se funden. El motivo del primero manda —si
-            # el tramo pasó de `spectral` a `bsqi` sin dejar de ser malo, lo que
-            # el médico necesita saber es que ahí no se pudo leer.
+            # el tramo pasó de `psqi` a `ksqi` o a `no_beats` sin dejar de ser
+            # malo, lo que el médico necesita saber es que ahí no se pudo leer.
             merged[-1] = (previous[0], end, previous[2], previous[3])
         else:
             merged.append((start, end, interval.level, interval.reason))

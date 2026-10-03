@@ -79,9 +79,11 @@ class SignalQualityInterval(TimestampMixin, Base):
         ),
         nullable=False,
     )
-    #: Qué capa lo degradó: `lead_off`, `saturated`, `flatline`, `spectral`,
-    #: `bsqi`, `ok`. Sin esto, "malo" no dice si el problema es el electrodo (se
-    #: soluciona acomodando el chaleco) o la señal (no se soluciona).
+    #: Qué capa lo degradó: `lead_off`, `saturated`, `firmware_sqi`, `flatline`,
+    #: `psqi`, `ksqi`, `bassqi`, `no_beats`, `bsqi`, `ok`. Sin esto, "malo" no dice
+    #: si el problema es el electrodo (se soluciona acomodando el chaleco) o la
+    #: señal (no se soluciona). Las filas de antes de separar los índices
+    #: espectrales traen `spectral`: texto libre, sin migración.
     reason: Mapped[str] = mapped_column(String(32), nullable=False)
     window_count: Mapped[int] = mapped_column(Integer, nullable=False)
     #: Medianas de los índices sobre las ventanas fusionadas.

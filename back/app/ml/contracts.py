@@ -34,8 +34,23 @@ Floats = NDArray[np.float32]
 #: Motivo por el que una ventana quedó con el nivel que tiene. Sin esto, "malo"
 #: no distingue el electrodo despegado (el paciente lo puede arreglar) del ruido
 #: muscular (no lo puede arreglar).
+#:
+#: Los índices espectrales se reportan por separado (`psqi`, `ksqi`, `bassqi`:
+#: el primero que falla, en ese orden) porque fallan por cosas distintas —
+#: energía fuera de la banda del QRS, una distribución sin picos, deriva de línea
+#: de base— y recalibrar uno a ciegas de los otros no es posible. Las filas
+#: viejas pueden traer `spectral`, el motivo único de antes de la separación.
 QualityReason = Literal[
-    "ok", "lead_off", "saturated", "flatline", "spectral", "bsqi", "no_beats", "firmware_sqi"
+    "ok",
+    "lead_off",
+    "saturated",
+    "flatline",
+    "psqi",
+    "ksqi",
+    "bassqi",
+    "bsqi",
+    "no_beats",
+    "firmware_sqi",
 ]
 
 
@@ -55,6 +70,10 @@ class QualityThresholds:
     firmware_lag_samples: int = 0
     #: Refractario propio sobre los picos del firmware, en muestras.
     firmware_refractory_samples: int = 0
+    #: Frecuencia de la red que se quita antes de los índices espectrales. Cero
+    #: la apaga: es lo que necesita una señal sintética sin interferencia, y
+    #: `build_config` trae los 50 Hz de `ml_mains_hz`. Ver `quality.deinterfere`.
+    mains_hz: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

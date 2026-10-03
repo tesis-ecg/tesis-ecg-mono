@@ -495,7 +495,9 @@ class StudyQualityIntervalOut(CamelModel):
     startOffsetMs: int
     endOffsetMs: int
     level: Literal["good", "marginal", "bad", "unknown"]
-    #: `lead_off`, `saturated`, `flatline`, `spectral`, `bsqi`, `no_beats`, `ok`.
+    #: `lead_off`, `saturated`, `firmware_sqi`, `flatline`, `psqi`, `ksqi`,
+    #: `bassqi`, `no_beats`, `bsqi`, `ok`; `spectral` en estudios analizados antes
+    #: de separar los tres índices espectrales.
     #: Sin el motivo, "malo" no distingue el electrodo despegado —que el paciente
     #: puede acomodar— del ruido muscular, que no.
     reason: str

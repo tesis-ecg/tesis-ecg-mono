@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.db.models.ecg_event import ECGEventType
 from app.db.models.signal_quality import SignalQualityLevel
 from app.ml import pipeline
+from app.ml.contracts import QualityReason, QualityWindow
 from app.ml.decompression import FLAG_ADC_SATURATED, FLAG_LEAD_OFF
 from tests.ecg_synth import SAMPLE_RATE, synth_ecg
 
@@ -321,3 +322,97 @@ def test_sin_compensar_el_retardo_del_firmware_el_motor_entero_enmudece() -> Non
     assert vivo.metrics["goodRatio"] == 1.0
     assert vivo.metrics["medianBsqi"] == 1.0
     assert vivo.metrics["analyzedBeats"] > 100
+
+
+def _window(index: int, level: SignalQualityLevel, reason: QualityReason) -> QualityWindow:
+    return QualityWindow(
+        start_sample=index * 10 * SAMPLE_RATE,
+        length_samples=10 * SAMPLE_RATE,
+        level=level,
+        reason=reason,
+    )
+
+
+def test_los_tres_motivos_espectrales_contiguos_son_una_sola_banda_de_ruido() -> None:
+    """Separar `spectral` en `psqi`/`ksqi`/`bassqi` no puede partir la banda:
+    una ventana que falla el pSQI seguida de una que falla el kSQI es el mismo
+    ruido, y el médico tiene que ver un `noise_burst`, no tres pegados."""
+    bad = SignalQualityLevel.BAD
+    windows = (_window(0, bad, "psqi"), _window(1, bad, "ksqi"), _window(2, bad, "bassqi"))
+    [finding] = pipeline._quality_findings(windows, SAMPLE_RATE)
+    assert finding.kind == "noise_burst"
+    assert finding.start_sample == 0
+    assert finding.length_samples == 30 * SAMPLE_RATE
+    # Manda el motivo de la primera ventana, como en `findings_service`.
+    assert finding.metadata == {"reason": "psqi", "durationSeconds": 30.0}
+
+
+def test_una_ventana_buena_en_el_medio_parte_la_banda_en_dos() -> None:
+    """Dos tramos malos con el mismo motivo y señal buena entre los dos son dos
+    bandas. Fusionarlos pintaría de ruido diez segundos de ECG analizado."""
+    bad, good = SignalQualityLevel.BAD, SignalQualityLevel.GOOD
+    windows = (
+        _window(0, bad, "flatline"),
+        _window(1, good, "ok"),
+        _window(2, bad, "flatline"),
+        _window(3, bad, "lead_off"),
+        _window(4, bad, "ksqi"),
+    )
+    findings = pipeline._quality_findings(windows, SAMPLE_RATE)
+    assert [(item.kind, item.start_sample, item.length_samples) for item in findings] == [
+        ("flatline", 0, 10 * SAMPLE_RATE),
+        ("flatline", 20 * SAMPLE_RATE, 10 * SAMPLE_RATE),
+        # El `lead_off` no genera evento acá (lo emite la Capa A) y corta la banda.
+        ("noise_burst", 40 * SAMPLE_RATE, 10 * SAMPLE_RATE),
+    ]
+
+
+def test_la_refractariedad_no_vuelve_a_fundir_las_bandas_de_calidad() -> None:
+    """Lo mismo, de punta a punta. Los hallazgos de calidad no pasan por
+    `apply_refractory`: con sus 10 s, dos líneas planas separadas por una sola
+    ventana buena (hueco de 10 s justos) volvían a ser una banda de 30 s pintada
+    encima del ECG del medio, y con `durationSeconds` de la primera."""
+    ecg = synth_ecg(duration_s=50.0)
+    signal_mv = ecg.signal_mv.copy()
+    flags = ecg.flags.copy()
+    for start_s in (10, 30):
+        tramo = slice(start_s * SAMPLE_RATE, (start_s + 10) * SAMPLE_RATE)
+        signal_mv[tramo] = 0.0
+        flags[tramo] = 0
+
+    config = _config()
+    result = pipeline.analyze_batch(
+        signal_mv,
+        flags,
+        start_sample_index=0,
+        bank=pipeline.empty_bank(config),
+        config=config,
+        batch_id="b1",
+    )
+    assert [interval.level for interval, _ in result.quality_intervals] == [
+        SignalQualityLevel.GOOD,
+        SignalQualityLevel.BAD,
+        SignalQualityLevel.GOOD,
+        SignalQualityLevel.BAD,
+        SignalQualityLevel.GOOD,
+    ]
+    planas = [finding for finding in result.findings if finding.kind == "flatline"]
+    assert [(item.start_sample, item.length_samples) for item in planas] == [
+        (10 * SAMPLE_RATE, 10 * SAMPLE_RATE),
+        (30 * SAMPLE_RATE, 10 * SAMPLE_RATE),
+    ]
+    assert [item.metadata["durationSeconds"] for item in planas] == [10.0, 10.0]
+
+
+@pytest.mark.parametrize("mains_hz", [1e-6, 0.5, 25.0, 44.9, 70.0])
+def test_ml_mains_hz_solo_acepta_apagado_o_una_red(mains_hz: float) -> None:
+    """Entre 0 y 45 Hz no hay red: el notch se comería el ECG o, con un valor
+    ínfimo, el bucle de armónicas no terminaría y colgaría el worker."""
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="ml_mains_hz|ML_MAINS_HZ"):
+        Settings(ml_mains_hz=mains_hz)  # type: ignore[call-arg]
+    for valid in (0.0, 50.0, 60.0):
+        assert Settings(ml_mains_hz=valid).ml_mains_hz == valid  # type: ignore[call-arg]
