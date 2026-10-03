@@ -175,6 +175,79 @@ async def test_the_device_lock_serializes_even_when_no_study_exists(seeded) -> N
         await holder.close()
 
 
+async def test_the_ingest_device_lock_does_not_block_fk_checks(seeded) -> None:
+    """El lock del equipo no puede frenar el `FOR KEY SHARE` de un chequeo de FK.
+
+    Con `FOR UPDATE` esto se bloqueaba, y era la mitad de un deadlock real: el
+    procesamiento del lote anterior tiene `study` y re-chequea la FK
+    `ecg_batch.device_id`; la ingesta tiene el equipo y espera `study`.
+    """
+    world, device, _ = seeded
+    holder = world.session()
+    await holder.begin()
+    assert await repo.get_device_for_update(holder, device.id) is not None
+
+    checker = world.session()
+    await checker.begin()
+    try:
+        found = await asyncio.wait_for(
+            checker.scalar(
+                select(Device.id)
+                .where(Device.id == device.id)
+                .with_for_update(read=True, key_share=True)
+            ),
+            timeout=2.0,
+        )
+        assert found == device.id
+    finally:
+        await checker.rollback()
+        await checker.close()
+        await holder.rollback()
+        await holder.close()
+
+
+async def test_processing_finishes_while_ingest_holds_the_device(seeded) -> None:
+    """El procesamiento del lote N no espera a la ingesta del lote N+1.
+
+    Antes, el segundo UPDATE de la fila de `ecg_batch` re-chequeaba su FK hacia
+    `device` y quedaba esperando el lock de la ingesta en vuelo.
+    """
+    world, device, _ = seeded
+    ack = await _ingest_with_own_session(world, device.id, build_frames(1500))
+    assert ack["batchId"] is not None
+
+    ingest_session = world.session()
+    await ingest_session.begin()
+    assert await repo.get_device_for_update(ingest_session, device.id) is not None
+    try:
+        async with world.session() as session:
+            await asyncio.wait_for(process_batch(session, ack["batchId"]), timeout=10.0)
+    finally:
+        await ingest_session.rollback()
+        await ingest_session.close()
+
+    async with world.session() as session:
+        batch = await session.get(ECGBatch, ack["batchId"])
+    assert batch is not None
+    assert batch.processing_status is ProcessingStatus.DONE
+
+
+def test_lock_contention_is_detected_through_the_sqlalchemy_wrapper() -> None:
+    """Con asyncpg, `exc.orig` es el adaptador de SQLAlchemy, no la clase de asyncpg."""
+    from sqlalchemy.exc import DBAPIError
+
+    from app.db.errors import is_lock_contention
+
+    class _Adapted(Exception):
+        def __init__(self, sqlstate: str) -> None:
+            super().__init__(sqlstate)
+            self.sqlstate = self.pgcode = sqlstate
+
+    assert is_lock_contention(DBAPIError("SELECT", {}, _Adapted("40P01")))
+    assert is_lock_contention(DBAPIError("SELECT", {}, _Adapted("55P03")))
+    assert not is_lock_contention(DBAPIError("SELECT", {}, _Adapted("57014")))
+
+
 async def test_ingest_revalidates_a_device_that_changed_after_authentication(seeded) -> None:
     world, stale_device, _ = seeded
     async with world.session() as updater:

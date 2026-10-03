@@ -24,12 +24,12 @@ from typing import Any
 
 import numpy as np
 import structlog
-from asyncpg.exceptions import LockNotAvailableError
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.s3 import get_object, list_keys, put_object
+from app.db.errors import is_lock_contention
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
@@ -1046,7 +1046,7 @@ async def _lock_study(db: AsyncSession, study_id: uuid.UUID) -> Study | None:
         try:
             return await repo.get_study_for_update(db, study_id)
         except DBAPIError as error:
-            if not isinstance(getattr(error, "orig", None), LockNotAvailableError):
+            if not is_lock_contention(error):
                 raise
             await db.rollback()
             if attempt == LOCK_ATTEMPTS:
@@ -1113,10 +1113,11 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
                 anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
             )
     except DBAPIError as error:
-        if not isinstance(getattr(error, "orig", None), LockNotAvailableError):
+        if not is_lock_contention(error):
             await _mark_failed(db, batch_id, failed_batch_id, error)
             return
-        # No se pudo tomar la fila ni después de los reintentos. El lote NO es
+        # No se pudo tomar la fila ni después de los reintentos, o Postgres
+        # cortó un deadlock eligiendo esta transacción. El lote NO es
         # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
         # pendiente para que lo drene la próxima pasada — marcarlo fallido sería
         # declarar rota una señal que está entera.

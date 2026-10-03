@@ -3,12 +3,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { Study, StudyClinicalReportDraft } from '../types'
+import type { Study, StudyClinicalReportDraft, StudyClinicalReportIssue } from '../types'
 
 const mocks = vi.hoisted(() => ({
   mutateAsync: vi.fn(),
   refetch: vi.fn(),
   updateError: null as unknown,
+  issues: [] as StudyClinicalReportIssue[],
 }))
 
 const draft: StudyClinicalReportDraft = {
@@ -41,9 +42,9 @@ vi.mock('../hooks/useStudyClinicalReport', () => ({
       },
       windows: [],
       canGenerateDraft: true,
-      canFinalize: true,
+      canFinalize: mocks.issues.every((issue) => issue.severity !== 'blocking'),
       blockingReasons: [],
-      issues: [],
+      issues: mocks.issues,
     },
     isLoading: false,
     isError: false,
@@ -76,6 +77,7 @@ import { StudyClinicalReportTab } from './StudyClinicalReportTab'
 describe('StudyClinicalReportTab', () => {
   beforeEach(() => {
     mocks.updateError = null
+    mocks.issues = []
     mocks.mutateAsync.mockReset().mockResolvedValue({ ...draft, revision: 5 })
     mocks.refetch.mockReset()
   })
@@ -84,7 +86,7 @@ describe('StudyClinicalReportTab', () => {
 
   it('guarda el borrador con la revisión que estaba editando', async () => {
     render(<StudyClinicalReportTab study={study} onPreview={vi.fn()} />)
-    fireEvent.change(screen.getByLabelText('Indicación del estudio *'), {
+    fireEvent.change(screen.getByLabelText('Indicación del estudio'), {
       target: { value: 'Síncope durante ejercicio' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }))
@@ -99,12 +101,43 @@ describe('StudyClinicalReportTab', () => {
   it('guarda cambios pendientes antes de abrir la previsualización', async () => {
     const onPreview = vi.fn()
     render(<StudyClinicalReportTab study={study} onPreview={onPreview} />)
-    fireEvent.change(screen.getByLabelText('Conclusión / interpretación final *'), {
+    fireEvent.change(screen.getByLabelText('Conclusión / interpretación final'), {
       target: { value: 'Nueva interpretación' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Previsualizar borrador' }))
 
     await waitFor(() => expect(mocks.mutateAsync).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(onPreview).toHaveBeenCalledTimes(1))
+  })
+
+  it('resume los requisitos pendientes y lista el checklist sin bloques de alerta', () => {
+    mocks.issues = [
+      {
+        code: 'MISSING_CONCLUSION',
+        message: 'Completá la conclusión clínica para generar una versión final.',
+        severity: 'blocking',
+      },
+      {
+        code: 'TIME_NOT_VERIFIED',
+        message: 'La hora de las muestras no está verificada.',
+        severity: 'blocking',
+      },
+      {
+        code: 'SIMULATED_STUDY',
+        message: 'La señal fue generada con un chaleco simulado.',
+        severity: 'warning',
+      },
+    ]
+    Element.prototype.scrollIntoView = vi.fn()
+    render(<StudyClinicalReportTab study={study} onPreview={vi.fn()} />)
+
+    expect(screen.getByText('Faltan 2 requisitos para emitir el informe final')).toBeTruthy()
+    expect(screen.getByText('4/6')).toBeTruthy()
+    expect(screen.getByText('La hora de las muestras no está verificada.')).toBeTruthy()
+    expect(screen.getByText('La señal fue generada con un chaleco simulado.')).toBeTruthy()
+    expect(screen.getAllByText('Requerido para finalizar')).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: /Conclusión clínica/ }))
+    expect(document.activeElement?.id).toBe('report-conclusion')
   })
 })

@@ -91,7 +91,8 @@ services:
       - "127.0.0.1:5173:5173"
     volumes:
       # Bind-mount source for HMR; keep the container's linux node_modules isolated
-      # from the host's (macOS) binaries via an anonymous volume.
+      # from the host's (macOS) binaries via an anonymous volume. The entrypoint
+      # reinstalls deps when package-lock.json changes, so the volume never goes stale.
       - ./front:/app
       - /app/node_modules
     environment:

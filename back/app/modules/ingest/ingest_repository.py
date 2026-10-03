@@ -20,11 +20,21 @@ async def get_device_by_serial(db: AsyncSession, serial: str) -> Device | None:
 
 
 async def get_device_for_update(db: AsyncSession, device_id: uuid.UUID) -> Device | None:
-    """Recarga y bloquea el equipo para serializar ingesta y reasignaciones."""
+    """Recarga y bloquea el equipo para serializar ingesta y reasignaciones.
+
+    `FOR NO KEY UPDATE` y no `FOR UPDATE`. Los dos se excluyen entre sí y con el
+    `FOR UPDATE` de assign/unassign/reassign, así que la serialización es la
+    misma. La diferencia es que `FOR UPDATE` también bloquea los `FOR KEY SHARE`
+    que Postgres toma al chequear una FK hacia `device`, y eso armaba un deadlock
+    con el procesamiento del lote anterior: el procesamiento tiene `study` y, al
+    actualizar dos veces su fila de `ecg_batch`, re-chequea `ecg_batch.device_id`
+    y espera el equipo; la ingesta tiene el equipo y espera `study`. La ingesta
+    no borra el equipo ni cambia su PK, así que no necesita ese modo.
+    """
     result = await db.execute(
         select(Device)
         .where(Device.id == device_id, Device.deleted_at.is_(None))
-        .with_for_update()
+        .with_for_update(key_share=True)
         .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()

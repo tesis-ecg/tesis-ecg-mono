@@ -7,7 +7,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
-from asyncpg.exceptions import LockNotAvailableError
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +19,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from app.core.config import settings as _settings
 from app.core.logging import setup_logging
 from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
+from app.db.errors import is_lock_contention
 from app.db.session import engine
 from app.modules.alerts import router as alerts_router
 from app.modules.auth import router as auth_router
@@ -250,15 +250,17 @@ async def database_contention_handler(request: Request, exc: DBAPIError) -> Resp
     así que reintentar el mismo lote es seguro — la ingesta es idempotente por
     `seq` y esa es justamente la propiedad que hace que no se pierda señal.
 
-    Solo `LockNotAvailableError` (SQLSTATE 55P03), que es lo que levanta el
-    `lock_timeout`. El `statement_timeout` levanta `QueryCanceledError` (57014) y
-    ese NO es contención: es una consulta que de verdad tardó 15 s. Taparlo con
+    Solo `lock_not_available` (SQLSTATE 55P03), que es lo que levanta el
+    `lock_timeout`, y `deadlock_detected` (40P01): en los dos Postgres ya abortó
+    la transacción sin escribir nada, así que reintentar es igual de seguro.
+    El `statement_timeout` levanta `QueryCanceledError` (57014) y ese NO es
+    contención: es una consulta que de verdad tardó 15 s. Taparlo con
     "reintentá en unos segundos" escondería una regresión del trabajo cuadrático
     que este cambio vino a sacar, y dejaría al equipo reintentando contra algo
     que no se va a arreglar solo. Ese cae al handler genérico y sale como 500,
     que es lo que hay que ver.
     """
-    if not isinstance(getattr(exc, "orig", None), LockNotAvailableError):
+    if not is_lock_contention(exc):
         return await unhandled_exception_handler(request, exc)
     await logger.awarning(
         "database_contention",
