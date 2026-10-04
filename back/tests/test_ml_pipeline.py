@@ -254,11 +254,12 @@ def test_un_lote_mas_corto_que_un_latido_no_rompe_nada() -> None:
 def test_una_pausa_real_se_detecta_y_avisa_al_paciente() -> None:
     signal = synth_ecg(duration_s=120.0)
     señal = signal.signal_mv.copy()
-    # Se borra un latido entero: el R-R pasa a valer el doble.
+    # Se borra un latido entero: el R-R pasa a valer el doble. Queda la línea
+    # de base con su ruido; constante sería un riel (`quiet_gap.rail_mask`).
     inicio = 60 * SAMPLE_RATE
-    señal[inicio : inicio + int(2.6 * SAMPLE_RATE)] = signal.signal_mv[:1].repeat(
-        int(2.6 * SAMPLE_RATE)
-    )
+    largo = int(2.6 * SAMPLE_RATE)
+    ruido = 0.008 * np.random.default_rng(5).standard_normal(largo)
+    señal[inicio : inicio + largo] = (signal.signal_mv[0] + ruido).astype(señal.dtype)
     flags = signal.flags.copy()
     flags[inicio : inicio + int(2.6 * SAMPLE_RATE)] = 0
 

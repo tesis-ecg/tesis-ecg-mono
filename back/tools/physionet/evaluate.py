@@ -4,6 +4,7 @@
     uv run --with wfdb python -m tools.physionet.evaluate
     uv run --with wfdb python -m tools.physionet.evaluate --pauses --jobs 8   # pausas
     uv run --with wfdb python -m tools.physionet.evaluate --pauses --wander 0.5
+    uv run --with wfdb python -m tools.physionet.evaluate --pauses --firmware-peaks DIR
 
 **Nunca se entrena con estas etiquetas.** El motor es no supervisado; las
 anotaciones solo se leen después, para medir. Por eso reportar sobre el mismo
@@ -386,7 +387,32 @@ def with_wander(signal_mv: np.ndarray, amplitude_mv: float) -> np.ndarray:
     return out.astype(np.float32)
 
 
-def pause_profile(name: str, base: str = "mitdb", wander_mv: float = 0.0) -> dict[str, float | str]:
+def firmware_flags(name: str, n_samples: int, firmware_dir: Path | None) -> np.ndarray:
+    """`FLAG_R_PEAK` del detector del MCU para un registro, o todo en cero.
+
+    `firmware_dir/<registro>.npy` son las muestras (a 500 Hz) donde el firmware
+    confirma cada R —la marca que el equipo pone en el lote, ~250 ms después del
+    pico—, exportadas con el arnés del repo hermano (`EcgValidationHarness.h`,
+    `EcgDetector` compilado en nativo, entrada en µV). Sin el archivo, los flags
+    van en cero: la mitad del árbol de decisión de `quiet_gap` (cotas
+    confirmadas, veto del firmware, ventanas `marginal`) no se ejercita.
+    """
+    from app.ml.decompression import FLAG_R_PEAK
+
+    flags = np.zeros(n_samples, dtype=np.uint8)
+    if firmware_dir is None:
+        return flags
+    path = firmware_dir / f"{name}.npy"
+    if not path.exists():
+        raise FileNotFoundError(f"sin detecciones del firmware: {path}")
+    marks = np.load(path).astype(np.int64)
+    flags[marks[(marks >= 0) & (marks < n_samples)]] |= FLAG_R_PEAK
+    return flags
+
+
+def pause_profile(
+    name: str, base: str = "mitdb", wander_mv: float = 0.0, firmware_dir: Path | None = None
+) -> dict[str, float | str]:
     """Las pausas del motor contra los R-R anotados de un registro.
 
     - `cubiertas`: R-R anotados de más de `ml_pause_seconds` que alguna pausa
@@ -402,7 +428,7 @@ def pause_profile(name: str, base: str = "mitdb", wander_mv: float = 0.0) -> dic
     signal_mv = with_wander(record.signal_mv, wander_mv)
     result = pipeline.analyze_batch(
         signal_mv,
-        np.zeros(signal_mv.size, dtype=np.uint8),
+        firmware_flags(name, signal_mv.size, firmware_dir),
         start_sample_index=0,
         bank=pipeline.empty_bank(config),
         config=config,
@@ -439,31 +465,39 @@ def pause_profile(name: str, base: str = "mitdb", wander_mv: float = 0.0) -> dic
     }
 
 
-def _pause_job(job: tuple[str, str, float]) -> dict[str, float | str]:
-    name, base, wander_mv = job
+def _pause_job(job: tuple[str, str, float, Path | None]) -> dict[str, float | str]:
+    name, base, wander_mv, firmware_dir = job
     try:
-        return pause_profile(name, base, wander_mv)
+        return pause_profile(name, base, wander_mv, firmware_dir)
     except Exception as error:  # noqa: BLE001 — un registro faltante no corta el resto
         return {"registro": name, "error": str(error)}
 
 
-def run_pauses(names: list[str], jobs: int, wander_mv: float = 0.0) -> None:
+def run_pauses(
+    names: list[str], jobs: int, wander_mv: float = 0.0, firmware_dir: Path | None = None
+) -> None:
     """Tabla de pausas por registro: `mitdb` entero (o `--records`) y `nstdb`.
 
     En `nstdb` no hay R-R anotados de más de 2,5 s: toda pausa ahí es una que el
     ruido inventó. `wander_mv` le suma a `mitdb` la deriva de `with_wander`
     (`nstdb` ya trae la suya): con 0,5 mV, el 114 y el 228 daban pausas CRITICAL
-    falsas con la referencia en el percentil 90 de los latidos.
+    falsas con la referencia en el percentil 90 de los latidos. `firmware_dir`
+    agrega los `FLAG_R_PEAK` del detector del MCU (`firmware_flags`): en
+    producción el equipo siempre los manda.
     """
-    work = [(name, "mitdb", wander_mv) for name in names]
+    work: list[tuple[str, str, float, Path | None]] = [
+        (name, "mitdb", wander_mv, firmware_dir) for name in names
+    ]
     if (DATA_DIR / "nstdb").exists():
-        work += sorted((path.stem, "nstdb", 0.0) for path in (DATA_DIR / "nstdb").glob("*.hea"))
+        work += sorted(
+            (path.stem, "nstdb", 0.0, firmware_dir) for path in (DATA_DIR / "nstdb").glob("*.hea")
+        )
     columns = ["anotadas", "cubiertas", "pausas", "hueco_quieto", "falsas"]
     print(f"{'registro':<10}" + "".join(f"{column:>14}" for column in columns))
     print("-" * (10 + 14 * len(columns)))
     totals = {base: dict.fromkeys(columns, 0.0) for base in ("mitdb", "nstdb")}
     with ProcessPoolExecutor(max_workers=max(jobs, 1)) as pool:
-        for (name, base, _), row in zip(work, pool.map(_pause_job, work), strict=True):
+        for (name, base, _, _), row in zip(work, pool.map(_pause_job, work), strict=True):
             if "error" in row:
                 print(f"{name:<10} no se pudo leer: {row['error']}")
                 continue
@@ -546,6 +580,12 @@ def main() -> int:
         default=0.0,
         help="--pauses: deriva respiratoria de estos mV en minutos alternados de mitdb",
     )
+    parser.add_argument(
+        "--firmware-peaks",
+        type=Path,
+        default=None,
+        help="--pauses: carpeta con <registro>.npy, las confirmaciones del detector del MCU",
+    )
     args = parser.parse_args()
 
     if args.download:
@@ -570,7 +610,7 @@ def main() -> int:
     if args.pauses:
         print("▸ Pausas del motor contra los R-R anotados\n")
         every = sorted(path.stem for path in (DATA_DIR / "mitdb").glob("*.hea"))
-        run_pauses(args.records or every, args.jobs, args.wander)
+        run_pauses(args.records or every, args.jobs, args.wander, args.firmware_peaks)
         return 0
 
     names = args.records or [*HIGH_BURDEN, *LOW_BURDEN]

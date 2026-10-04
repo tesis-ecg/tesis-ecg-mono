@@ -66,8 +66,11 @@ QUALITY_EXCLUSION_REASONS = frozenset({"psqi", "ksqi", "bassqi"})
 #: 45 µV como mínimo, y 33 µV en su segundo más quieto.
 #:
 #: Lo que no cubre: un riel de menos de ~20 s puede no llenar ninguna ventana
-#: de la grilla de 10 s y no dejar fila `flatline`. Ahí el motor tampoco lo ve
-#: como riel, así que los dos siguen alineados: los dos ven una pausa.
+#: de la grilla de 10 s y no dejar fila `flatline`. El motor sí lo ve
+#: (`quiet_gap.rail_mask`, a la resolución de un segundo) y no infiere ni avisa
+#: una pausa a través de él, pero el riel no queda persistido como un tramo:
+#: el informe lo sigue listando como pausa y el médico lo ve en su tira.
+#: Alinearlos es persistir esos tramos y pasarlos desde `studies_service`.
 #:
 #: Se aplica con el resto del veredicto del motor, solo si evaluó toda la señal
 #: (`studies_service._metric_noise`): sin él las métricas son las del algoritmo

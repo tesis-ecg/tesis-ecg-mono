@@ -24,15 +24,27 @@ la señal limpia) de los latidos del paciente a ±`REFERENCE_SPAN_S`: los R de
 NeuroKit en ventanas `good`, más los que el firmware confirmó en ventanas
 `marginal`/bSQI —en un bloqueo AV completo NeuroKit marca cada P y el bSQI deja
 todas las ventanas `marginal`, pero los QRS que los dos detectores vieron son
-latidos—. Se toma la **población dominante**: la mediana, sin los que miden
-menos de `REFERENCE_FLOOR` de ella (P tomadas por R). Con el percentil 90 de
-antes, un 10 % de extrasístoles grandes se volvía "el latido del paciente" y
-los normales quedaban como hueco quieto. Con eso, un R:
+latidos— o `bad` solo por basSQI (la deriva respiratoria; todo se mide sobre la
+señal limpia, que ya no la tiene). Se toma la **población dominante**: la
+mediana, sin los que miden menos de `REFERENCE_FLOOR` de ella (P tomadas por R).
+Con el percentil 90 de antes, un 10 % de extrasístoles grandes se volvía "el
+latido del paciente" y los normales quedaban como hueco quieto. Y tiene que ser
+**el ritmo del paciente**: al menos `CENSUS_MIN` de los R de NeuroKit que miden
+`CENSUS_FLOOR` o más de ella (si el firmware confirma solo las extrasístoles, la
+referencia eran las V), y, con el firmware arbitrando, al menos
+`MIN_REFERENCE_BEATS` confirmados (en una asistolia de dos minutos la referencia
+local de un R falso eran otros R falsos). Con eso, un R:
 
-- **acota** una pausa si mide entre `BOUND_MIN` y `BOUND_MAX` de la referencia,
-  o si el firmware también lo vio (`tolerance_samples`) y mide al menos
-  `GOOD_BEAT_MIN`, sin tope: un escape ventricular chico o enorme que cierra la
-  asistolia es un latido aunque no se parezca a los sinusales;
+- **acota** una pausa si mide entre `BOUND_MIN` y `BOUND_MAX` de la referencia;
+  si el firmware también lo vio (`tolerance_samples`) y mide al menos
+  `GOOD_BEAT_MIN`, sin tope; o si abre o cierra un **tren de escape**
+  (`_train`: `TRAIN_BEATS` R parejos a 50 lpm o menos que sobresalen de lo que
+  hay entre ellos), que el detector del MCU no ve si es ancho y chico. Una cota
+  por debajo de `BOUND_MIN` tiene que ser un escape y no un latido del
+  paciente atenuado: no tener su forma (`ATTENUATED_SHAPE`) y sobresalir de lo
+  quieto que cierra (`QUIET_MAX_UNDER_WEAK_BOUND`). Es el colapso de amplitud
+  que se recupera, que el firmware confirma con el umbral ya bajo (MIT-BIH 116
+  y 208 con sus flags reales);
 - **corta** el hueco si lo acota, o si es de una ventana `good` donde el
   firmware no arbitró (bloque sin flags) y mide al menos `GOOD_BEAT_MIN`. Donde
   el firmware sí arbitró, un R de NeuroKit que no es creíble ni confirmado no
@@ -46,13 +58,15 @@ dos minutos es el hueco mismo—, cuando:
 
 - **El interior está quieto.** `[R1 + 0,5 s, R2 − 0,3 s]` no tiene nada por
   encima de `QUIET_MAX` veces la referencia (máximo pico a pico local de
-  120 ms). Hasta `MAX_EVENTS` transitorios cortos (`EVENT_MAX_S`) que
+  120 ms), ni por encima de `QUIET_BAND_MAX` en la banda del QRS. Las P del
+  paciente no cuentan aunque lo pasen (`P_WAVE_MARGIN`: un bloqueo AV con P
+  grandes). Hasta `MAX_EVENTS` transitorios cortos (`EVENT_MAX_S`) que
   sobresalen de lo quieto (`EVENT_CONTRAST`) —un escape que ninguno de los dos
   detectores vio, un pop de electrodo— no anulan el hueco: si tienen la
-  pendiente de un latido (`EVENT_BEAT_QRS`) lo parten y se informa cada tramo
-  quieto de más de `pause_seconds`; si son una onda lenta —la T tardía de un
-  QT largo— quedan adentro del tramo, fuera de lo que se mide. Que en esos
-  tramos no hubo latidos es cierto sea lo que sea el transitorio.
+  pendiente de un latido (`EVENT_BEAT_QRS`) y no caen en la T del R que abre
+  (`T_ZONE_S`) lo parten y se informa cada tramo quieto de más de
+  `pause_seconds`; si no, quedan adentro del tramo, fuera de lo que se mide.
+  Que en esos tramos no hubo latidos es cierto sea lo que sea el transitorio.
 - **El contacto no cambió.** La red (lo que `deinterfere` le quitó a la
   señal) y la deriva lenta del interior no superan `MAINS_MAX` y `DRIFT_MAX`
   veces las de las ventanas `good`/`marginal` vecinas. Es lo que separa una
@@ -60,20 +74,36 @@ dos minutos es el hueco mismo—, cuando:
   (43,2-47,3 s) hay 4 s quietos sin R del firmware, con la red 19,6 veces y la
   deriva 7,4 veces más altas que alrededor.
 - **El firmware no vio latidos ahí**, si el bloque trae sus `FLAG_R_PEAK`.
-- **No falta señal.** Ninguna muestra `LEAD_OFF`, `ADC_SATURATED` o no finita,
-  ninguna ventana `lead_off`/`saturated`/`firmware_sqi` y ningún empalme
-  (`frame_gap`, `internal_gap`, pérdidas) entre los dos R, ni una ventana
-  `flatline` en el interior. Eso es señal que no existe, no latidos que no
-  existieron. El borde de una corrida de la línea de tiempo no hace falta
-  mirarlo: un bloque nunca la cruza (`processing._pending_blocks`).
+- **No falta señal** (`_Block.missing`). Ninguna muestra `LEAD_OFF`,
+  `ADC_SATURATED` o no finita, ninguna ventana `lead_off`/`saturated` y ningún
+  empalme (`frame_gap`, `internal_gap`, pérdidas) entre los dos R, ni una
+  muestra que el firmware marcó `SQ_BAD` (en una ventana `firmware_sqi`), un
+  **riel** (`rail_mask`: un segundo de señal cruda casi constante, aunque no
+  llene una ventana) ni una ventana `flatline` en el interior. Eso es señal
+  que no existe, no latidos que no existieron. El borde de una corrida de la
+  línea de tiempo no hace falta mirarlo: un bloque nunca la cruza
+  (`processing._pending_blocks`).
 
-**Tramo quieto abierto a la izquierda.** Con el cursor de 300 s, 60 de contexto
-y 30 de contexto derecho, una asistolia de más de 90 s puede no tener nunca
-sus dos R en la lectura de un mismo bloque. El bloque que ve el R que la
-cierra, si su lectura **empieza con contexto** —la misma corrida sigue hacia
-atrás—, el R cae después de lo que leyó el bloque anterior y desde el principio
-hasta ese R no hay ningún latido, informa la pausa desde el principio de su
-lectura (`openStart`): dura por lo menos eso.
+**Tramos abiertos.** Donde falta uno de los dos R, lo que se sabe es que hasta
+ahí, o desde ahí, no hubo latidos, y la pausa se informa por lo menos así:
+
+- `openStart`: con el cursor de 300 s, 60 de contexto y 30 de contexto
+  derecho, una asistolia de más de 90 s puede no tener nunca sus dos R en la
+  lectura de un mismo bloque. El que lee el que la cierra, si su lectura
+  empieza con contexto y el R es de su parte nueva, la informa desde el
+  principio de su lectura.
+- `openEnd`: un tramo que llega quieto hasta el final de la lectura, desde
+  `OPEN_END_MIN_S`. Es la asistolia en curso o la que sigue hasta el final de
+  la corrida: el primer bloque que la ve avisa ya, y el que lee el R que la
+  cierra la completa.
+- Los bordes de una ráfaga de ruido (`_Block.stretches`): un hueco con un
+  artefacto de segundos no se puede afirmar entero, pero lo quieto entre el R y
+  la ráfaga sí, desde `NOISE_EDGE_MIN_S`. A los 8-10 s de asistolia el paciente
+  se desmaya, cae o convulsiona, y el artefacto anulaba la pausa entera.
+
+Lo que dos bloques informan de una misma asistolia se solapa, y la persistencia
+lo empalma en un evento con un solo aviso (`episodes.open_edges` resuelve qué
+lado quedó abierto).
 
 La misma medida depura las pausas que el motor ya daba con un R-R válido
 (`refine_pauses`): si el interior tiene algo del tamaño de un latido
@@ -83,20 +113,38 @@ MIT-BIH eran 46 pausas falsas —41 en el 207— que avisaban al paciente; las 7
 verdaderas quedan (interior ≤ 0,16 contra 1,14-2,37 de las falsas; en banda
 QRS ≤ 0,10 contra 0,80-1,38). La banda es lo que deja pasar la pausa
 post-extrasistólica: la T tardía y grande de la extrasístole que la abre cae
-en el interior con 0,7 del QRS de amplitud, pero es lenta.
+en el interior con 0,7 del QRS de amplitud, pero es lenta. Y si el R-R cruza un
+riel, mide el riel y no el corazón: también se descarta.
 
-**Lo que no resuelve.** Un colapso de amplitud a 0,2× o menos sin cambio de
-contacto y sin que el firmware vea esos latidos, o una caída de señal del AFE,
-no se distinguen de una asistolia con ningún rasgo medido: por amplitud, por
-pendiente y por forma, un QRS a 0,2× es una P de un bloqueo AV (en MIT-BIH,
-la correlación con la plantilla da 0,76 para unos y 0,77 para otras). Entre
-avisar una asistolia real y no inventar una sobre latidos colapsados que nadie
-vio, la regla elige lo primero. Una asistolia que sigue hasta el final de la
-corrida no tiene R que la cierre: esta regla no informa tramos quietos
-abiertos a la derecha. Sin flags del firmware, una P de ventana `good` de más
-de `GOOD_BEAT_MIN` sigue cortando el hueco (no hay segundo detector que la
-descarte). Y con un QRS tan chico que el firmware no confirma casi ninguno,
-todas las ventanas quedan `marginal` sin latidos de referencia.
+**Lo que no resuelve.**
+
+- Un colapso de amplitud a 0,2× o menos sin cambio de contacto, sin que el
+  firmware vea esos latidos y con cotas creíbles, o una caída de señal del
+  AFE, no se distinguen de una asistolia con ningún rasgo medido: por
+  amplitud, por pendiente y por forma, un QRS a 0,2× es una P de un bloqueo AV
+  (en MIT-BIH, la correlación con la plantilla da 0,76 para unos y 0,77 para
+  otras). Entre avisar una asistolia real y no inventar una sobre latidos
+  colapsados que nadie vio, la regla elige lo primero. Un tramo abierto no
+  tiene la cota que delata la recuperación de un colapso: por eso se les pide
+  más duración.
+- QRS normales de 0,2× o menos de las extrasístoles, si el firmware confirma
+  solo estas: miden como una P y el censo los deja afuera; los intervalos V-V
+  pueden salir como pausas (sintético: normales de 0,17-0,22 mV contra V de
+  1,5 mV). Y una extrasístole de 0,2× o menos que nadie confirma, con su pausa
+  compensadora, deja una pausa N-N con ella adentro.
+- Una P del paciente de más de `P_REFERENCE_MAX` del QRS no se cree (es ruido
+  alineado con los R); con P grandes, un latido ancho de su tamaño que nadie
+  confirmó se toma por P.
+- Una línea de base de σ ≤ 6 µV llena ventanas `flatline` (menos de 20 µV
+  entre percentiles) y no se infiere nada: el gate la llama riel. Los pisos
+  reales miden ≥ 32,8 µV (MIT-BIH) y ≥ 79,8 µV (chaleco).
+- Con el firmware, un artefacto puede tener una detección en su arranque que
+  cae en el interior, y el `SQ_BAD` sigue unos segundos después de la ráfaga:
+  de un síncope convulsivo a veces sale solo un lado, o nada.
+- Sin flags del firmware, una P de ventana `good` de más de `GOOD_BEAT_MIN`
+  sigue cortando el hueco (no hay segundo detector que la descarte). Y con un
+  QRS tan chico que el firmware no confirma casi ninguno, todas las ventanas
+  quedan `marginal` sin latidos de referencia.
 
 Todo es puro, como el resto de `app/ml`: numpy adentro, `Finding` afuera, con
 coordenadas relativas al lote.
@@ -105,9 +153,10 @@ coordenadas relativas al lote.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from scipy.signal import butter, sosfiltfilt
 
@@ -123,6 +172,7 @@ from app.ml.contracts import (
     QualityWindow,
     Signal,
 )
+from app.ml.decompression import FLAG_SQI_MASK, FLAG_SQI_SHIFT, SQ_BAD
 from app.ml.quality import invalid_samples, remove_mains
 
 #: Medio ancho de la ventana donde se mide la amplitud de un latido: ±60 ms
@@ -143,6 +193,37 @@ MIN_REFERENCE_BEATS = 5
 #: una V; los N del medio quedaban por debajo de `QUIET_MAX` y dos V acotaban
 #: una pausa CRITICAL falsa de 12,7 s con diez latidos adentro.
 REFERENCE_FLOOR = 0.4
+#: Los latidos de referencia tienen que ser el ritmo del paciente: al menos
+#: `CENSUS_MIN` de los R de NeuroKit de las ventanas `good`/`marginal` que miden
+#: `CENSUS_FLOOR` o más de la referencia. Si el firmware confirma solo las
+#: extrasístoles —QRS normales por debajo de su umbral—, los latidos de
+#: referencia son las V, los normales miden ~0,28 de ellas (menos que
+#: `QUIET_MAX`) y cada intervalo V-V salía como una pausa CRITICAL con decenas de
+#: latidos adentro: MIT-BIH 114 con 0,8 de ganancia (las V eran el 13-18 % de
+#: los R de NeuroKit alrededor) y 228 con 0,6. El piso deja afuera las P que
+#: NeuroKit marca en un bloqueo AV completo (~0,1 del escape).
+CENSUS_FLOOR = 0.2
+CENSUS_MIN = 0.5
+#: Un escape ventricular chico (0,4-0,45 del sinusal, ancho) no lo confirma el
+#: detector del MCU —medido con el detector de producción emulado: 0 de 52— y
+#: mide menos que `BOUND_MIN`: la asistolia que cierra no se informaba. Un R de
+#: NeuroKit acota igual si abre (o cierra) un tren de escape: `TRAIN_BEATS` R
+#: seguidos a `TRAIN_MIN_RR_S` o más —un ritmo de escape va a 20-45 lpm; las P de
+#: un bloqueo AV, al ritmo auricular, 60-100— con R-R y amplitudes que no varían
+#: más que `TRAIN_SPREAD`, y que mide al menos `TRAIN_MIN` de la referencia. Una
+#: recuperación de amplitud (0,28 → 0,5 → 0,75) no es un tren.
+TRAIN_BEATS = 3
+TRAIN_MIN_RR_S = 1.2
+TRAIN_SPREAD = 1.3
+TRAIN_MIN = 0.25
+#: Una cota chica (confirmada o de un tren) con la forma de los latidos del
+#: paciente —correlación de ±100 ms con su mediana— es uno de ellos atenuado, no
+#: un escape: el colapso de amplitud que se recupera. Medido: las cotas de los
+#: colapsos de MIT-BIH 116 y 208 dan 0,92-0,98, y las de 23 colapsos emulados
+#: sobre el chaleco, 0,995-1,0; los escapes anchos sintéticos, 0,79, y en MIT-BIH
+#: la mediana de las V contra los normales va de -0,34 a 0,90 según el registro.
+ATTENUATED_SHAPE = 0.9
+SHAPE_HALF_WIDTH_MS = 100
 #: Un R acota la pausa si mide entre estas veces la referencia. 0,6 y no 0,5:
 #: los verdaderos de MIT-BIH dan 0,63 o más, y la única pausa falsa de la
 #: regla en los 48 registros (208, a los 1383,9 s, una caída de señal de 4,8 s)
@@ -164,6 +245,16 @@ INTERIOR_POST_S = 0.3
 #: ≤ 0,22 en MIT-BIH 232; el piso TP de las ventanas buenas del chaleco da p95
 #: 0,26. Ruido: ≥ 0,40 en el chaleco, ≥ 0,91 en NSTDB.
 QUIET_MAX = 0.30
+#: Y quieto también en la banda del QRS (`QRS_BAND_HZ`), contra la de los
+#: latidos de referencia. Con una referencia de latidos anchos (extrasístoles
+#: que el firmware confirma solas) un QRS angosto que nadie confirmó mide poco
+#: de banda ancha y mucho de pendiente: en el sintético de 114, 0,29 y 0,52.
+QUIET_BAND_MAX = 0.30
+#: Una cota por debajo de `BOUND_MIN` tiene que sobresalir de lo quieto que
+#: cierra como cualquier latido sobresale del hueco: lo quieto, menos que esto
+#: de **ella**. Un escape de 0,4× sobre 25 µV de ruido da 0,08; los colapsos de
+#: MIT-BIH 116 y 208 con los flags reales, 0,37-0,65.
+QUIET_MAX_UNDER_WEAK_BOUND = QUIET_MAX
 #: Transitorios que parten el hueco en vez de anularlo. Más, o más largos, ya
 #: es un tramo ruidoso: ahí no se puede afirmar nada. Dos tramos fuertes a menos
 #: de `EVENT_MERGE_S` son el mismo evento (el QRS y la T de un escape).
@@ -183,6 +274,33 @@ EVENT_CONTRAST = 0.5
 #: no le roban medio segundo a la pausa que abre su latido. Los escapes anchos
 #: de 0,3-1× dan 0,24-0,82, y un pop de 1 mV, 0,30.
 EVENT_BEAT_QRS = 0.15
+#: Una P del interior (más corta que `EVENT_MAX_S`) que pasa `QUIET_MAX` no es
+#: un transitorio: no cuenta para `MAX_EVENTS` ni para lo quieto, siempre que
+#: mida menos que esto. En el chaleco y en MIT-BIH las P de un bloqueo AV miden
+#: hasta 0,39 del QRS: con `QUIET_MAX` las de 0,30 o más dejaban el hueco
+#: "ruidoso" y un paro ventricular con P (Stokes-Adams) no se informaba. Una
+#: onda del tamaño de un latido (`ENGINE_VETO`) ya no es una P.
+SLOW_WAVE_MAX = 0.6
+#: Qué es una P. Tiene la pendiente de un QRS chico —en banda QRS una P de
+#: 0,25-0,40 del QRS mide 0,17-0,28 de la referencia, más que `EVENT_BEAT_QRS`—
+#: y por forma no se separa de un latido ancho: en MIT-BIH los escapes `E` son
+#: tan redondeados como las P anotadas de QTDB, y una extrasístole ancha de MIT-BIH
+#: 228 con deriva, tomada por onda lenta, dejaba una pausa falsa. Lo que la
+#: separa es que es la P **del paciente**: la misma que precede a cada latido
+#: conducido. Un tramo fuerte no más grande que `P_WAVE_MARGIN` veces esa P es
+#: una P. Una deflexión tres veces más grande que la P del paciente no lo es,
+#: aunque mida 0,35 del QRS.
+P_WAVE_MARGIN = 1.3
+#: Dónde se mide la P de cada latido de referencia: de 320 a 80 ms antes del R
+#: (un PR de hasta ~240 ms y el ancho de la P), sin pasar `P_WINDOW_RR` del R-R
+#: anterior.
+P_WINDOW_S = (0.32, 0.08)
+P_WINDOW_RR = 0.45
+#: La P más grande que se le cree a un paciente, contra su QRS: 0,39 en el
+#: chaleco y MIT-BIH. Más es ruido, no una P, y la regla de la P no se aplica.
+P_REFERENCE_MAX = 0.4
+#: La zona de la T del R que abre un hueco: un transitorio ahí no acota.
+T_ZONE_S = 0.65
 #: Red y deriva del interior contra las ventanas de referencia vecinas.
 #: Verdaderos ≤ 1,26 y ≤ 1,70 en MIT-BIH; la pérdida de contacto de
 #: `aviso_ll_ra`, 19,6 y 7,4.
@@ -206,11 +324,35 @@ ENGINE_VETO_QRS = 0.4
 #: Lo que se descarta del principio de una lectura antes de mirar un tramo
 #: abierto: el arranque de los filtros de `clean_signal` y de `deinterfere`.
 OPEN_SETTLE_S = 1.0
+#: Un tramo que llega quieto hasta el final de la lectura se informa desde este
+#: largo: sin R que lo cierre no se puede mirar la cota (un colapso de
+#: amplitud que se recupera cierra con un latido atenuado), así que se le pide
+#: más. Es la asistolia en curso: el bloque que la ve primero avisa ya, y el que
+#: lea el R que la cierra la completa (la persistencia empalma las dos).
+OPEN_END_MIN_S = 10.0
+#: Lo quieto entre un R y una ráfaga de ruido (`_Block.stretches`) se informa
+#: desde la duración de una pausa crítica.
+NOISE_EDGE_MIN_S = PAUSE_CRITICAL_SECONDS
+#: Riel: un segundo de señal **cruda** (red incluida) con menos de
+#: `RAIL_FRACTION` × `ml_flatline_uv` entre sus percentiles 5 y 95. Es la
+#: `flatline` del gate a la resolución de un segundo: un riel sin `LEAD_OFF`
+#: (ADC congelado, entrada en corto, un escalón de continua) que no llena una
+#: ventana entera de la grilla no dejaba ninguna fila `flatline`, y la regla
+#: —o el motor, con el R-R válido que lo cruza— lo avisaba como una asistolia
+#: CRITICAL. Medido: un riel con 0-3 µV de ruido da como mucho 10,8 µV en su
+#: segundo más ruidoso (la entrada en corto del ADS1292R, ~1,3 µV de σ, da
+#: ~4 µV); la asistolia sintética más limpia de los tests (σ 8 µV) da 23,3 µV
+#: como mínimo en 600 segundos; las de MIT-BIH, 32,8 µV en su segundo más
+#: quieto, y el piso TP del chaleco, 79,8 µV. Con el umbral entero (20 µV) un
+#: segundo de σ 6 µV ya caería la mitad de las veces.
+RAIL_SECONDS = 1.0
+RAIL_HOP_SECONDS = 0.25
+RAIL_FRACTION = 0.6
 
 _GOOD = SignalQualityLevel.GOOD
 _MARGINAL = SignalQualityLevel.MARGINAL
 #: Motivos de ventana que son el hardware diciendo que no hay señal.
-_HARDWARE_REASONS = frozenset({"lead_off", "saturated", "firmware_sqi"})
+_HARDWARE_REASONS = frozenset({"lead_off", "saturated"})
 #: Motivos de las ventanas `bad` que salen como `noise_burst` (`pipeline`).
 _NOISE_REASONS = frozenset({"psqi", "ksqi", "bassqi", "no_beats"})
 
@@ -239,10 +381,23 @@ class GapEvidence:
     #: Contexto izquierdo del bloque. Mayor que cero, la lectura empieza en medio
     #: de su corrida y un tramo quieto puede venir de antes (`openStart`).
     context_samples: int = 0
-    #: Contexto derecho del bloque. El anterior leyó hasta `context_samples +
-    #: lookahead_samples` de este: un tramo abierto que cierra antes, ese bloque
-    #: ya lo vio entero desde su R.
+    #: Contexto derecho del bloque.
     lookahead_samples: int = 0
+    #: El umbral de `flatline` del gate (`QualityThresholds.flatline_mv`), en mV.
+    flatline_mv: float = 0.020
+
+
+@dataclass(frozen=True, slots=True)
+class _Reference:
+    """Contra qué se mide un hueco: los latidos del paciente que lo rodean."""
+
+    #: Pico a pico (±`BEAT_HALF_WIDTH_MS`) de los latidos: cotas e interior.
+    amplitude: float
+    #: El mismo, en `QRS_BAND_HZ`: si algo del interior tiene la pendiente de un QRS.
+    band: float
+    #: El pico a pico de su P (`P_WINDOW_S` antes de cada R): hasta dónde algo
+    #: del interior puede ser una P.
+    p_wave: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +410,19 @@ class _Stretch:
     parts: tuple[tuple[int, int], ...]
     #: Transitorios que tenía el hueco del que sale el tramo.
     events: int = 0
+    #: Lado sin R: el tramo empieza al final de una ráfaga de ruido, o termina
+    #: donde empieza una o donde termina la lectura. La pausa duró por lo menos
+    #: eso (`openStart` / `openEnd`).
+    open_start: bool = False
+    open_end: bool = False
+
+
+def _drifting(window: QualityWindow) -> bool:
+    """Una ventana `bad` solo por basSQI: la deriva lenta. Para la regla se lee
+    como un ECG, porque todo se mide sobre la señal limpia, que ya no la tiene
+    (`clean_signal` corta en 0,5 Hz). Con una respiración de 0,3 mV a 15-18 rpm
+    todas las ventanas salían así y una asistolia no tenía referencia."""
+    return window.level is SignalQualityLevel.BAD and window.reason == "bassqi"
 
 
 def _samples(milliseconds: float, sample_rate: int) -> int:
@@ -286,6 +454,29 @@ def _runs(mask: Mask) -> list[tuple[int, int]]:
     )
 
 
+def rail_mask(signal: Signal, sample_rate: int, threshold_mv: float) -> Mask:
+    """Las muestras de un riel: segundos de señal cruda casi constante.
+
+    Cada segundo (con paso de `RAIL_HOP_SECONDS`) cuyo rango entre los
+    percentiles 5 y 95 queda por debajo de `threshold_mv` se marca entero. Los
+    segundos con muestras no finitas no se miran: ya son hardware
+    (`invalid_samples`).
+    """
+    n = int(signal.size)
+    mask = np.zeros(n, dtype=bool)
+    width = max(int(RAIL_SECONDS * sample_rate), 2)
+    if n < width or threshold_mv <= 0:
+        return mask
+    hop = max(int(RAIL_HOP_SECONDS * sample_rate), 1)
+    starts = np.unique(np.append(np.arange(0, n - width + 1, hop), n - width))
+    windows = sliding_window_view(np.asarray(signal, dtype=np.float64), width)[starts]
+    finite = np.isfinite(windows).all(axis=1)
+    low, high = np.percentile(np.where(np.isfinite(windows), windows, 0.0), [5.0, 95.0], axis=1)
+    for start in starts[finite & (high - low < threshold_mv)].tolist():
+        mask[start : start + width] = True
+    return mask
+
+
 def _near(peaks: np.ndarray, others: np.ndarray, tolerance: int) -> Mask:
     """Por cada pico, si alguno de `others` cae a `tolerance` muestras o menos."""
     if peaks.size == 0 or others.size == 0:
@@ -314,6 +505,8 @@ class _Block:
 
         windows = evidence.report.windows
         marginal = self._window_mask(windows, lambda window: window.level is _MARGINAL)
+        readable = self._window_mask(windows, lambda window: window.level in (_GOOD, _MARGINAL))
+        drifting = self._window_mask(windows, _drifting)
         arbitrated = self._window_mask(windows, lambda window: window.bsqi is not None)
         if self.peaks.size:
             index = np.clip(self.peaks, 0, self.n - 1)
@@ -321,33 +514,63 @@ class _Block:
             self.good_beat = evidence.analyzable[index]
             self.arbitrated = arbitrated[index]
             self.confirmed = _near(self.peaks, self.firmware, evidence.tolerance_samples)
+            self.train = _train(self.peaks, self.amplitude, self.cleaned, rate, self.envelope)
             # Los latidos del paciente: los `good`, y los de ventanas `marginal`
-            # que los dos detectores vieron.
+            # —o `bad` solo por la deriva (`_drifting`)— que los dos
+            # detectores vieron.
             self.reference_beat = self.good_beat | (
-                marginal[index] & evidence.splice_free[index] & self.confirmed
+                (marginal[index] | drifting[index]) & evidence.splice_free[index] & self.confirmed
             )
+            #: Los R de NeuroKit de las ventanas que se leen como un ECG: el
+            #: censo contra el que se mide si los latidos de referencia son el
+            #: ritmo del paciente (`reference_beats`).
+            self.readable_beat = (readable[index] | drifting[index]) & evidence.splice_free[index]
         else:
             self.amplitude = np.empty(0, dtype=np.float64)
             self.good_beat = np.empty(0, dtype=bool)
             self.arbitrated = np.empty(0, dtype=bool)
             self.confirmed = np.empty(0, dtype=bool)
+            self.train = np.empty(0, dtype=bool)
             self.reference_beat = np.empty(0, dtype=bool)
+            self.readable_beat = np.empty(0, dtype=bool)
 
         self.hardware = _cumulative(invalid_samples(evidence.signal, evidence.flags))
         self.hardware_windows = _cumulative(
             self._window_mask(windows, lambda window: window.reason in _HARDWARE_REASONS)
         )
+        self.firmware_windows = _cumulative(
+            self._window_mask(windows, lambda window: window.reason == "firmware_sqi")
+        )
+        #: El SQI del firmware muestra a muestra: lo que miran los tramos al
+        #: borde de una ráfaga de ruido. Una ventana `firmware_sqi` es la que
+        #: tiene la mitad de sus muestras `SQ_BAD`, y la de una asistolia que
+        #: termina en una convulsión lo es por el artefacto, no por los segundos
+        #: quietos de antes.
+        sqi = (np.asarray(evidence.flags) & FLAG_SQI_MASK) >> FLAG_SQI_SHIFT
+        self.firmware_bad = _cumulative(sqi == SQ_BAD)
         self.flatline_windows = _cumulative(
             self._window_mask(windows, lambda window: window.reason == "flatline")
         )
         self.splices = _cumulative(~evidence.splice_free)
+        self.rails = _cumulative(
+            rail_mask(evidence.signal, rate, RAIL_FRACTION * evidence.flatline_mv)
+        )
         #: Las ventanas contra las que se mide el contacto: las que se leen como
         #: un ECG, `good` o `marginal` (pasaron pSQI, kSQI y basSQI).
         self.reference_windows = [
             (window.start_sample, window.start_sample + window.length_samples)
             for window in windows
-            if window.level in (_GOOD, _MARGINAL)
+            if window.level in (_GOOD, _MARGINAL) or _drifting(window)
         ]
+        #: Cuáles de ellas son `bad` solo por la deriva: entran si no hay otras.
+        self.reference_drifting = np.array(
+            [
+                _drifting(window)
+                for window in windows
+                if window.level in (_GOOD, _MARGINAL) or _drifting(window)
+            ],
+            dtype=bool,
+        )
         self.reference_centers = np.array(
             [(start + end) // 2 for start, end in self.reference_windows], dtype=np.int64
         )
@@ -376,19 +599,37 @@ class _Block:
         """Índices de los latidos de referencia de `spans` (`[desde, hasta]`), o None.
 
         La población dominante: sin los que miden menos de `REFERENCE_FLOOR`
-        de la mediana. Sin `MIN_REFERENCE_BEATS` no hay referencia.
+        de la mediana. Sin `MIN_REFERENCE_BEATS` no hay referencia, y tampoco
+        si no son el ritmo del paciente: menos de `CENSUS_MIN` de los R de
+        NeuroKit de las ventanas legibles que miden al menos `CENSUS_FLOOR` de
+        ella.
         """
         chosen: list[np.ndarray] = []
+        census: list[np.ndarray] = []
         for low, high in spans:
             first = int(np.searchsorted(self.peaks, low, side="left"))
             last = int(np.searchsorted(self.peaks, high, side="right"))
             chosen.append(np.arange(first, last)[self.reference_beat[first:last]])
+            census.append(np.arange(first, last)[self.readable_beat[first:last]])
         index = np.unique(np.concatenate(chosen)) if chosen else np.empty(0, dtype=np.int64)
         if index.size < MIN_REFERENCE_BEATS:
             return None
         values = self.amplitude[index]
         index = index[values >= REFERENCE_FLOOR * float(np.median(values))]
         if index.size < MIN_REFERENCE_BEATS:
+            return None
+        # Con el firmware arbitrando, los latidos son los que también vio él:
+        # en una asistolia de dos minutos la referencia local de un R falso de
+        # NeuroKit eran otros R falsos (0,03 mV) y dos latidos, y el falso
+        # medía 0,93 de "eso" y partía la asistolia.
+        if (
+            self.firmware.size
+            and int(np.count_nonzero(self.confirmed[index])) < MIN_REFERENCE_BEATS
+        ):
+            return None
+        pool = np.unique(np.concatenate(census))
+        pool = pool[self.amplitude[pool] >= CENSUS_FLOOR * float(np.median(self.amplitude[index]))]
+        if pool.size and float(np.mean(self.reference_beat[pool])) < CENSUS_MIN:
             return None
         return index
 
@@ -400,13 +641,8 @@ class _Block:
         median = float(np.median(self.amplitude[index]))
         return median if median > 0 else None
 
-    def gap_reference(self, first: int, second: int) -> tuple[float, float] | None:
-        """`(amplitud, banda QRS)` de referencia de un hueco, o None.
-
-        La de amplitud, contra la que se miden las cotas y el interior; la de
-        banda, el pico a pico en `QRS_BAND_HZ` de los mismos latidos, contra la
-        que se mide si algo del interior tiene la pendiente de un QRS.
-        """
+    def gap_reference(self, first: int, second: int) -> _Reference | None:
+        """La referencia de un hueco (`_Reference`), o None si no hay latidos."""
         index = self.reference_beats(self.gap_spans(first, second))
         if index is None:
             return None
@@ -415,7 +651,32 @@ class _Block:
             return None
         _, band_amplitude = self._qrs_band()
         band = float(np.median(band_amplitude[np.clip(self.peaks[index], 0, self.n - 1)]))
-        return amplitude, band
+        return _Reference(amplitude, band, self._p_wave(index))
+
+    def _p_wave(self, index: np.ndarray) -> float:
+        """Pico a pico de la P en el promedio de los latidos de `index`.
+
+        La mediana, muestra a muestra, de `P_WINDOW_S` antes de cada R: el ruido
+        no está sincronizado con el R y se cancela; la P sí. Solo los latidos
+        cuyo R-R anterior deja la ventana libre de la T de antes. Con menos de
+        `MIN_REFERENCE_BEATS` no hay P, y una de más de `P_REFERENCE_MAX` no es
+        una P sino ruido alineado con los R (NSTDB a -6 dB da hasta 0,73): cero.
+        """
+        rate = self.evidence.sample_rate
+        earliest, latest = (int(value * rate) for value in P_WINDOW_S)
+        peaks = self.peaks[index]
+        previous = np.where(index > 0, self.peaks[np.maximum(index - 1, 0)], -self.n)
+        keep = (peaks - previous >= earliest / P_WINDOW_RR) & (peaks - earliest >= 0)
+        if int(np.count_nonzero(keep)) < MIN_REFERENCE_BEATS:
+            return 0.0
+        windows = np.stack(
+            [self.cleaned[peak - earliest : peak - latest] for peak in peaks[keep].tolist()]
+        )
+        average = np.median(windows, axis=0)
+        p_wave = float(average.max() - average.min())
+        return (
+            p_wave if p_wave <= P_REFERENCE_MAX * float(np.median(self.amplitude[index])) else 0.0
+        )
 
     def gap_spans(self, first: int, second: int) -> tuple[tuple[int, int], ...]:
         """Lo que rodea un hueco: `REFERENCE_SPAN_S` antes de su primer R y
@@ -425,8 +686,54 @@ class _Block:
     def bounds(self, index: int, reference: float) -> bool:
         """Si el R `index` puede cerrar un hueco medido contra `reference`."""
         ratio = float(self.amplitude[index]) / reference
-        return BOUND_MIN <= ratio <= BOUND_MAX or (
-            bool(self.confirmed[index]) and ratio >= GOOD_BEAT_MIN
+        return (
+            BOUND_MIN <= ratio <= BOUND_MAX
+            or (bool(self.confirmed[index]) and ratio >= GOOD_BEAT_MIN)
+            or (bool(self.train[index]) and TRAIN_MIN <= ratio <= BOUND_MAX)
+        )
+
+    def likeness(self, peak: int, first: int, second: int) -> float:
+        """Correlación de la forma del latido de `peak` (±`SHAPE_HALF_WIDTH_MS`,
+        sin media) con la mediana de los latidos de referencia del hueco."""
+        index = self.reference_beats(self.gap_spans(first, second))
+        half = _samples(SHAPE_HALF_WIDTH_MS, self.evidence.sample_rate)
+        if index is None or peak - half < 0 or peak + half + 1 > self.n:
+            return 0.0
+        beats = [
+            self.cleaned[int(center) - half : int(center) + half + 1]
+            for center in self.peaks[index].tolist()
+            if half <= int(center) < self.n - half - 1
+        ]
+        if not beats:
+            return 0.0
+        template = np.median(np.stack(beats), axis=0)
+        template = template - template.mean()
+        beat = self.cleaned[peak - half : peak + half + 1]
+        beat = beat - beat.mean()
+        scale = float(np.linalg.norm(template) * np.linalg.norm(beat))
+        return float(np.dot(template, beat)) / scale if scale > 0 else 0.0
+
+    def missing(self, first: int, second: int, start: int, end: int, *, edge: bool = False) -> bool:
+        """Si falta señal entre `first` y `second` (interior `[start, end)`): nunca
+        se infiere una pausa a través de ella. Una muestra `LEAD_OFF`,
+        `ADC_SATURATED` o no finita, una ventana `lead_off`/`saturated`, una
+        muestra `SQ_BAD` del firmware en el interior —de una ventana
+        `firmware_sqi`, salvo en el tramo al borde de una ráfaga (`edge`): la
+        ventana la marca el artefacto—, un empalme, un riel o una ventana
+        `flatline` en el interior; y un R del firmware en el interior es un
+        latido que vio."""
+        firmware = self.firmware
+        return (
+            self.marked(self.hardware, first, second + 1)
+            or self.marked(self.hardware_windows, first, second + 1)
+            or (
+                self.marked(self.firmware_bad, start, end)
+                and (edge or self.marked(self.firmware_windows, first, second + 1))
+            )
+            or self.marked(self.splices, first, second + 1)
+            or self.marked(self.rails, first, second + 1)
+            or self.marked(self.flatline_windows, start, end)
+            or bool(firmware.size and ((firmware >= start) & (firmware < end)).any())
         )
 
     def interior(self, first: int, second: int) -> tuple[int, int]:
@@ -454,7 +761,7 @@ class _Block:
         references = self.gap_reference(first, second)
         if references is None:
             return False
-        reference, band_reference = references
+        reference, band_reference = references.amplitude, references.band
         if float(np.max(_envelope(self.cleaned[start:end], self.envelope))) < (
             ENGINE_VETO * reference
         ):
@@ -466,69 +773,124 @@ class _Block:
         return loudest >= ENGINE_VETO_QRS * band_reference
 
     def stretches(
-        self, first: int, second: int, start: int, end: int, references: tuple[float, float]
-    ) -> list[_Stretch] | None:
-        """Los tramos quietos de un hueco, partido en sus transitorios; None si no lo está.
+        self, first: int, second: int, start: int, end: int, references: _Reference
+    ) -> tuple[list[_Stretch] | None, list[_Stretch]]:
+        """Los tramos quietos de un hueco, partido en sus transitorios (None si no
+        lo está), y los de sus bordes cuando lo anula una ráfaga de ruido.
 
-        `[start, end)` es el interior y `references`, las de `gap_reference`.
-        Lo que pasa `QUIET_MAX` es un transitorio; los que distan menos de
-        `EVENT_MERGE_S` son uno. Más de `MAX_EVENTS`, uno de más de
-        `EVENT_MAX_S` o uno que no sobresale de lo quieto (`EVENT_CONTRAST`) es
-        un tramo ruidoso. Los que son latidos (`EVENT_BEAT_QRS`) acotan; el
-        resto queda adentro del tramo, fuera de lo que se mide.
+        `[start, end)` es el interior y `references`, la de `gap_reference`.
+        Lo que pasa `QUIET_MAX` es un tramo fuerte. Si es corto, más chico que
+        `SLOW_WAVE_MAX` y no más grande que la P del paciente (`P_WAVE_MARGIN`),
+        es una P —la de un bloqueo AV— y no cuenta: queda adentro del tramo,
+        fuera de lo que se mide. El resto son
+        transitorios, y los que distan menos de `EVENT_MERGE_S` son uno. Más de
+        `MAX_EVENTS`, uno de más de `EVENT_MAX_S` o uno que no sobresale de lo
+        quieto (`EVENT_CONTRAST`) es un tramo ruidoso. Los que son latidos
+        (`EVENT_BEAT_QRS`) acotan; el resto queda adentro del tramo.
+
+        Un hueco ruidoso no se puede afirmar entero, pero si el primero de sus
+        transitorios es una ráfaga (más de `EVENT_MAX_S`), lo quieto entre el R
+        que abre y la ráfaga sí: es un tramo abierto a la derecha. Igual del
+        otro lado. Es la asistolia larga: a los 8-10 s el paciente se desmaya,
+        cae o convulsiona, y el artefacto anulaba la pausa entera.
         """
         rate = self.evidence.sample_rate
-        reference, band_reference = references
+        reference, band_reference = references.amplitude, references.band
+        p_wave = P_WAVE_MARGIN * references.p_wave
         envelope = _envelope(self.cleaned[start:end], self.envelope)
-        loud = envelope >= QUIET_MAX * reference
+        band = self._qrs_band()[0][start:end]
+        band_envelope = _envelope(band, self.envelope)
+        # Quieto también en la banda del QRS: con una referencia de latidos
+        # anchos (extrasístoles, escapes) un QRS angosto que nadie confirmó
+        # mide poco de banda ancha y mucho de pendiente.
+        loud = (envelope >= QUIET_MAX * reference) | (
+            band_envelope >= QUIET_BAND_MAX * band_reference
+        )
         if not loud.any():
-            return [_Stretch(first, second, ((start, end),))]
+            return [_Stretch(first, second, ((start, end),))], []
+        beat_band = EVENT_BEAT_QRS * band_reference
+        slow: list[tuple[int, int]] = []
         events: list[tuple[int, int]] = []
         for low, high in _runs(loud):
-            if events and low - events[-1][1] < int(EVENT_MERGE_S * rate):
+            size = float(np.max(envelope[low:high]))
+            if (
+                high - low <= int(EVENT_MAX_S * rate)
+                and size < SLOW_WAVE_MAX * reference
+                and (size <= p_wave)
+            ):
+                slow.append((low, high))
+            elif events and low - events[-1][1] < int(EVENT_MERGE_S * rate):
                 events[-1] = (events[-1][0], high)
             else:
                 events.append((low, high))
-        if len(events) > MAX_EVENTS or any(
-            high - low > int(EVENT_MAX_S * rate) for low, high in events
-        ):
-            return None
-        # Lo quieto entre transitorio y transitorio, con los márgenes de un latido.
+        # Lo quieto: sin las ondas lentas y sin los transitorios, con los
+        # márgenes de un latido alrededor de estos.
         before, after = int(INTERIOR_POST_S * rate), int(INTERIOR_PRE_S * rate)
-        edges = [start, *(start + low - before for low, _ in events)]
-        resumes = [start + high + after for _, high in events]
-        parts = list(zip([start, *resumes], [*edges[1:], end], strict=True))
+        measured = np.ones(end - start, dtype=bool)
+        for low, high in slow:
+            measured[low:high] = False
+        for low, high in events:
+            measured[max(low - before, 0) : high + after] = False
+        longest = int(EVENT_MAX_S * rate)
+        if len(events) > MAX_EVENTS or any(high - low > longest for low, high in events):
+            return None, self._edges(first, second, start, events, measured, longest)
         quiet = max(
-            (
-                float(np.max(_envelope(self.cleaned[low:high], self.envelope)))
-                for low, high in parts
-                if high > low
-            ),
-            default=0.0,
+            (float(np.max(envelope[low:high])) for low, high in _runs(measured)), default=0.0
         )
-        if quiet >= EVENT_CONTRAST * min(float(np.max(envelope[a:b])) for a, b in events):
-            return None
+        if events and quiet >= EVENT_CONTRAST * min(
+            float(np.max(envelope[low:high])) for low, high in events
+        ):
+            return None, self._edges(first, second, start, events, measured, longest)
         # Cada latido se ubica donde es más empinado: en la banda del QRS la
         # deriva lenta no cuenta, y lo que domina es su componente más rápida.
-        band = self._qrs_band()[0][start:end]
-        band_envelope = _envelope(band, self.envelope)
+        # Lo que cae en la zona de la T del R que abre (`T_ZONE_S`) no acota:
+        # una T tardía y angosta de un QT largo tiene la pendiente de un latido
+        # y le robaba medio segundo a la pausa —3,5 s CRITICAL salían 2,98 HIGH—,
+        # y un latido ahí sería un R que NeuroKit o el firmware ya vieron.
         anchors = [first]
-        groups: list[list[tuple[int, int]]] = [[]]
-        for part, (low, high) in zip(parts, events, strict=False):
-            groups[-1].append(part)
-            if float(np.max(band_envelope[low:high])) >= EVENT_BEAT_QRS * band_reference:
-                anchors.append(start + low + int(np.argmax(np.abs(band[low:high]))))
-                groups.append([])
-        groups[-1].append(parts[-1])
+        for low, high in events:
+            anchor = start + low + int(np.argmax(np.abs(band[low:high])))
+            if (
+                float(np.max(band_envelope[low:high])) >= beat_band
+                and anchor - first > T_ZONE_S * rate
+            ):
+                anchors.append(anchor)
         anchors.append(second)
         stretches: list[_Stretch] = []
-        for index, group in enumerate(groups):
-            kept = tuple((low, high) for low, high in group if high > low)
+        for left, right in zip(anchors[:-1], anchors[1:], strict=True):
+            low, high = max(left - start, 0), min(right - start, end - start)
+            kept = tuple((start + low + a, start + low + b) for a, b in _runs(measured[low:high]))
             if kept:
-                stretches.append(
-                    _Stretch(anchors[index], anchors[index + 1], kept, events=len(events))
-                )
-        return stretches
+                stretches.append(_Stretch(left, right, kept, events=len(events)))
+        return stretches, []
+
+    @staticmethod
+    def _edges(
+        first: int,
+        second: int,
+        start: int,
+        events: list[tuple[int, int]],
+        measured: Mask,
+        longest: int,
+    ) -> list[_Stretch]:
+        """Los tramos quietos entre las cotas de un hueco ruidoso y sus ráfagas.
+
+        Solo si el transitorio más cercano a la cota es una ráfaga: un
+        transitorio corto puede ser un latido atenuado (MIT-BIH 116 y 208), y lo
+        quieto antes de él, latidos más atenuados todavía.
+        """
+        edges: list[_Stretch] = []
+        low, high = events[0]
+        if high - low > longest:
+            kept = tuple((start + a, start + b) for a, b in _runs(measured[:low]))
+            if kept:
+                edges.append(_Stretch(first, start + low, kept, open_end=True))
+        low, high = events[-1]
+        if high - low > longest:
+            kept = tuple((start + high + a, start + high + b) for a, b in _runs(measured[high:]))
+            if kept:
+                edges.append(_Stretch(start + high, second, kept, open_start=True))
+        return edges
 
     def _contact_features(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Red y deriva por muestra, y su valor en cada ventana de referencia. Una vez por bloque.
@@ -571,8 +933,9 @@ class _Block:
         """`(red, deriva)` de referencia del hueco, o None.
 
         Las medianas de las ventanas de referencia con el centro a
-        `REFERENCE_SPAN_S` o menos antes de su primer R o después del segundo.
-        Sin ninguna no hay contra qué comparar y la regla no informa.
+        `REFERENCE_SPAN_S` o menos antes de su primer R o después del segundo;
+        las que son `bad` solo por la deriva, si no hay otras. Sin ninguna no
+        hay contra qué comparar y la regla no informa.
         """
         if not self.reference_windows:
             return None
@@ -580,6 +943,8 @@ class _Block:
         near = ((centers >= first - self.span) & (centers <= first)) | (
             (centers >= second) & (centers <= second + self.span)
         )
+        if (near & ~self.reference_drifting).any():
+            near &= ~self.reference_drifting
         if not near.any():
             return None
         _, _, window_mains, window_drift = self._contact_features()
@@ -626,82 +991,176 @@ def _classify(block: _Block) -> tuple[Mask, Mask]:
     credible = known & (filled >= BOUND_MIN) & (filled <= BOUND_MAX)
     # Sin referencia no se puede decir que es chico: cuenta.
     big_enough = ~known | (filled >= GOOD_BEAT_MIN)
-    bound = credible | (block.confirmed & big_enough)
+    train = block.train & (~known | ((filled >= TRAIN_MIN) & (filled <= BOUND_MAX)))
+    bound = credible | (block.confirmed & big_enough) | train
     cut = bound | (block.good_beat & ~block.arbitrated & big_enough)
     return bound, cut
+
+
+def _train(
+    peaks: np.ndarray, amplitude: np.ndarray, cleaned: np.ndarray, sample_rate: int, size: int
+) -> Mask:
+    """Si cada R de NeuroKit abre o cierra un tren de escape: `TRAIN_BEATS` R
+    seguidos (él y los siguientes, o él y los anteriores) a `TRAIN_MIN_RR_S` o
+    más, con R-R y amplitudes parejos (`TRAIN_SPREAD`), y que sobresalen de lo
+    que hay entre ellos (`QUIET_MAX` contra el más chico): los R que NeuroKit
+    pone sobre el ruido de una asistolia larga también pueden caer parejos,
+    pero miden lo mismo que lo que los rodea."""
+    train = np.zeros(peaks.size, dtype=bool)
+    steps = TRAIN_BEATS - 1
+    if peaks.size < TRAIN_BEATS:
+        return train
+    rr = np.diff(peaks).astype(np.float64)
+    shape = np.lib.stride_tricks.sliding_window_view(rr, steps)
+    sizes = np.lib.stride_tricks.sliding_window_view(amplitude.astype(np.float64), TRAIN_BEATS)
+    smallest = sizes.min(axis=1)
+    regular = (
+        (shape.min(axis=1) >= TRAIN_MIN_RR_S * sample_rate)
+        & (shape.max(axis=1) <= TRAIN_SPREAD * shape.min(axis=1))
+        & (smallest > 0)
+        & (sizes.max(axis=1) <= TRAIN_SPREAD * np.where(smallest > 0, smallest, 1.0))
+    )
+    before, after = int(INTERIOR_PRE_S * sample_rate), int(INTERIOR_POST_S * sample_rate)
+    for start in np.flatnonzero(regular).tolist():
+        loudest = 0.0
+        for position in range(start, start + steps):
+            low, high = int(peaks[position]) + before, int(peaks[position + 1]) - after
+            if high > low:
+                loudest = max(loudest, float(np.max(_envelope(cleaned[low:high], size))))
+        if loudest <= QUIET_MAX * float(smallest[start]):
+            train[start] = True
+            train[start + steps] = True
+    return train
 
 
 def _quiet_gap_pauses(block: _Block, *, pause_seconds: float) -> list[Finding]:
     """Las pausas por hueco quieto del bloque, en coordenadas relativas al lote."""
     evidence = block.evidence
-    rate = evidence.sample_rate
     peaks = block.peaks
     if peaks.size == 0:
         return []
     bound, cut = _classify(block)
-    minimum = pause_seconds * rate
     cuts = np.flatnonzero(cut).tolist()
 
-    # Los pares de R consecutivos que cortan y, si la lectura empieza en medio
-    # de su corrida, el tramo abierto hasta el primero (`None` = sin R que abra).
-    candidates: list[tuple[int | None, int]] = list(zip(cuts[:-1], cuts[1:], strict=True))
-    if (
-        evidence.context_samples > 0
-        and cuts
-        and int(peaks[cuts[0]]) >= evidence.context_samples + evidence.lookahead_samples
-    ):
+    # Los pares de R consecutivos que cortan; si la lectura empieza en medio de
+    # su corrida, el tramo abierto hasta el primero (`None` = sin R que abra)
+    # cuando ese R es de la parte nueva o del contexto derecho, y el que va del
+    # último hasta el final de la lectura (`None` = sin R que cierre). Un R del
+    # contexto izquierdo es de la parte nueva del bloque anterior, que lo acotó
+    # con su contexto derecho. Uno posterior lo pudo haber leído también el
+    # bloque anterior —sobre el final de su lectura, donde no siempre lo puede
+    # acotar: su referencia local es el hueco y el `FLAG_R_PEAK` cae 250 ms
+    # después, fuera—; si lo informó, la persistencia empalma los dos.
+    candidates: list[tuple[int | None, int | None]] = list(zip(cuts[:-1], cuts[1:], strict=True))
+    if evidence.context_samples > 0 and cuts and int(peaks[cuts[0]]) >= evidence.context_samples:
         candidates.insert(0, (None, cuts[0]))
+    if cuts:
+        candidates.append((cuts[-1], None))
 
     found: list[Finding] = []
     for index_first, index_second in candidates:
-        if not bound[index_second] or (index_first is not None and not bound[index_first]):
-            continue
-        second = int(peaks[index_second])
-        first = 0 if index_first is None else int(peaks[index_first])
-        if second - first <= minimum:
-            continue
-        start, end = block.interior(first, second)
-        if index_first is None:
-            start = int(OPEN_SETTLE_S * rate)
-        if end <= start:
-            continue
-        # Señal que falta: nunca se infiere una pausa a través de ella.
-        if (
-            block.marked(block.hardware, first, second + 1)
-            or block.marked(block.hardware_windows, first, second + 1)
-            or block.marked(block.splices, first, second + 1)
-            or block.marked(block.flatline_windows, start, end)
-        ):
-            continue
-        firmware = block.firmware
-        if firmware.size and bool(((firmware >= start) & (firmware < end)).any()):
-            continue
-        # Todo contra la referencia del hueco: las cotas, el interior y el contacto.
-        references = block.gap_reference(first, second)
-        if references is None:
-            continue
-        reference = references[0]
-        if not block.bounds(index_second, reference) or (
-            index_first is not None and not block.bounds(index_first, reference)
-        ):
-            continue
-        stretches = block.stretches(first, second, start, end, references)
-        contact_reference = block.contact_reference(first, second)
-        if stretches is None or contact_reference is None:
-            continue
-        for stretch in stretches:
-            if stretch.second - stretch.first <= minimum:
-                continue
-            pause = _stretch_pause(
-                block,
-                stretch,
-                reference,
-                contact_reference,
-                opened=index_first is None and stretch.first == first,
-            )
-            if pause is not None:
-                found.append(pause)
+        found.extend(_candidate_pauses(block, index_first, index_second, bound, pause_seconds))
     return found
+
+
+def _candidate_pauses(
+    block: _Block,
+    index_first: int | None,
+    index_second: int | None,
+    bound: Mask,
+    pause_seconds: float,
+) -> list[Finding]:
+    """Las pausas de un hueco entre dos R que cortan (o un R y un borde de la lectura)."""
+    rate = block.evidence.sample_rate
+    peaks = block.peaks
+    minimum = pause_seconds * rate
+    settle = int(OPEN_SETTLE_S * rate)
+    if any(index is not None and not bound[index] for index in (index_first, index_second)):
+        return []
+    first = 0 if index_first is None else int(peaks[index_first])
+    second = block.n - settle if index_second is None else int(peaks[index_second])
+    if second - first <= minimum:
+        return []
+    start, end = block.interior(first, second)
+    if index_first is None:
+        start = settle
+    if index_second is None:
+        end = second
+    if end <= start:
+        return []
+    # Todo contra la referencia del hueco: las cotas, el interior y el contacto.
+    references = block.gap_reference(first, second)
+    contact_reference = block.contact_reference(first, second)
+    if references is None or contact_reference is None:
+        return []
+    reference = references.amplitude
+    sides = [index for index in (index_first, index_second) if index is not None]
+    if not all(block.bounds(index, reference) for index in sides):
+        return []
+    # Una cota por debajo de `BOUND_MIN` (la confirmó el firmware, o abre un
+    # tren de escape) es un escape, no un latido del paciente atenuado: no tiene
+    # su forma (`ATTENUATED_SHAPE`) y sobresale de lo quieto que cierra
+    # (`_stretch_pause`).
+    small = {
+        int(peaks[index]): float(block.amplitude[index])
+        for index in sides
+        if float(block.amplitude[index]) < BOUND_MIN * reference
+    }
+    if any(block.likeness(peak, first, second) >= ATTENUATED_SHAPE for peak in small):
+        return []
+    stretches, edges = block.stretches(first, second, start, end, references)
+    if index_first is None:
+        # Sin R que abra, lo que arranca en el principio de la lectura es un borde.
+        stretches = [
+            replace(stretch, open_start=True) if stretch.first == first else stretch
+            for stretch in stretches or []
+        ] or None
+        edges = [edge for edge in edges if edge.first != first]
+    if index_second is None:
+        # Sin R que cierre, lo que llega al final de la lectura es un borde.
+        stretches = [
+            replace(stretch, open_end=True) if stretch.second == second else stretch
+            for stretch in stretches or []
+        ] or None
+        edges = [edge for edge in edges if edge.second != second]
+    found: list[Finding] = []
+    # Un hueco quieto entero, con la señal que falta mirada en todo él.
+    if stretches and not block.missing(first, second, start, end):
+        for stretch in stretches:
+            if stretch.open_end and stretch.second - stretch.first < OPEN_END_MIN_S * rate:
+                continue
+            found.extend(_reported(block, stretch, minimum, reference, contact_reference, small))
+    # Los bordes de un hueco ruidoso, con la señal que falta mirada solo en ellos.
+    for edge in edges:
+        low, high = edge.parts[0][0], edge.parts[-1][1]
+        if edge.second - edge.first < max(minimum, NOISE_EDGE_MIN_S * rate):
+            continue
+        if not block.missing(edge.first, edge.second, low, high, edge=True):
+            found.extend(_reported(block, edge, minimum, reference, contact_reference, small))
+    return found
+
+
+def _reported(
+    block: _Block,
+    stretch: _Stretch,
+    minimum: float,
+    reference: float,
+    contact_reference: tuple[float, float],
+    small: dict[int, float],
+) -> list[Finding]:
+    if stretch.second - stretch.first <= minimum:
+        return []
+    pause = _stretch_pause(
+        block,
+        stretch,
+        reference,
+        contact_reference,
+        weakest=min(
+            (small[edge] for edge in (stretch.first, stretch.second) if edge in small),
+            default=None,
+        ),
+    )
+    return [] if pause is None else [pause]
 
 
 def _stretch_pause(
@@ -710,29 +1169,38 @@ def _stretch_pause(
     reference: float,
     contact_reference: tuple[float, float],
     *,
-    opened: bool,
+    weakest: float | None = None,
 ) -> Finding | None:
-    """La pausa de un tramo quieto, o None si el contacto cambió en él."""
+    """La pausa de un tramo quieto, o None si el contacto cambió en él o si su
+    cota más chica (`weakest`, una por debajo de `BOUND_MIN`) no sobresale de
+    lo quieto (`QUIET_MAX` contra ella)."""
+    quiet = max(
+        float(np.max(_envelope(block.cleaned[low:high], block.envelope)))
+        for low, high in stretch.parts
+    )
+    if weakest is not None and quiet > QUIET_MAX_UNDER_WEAK_BOUND * weakest:
+        return None
     mains_reference, drift_reference = contact_reference
     mains, drift = block.contact(stretch.parts)
     if mains > MAINS_MAX * mains_reference + MAINS_SLACK_MV:
         return None
     if drift > DRIFT_MAX * drift_reference + DRIFT_SLACK_MV_S:
         return None
-    quiet = max(
-        float(np.max(_envelope(block.cleaned[low:high], block.envelope)))
-        for low, high in stretch.parts
-    )
     metadata: dict[str, float | int | str] = {
         "quietGap": True,
         "interiorRatio": round(quiet / reference, 3),
-        "lastBeatRatio": round(_anchor_amplitude(block, stretch.second) / reference, 3),
     }
-    if opened:
-        # No hay R que abra: lo que se sabe es que desde ahí no hubo latidos.
+    # Un lado sin R —el principio o el final de la lectura, una ráfaga de
+    # ruido— no tiene cota que medir: lo que se sabe es que hasta ahí, o desde
+    # ahí, no hubo latidos.
+    if stretch.open_start:
         metadata["openStart"] = True
     else:
         metadata["firstBeatRatio"] = round(_anchor_amplitude(block, stretch.first) / reference, 3)
+    if stretch.open_end:
+        metadata["openEnd"] = True
+    else:
+        metadata["lastBeatRatio"] = round(_anchor_amplitude(block, stretch.second) / reference, 3)
     if stretch.events:
         metadata["interiorEvents"] = stretch.events
     if mains_reference > 0:
@@ -782,7 +1250,9 @@ def refine_pauses(
             continue
         if any(_within(finding, item) and not _within(item, finding) for item in quiet):
             continue
-        if block.beat_inside(finding.start_sample, finding.start_sample + finding.length_samples):
+        first, second = finding.start_sample, finding.start_sample + finding.length_samples
+        # Un R-R válido que cruza un riel no mide el corazón: mide lo que duró el riel.
+        if block.marked(block.rails, first, second + 1) or block.beat_inside(first, second):
             continue
         engine.append(finding)
     kept = [finding for finding in findings if finding.kind != "pause"]

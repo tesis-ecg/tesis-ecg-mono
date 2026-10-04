@@ -130,6 +130,9 @@ class PipelineResult:
     model_version: str
     totals: dict[str, float] = field(default_factory=dict)
     intervals: IntervalMeasurement | None = None
+    #: Plantillas cuyo encabezado de foco hay que dar de baja: pasaron a ser la
+    #: dominante, el latido del paciente (`morphology.hand_over_dominance`).
+    retracted_headers: tuple[int, ...] = ()
 
 
 def build_config(
@@ -319,6 +322,7 @@ def analyze_batch(
             tolerance_samples=config.quality.bsqi_tolerance_samples,
             context_samples=context,
             lookahead_samples=n_samples - end,
+            flatline_mv=config.quality.flatline_mv,
         ),
         pause_seconds=config.rhythm.pause_seconds,
     )
@@ -404,6 +408,7 @@ def analyze_batch(
         updated_bank = bank
         assignment = morphology.score_only(bank, beats, match_threshold=config.match_threshold)
 
+    retracted: tuple[int, ...] = ()
     if beats.n_beats:
         beat_prematurity = prematurity(rr)
         # Los latidos del contexto también se puntúan —contra el banco, sin
@@ -444,12 +449,16 @@ def analyze_batch(
             # cuántos puntuaron, por plantilla: es lo que separa un foco de una
             # variante de la forma normal (`morphology.is_recurrent`). Con la
             # misma regla del pliegue: un tramo ya plegado no vuelve a sumar.
-            updated_bank = _mark_reported(
+            updated_bank, retracted = morphology.hand_over_dominance(
+                bank,
                 morphology.count_anomalous(
                     updated_bank, assignment.cluster_ids, positive[previous.n_beats :]
                 ),
-                config,
+                sample_rate=sample_rate,
+                match_threshold=config.match_threshold,
+                anomaly_score_min=config.anomaly_score_min,
             )
+            updated_bank = _mark_reported(updated_bank, config)
         # Solo los grupos con al menos un latido nuevo: los que quedan enteros
         # en el contexto ya los informó el bloque anterior. Uno que arranca en
         # el contexto conserva su inicio ahí, y la persistencia lo empalma con
@@ -533,6 +542,7 @@ def analyze_batch(
         model_version=PIPELINE_VERSION,
         totals=totals,
         intervals=measurement,
+        retracted_headers=retracted,
     )
 
 

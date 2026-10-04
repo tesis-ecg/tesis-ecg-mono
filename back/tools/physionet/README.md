@@ -68,7 +68,7 @@ Dos consecuencias concretas que el script ya aplica:
   (`firmware_peaks_available` en falso) y no degrada el registro por una ausencia
   que no dice nada sobre la señal.
 
-## Pausas del motor (`--pauses`, `--wander`)
+## Pausas del motor (`--pauses`, `--wander`, `--firmware-peaks`)
 
 Mide las pausas que informa el motor contra los R-R anotados de MIT-BIH, y que el
 ruido de NSTDB no invente ninguna. Es la evaluación de la regla de hueco quieto
@@ -79,6 +79,7 @@ gate las rechaza y, sin esa regla, el motor no informaba pausa ni aviso al pacie
 cd back
 uv run python -m tools.physionet.evaluate --pauses --jobs 8                # mitdb entero + nstdb
 uv run python -m tools.physionet.evaluate --pauses --jobs 8 --wander 0.5   # + deriva respiratoria de 0,5 mV
+uv run python -m tools.physionet.evaluate --pauses --jobs 8 --firmware-peaks DIR  # + los R del MCU
 ```
 
 Evalúa los registros que haya en `data/mitdb` (o los de `--records`) y todos los de
@@ -98,6 +99,18 @@ con `--jobs 8`. Por registro y en el total (`Σ mitdb`, `Σ nstdb`):
 En `nstdb` no hay R-R anotados de esa duración, así que toda pausa ahí es una que el
 ruido inventó. Hoy: `mitdb` da 85 anotadas, 78 cubiertas, 80 pausas (10 por hueco
 quieto) y 0 falsas; `nstdb`, 0 pausas.
+
+Sin más, los flags van en cero: en producción el equipo **siempre** manda
+`FLAG_R_PEAK`, y con flags en cero la mitad del árbol de decisión de la regla
+—cotas confirmadas, veto del firmware, ventanas `marginal`, el censo de la
+referencia— no se ejercita. `--firmware-peaks DIR` lee `DIR/<registro>.npy`: las
+muestras (a 500 Hz) donde el detector del MCU confirma cada R, ~250 ms después del
+pico, que es donde el equipo pone la marca. Se exportan con el arnés del repo hermano
+(`EcgValidationHarness.h`: `EcgDetector` compilado en nativo, la señal de
+`load_record` en µV como entrada). Con ellos: 85 anotadas, 82 cubiertas, 84 pausas
+(14 por hueco quieto) y 0 falsas; `nstdb`, 0. Antes de exigirle forma y contraste a
+una cota confirmada chica (`quiet_gap.ATTENUATED_SHAPE`), daban 3 falsas: los colapsos
+de amplitud del 116 y el 208, que el firmware confirma al recuperarse.
 
 `--wander <mV>` (solo con `--pauses`) le suma a `mitdb` una deriva respiratoria de
 0,25 Hz y esa amplitud, en minutos alternados de 60 s, como un paciente que cambia de

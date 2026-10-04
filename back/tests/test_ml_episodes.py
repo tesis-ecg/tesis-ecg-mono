@@ -15,6 +15,7 @@ from app.ml.episodes import (
     apply_refractory,
     enforce_budget,
     group_beats,
+    open_edges,
 )
 
 FS = 500
@@ -229,3 +230,35 @@ def test_la_severidad_de_morfologia_nunca_llega_a_high(
     parece a tus otros latidos" no justifica despertar a nadie a las 3 am."""
     findings = _group([0, 500], [True, True], [score, score], [1, 1], recurrent=frozenset({1}))
     assert findings[0].severity is expected
+
+
+def test_un_lado_abierto_solo_queda_si_todo_lo_que_llega_ahi_es_abierto() -> None:
+    """`openStart`/`openEnd` (`quiet_gap`) de un evento fundido: el bloque que
+    vio la asistolia en curso la informó abierta a la derecha y el que leyó el
+    R que la cierra, abierta a la izquierda. Fundidas, tienen los dos R: ningún
+    lado queda abierto, y cada cota es la del R de su lado."""
+    abierta_a_la_derecha = {"openEnd": True, "firstBeatRatio": 1.01}
+    abierta_a_la_izquierda = {"openStart": True, "lastBeatRatio": 0.98}
+    fundida = open_edges(
+        {**abierta_a_la_izquierda, **abierta_a_la_derecha},
+        [(100, 500, abierta_a_la_derecha), (300, 800, abierta_a_la_izquierda)],
+    )
+    assert "openStart" not in fundida and "openEnd" not in fundida
+    assert fundida["firstBeatRatio"] == 1.01
+    assert fundida["lastBeatRatio"] == 0.98
+
+    # Un duplicado abierto desde el principio de su lectura, adentro de la pausa
+    # entera: la pausa sigue teniendo el R que la abre.
+    entera = {"firstBeatRatio": 1.0, "lastBeatRatio": 1.0}
+    duplicado = {"openStart": True, "lastBeatRatio": 1.0}
+    fundida = open_edges({**duplicado, **entera}, [(100, 800, entera), (300, 800, duplicado)])
+    assert "openStart" not in fundida
+
+    # Si las dos partes que llegan al final son abiertas, el final sigue abierto.
+    otra = {"openEnd": True, "firstBeatRatio": 0.9}
+    fundida = open_edges(
+        {**otra, **abierta_a_la_derecha},
+        [(100, 500, abierta_a_la_derecha), (200, 500, otra)],
+    )
+    assert fundida["openEnd"] is True
+    assert "lastBeatRatio" not in fundida

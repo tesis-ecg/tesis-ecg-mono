@@ -55,9 +55,12 @@ banco asigna (los `cluster_id` no se mueven):
 
 - **El score mira el latido y no a sus vecinos** (`scoring_window`): la parte de
   la ventana que se compara se recorta con el R-R **esperado** —la mediana
-  local de la prematuridad— y no con el del propio latido. Un prematuro
-  conserva la T del anterior en su ventana, que es lo que lo delata. Si la
-  dominante se aprendió más rápido que eso, se recorta con el de ella.
+  local de la prematuridad— y no con el del propio latido. Si la dominante se
+  aprendió más rápido que eso, se recorta con el de ella. Un prematuro
+  (`hrv.ECTOPIC_PREMATURITY`) no se recorta a la izquierda: la T del anterior
+  encima de su P y de su QRS es lo que lo delata, y recortada desde ~125 lpm un
+  supraventricular prematuro con el QRS normal no pasaba el umbral (a 130 lpm,
+  0 de ~110; ahora todos).
 - **Y lo compara con la dominante a su frecuencia** (`BeatRate`,
   `_rate_aware_correlation`): si llegó a tiempo y su frecuencia se aparta de la
   que aprendió la dominante (`Template.mean_expected_rr`), la repolarización de
@@ -71,6 +74,13 @@ banco asigna (los `cluster_id` no se mueven):
   plantilla calificó no se deshace (`mark_reported`). Un latido suelto que
   puntuó se sigue informando en cualquier plantilla con 30 miembros
   (`TemplateBank.recurrent_ids`), que es como se ven los supraventriculares.
+- **Cuando cambia la dominante** (`hand_over_dominance`), la que la pierde
+  juzga los miembros que no pudieron puntuar por su centroide contra la nueva,
+  y la que la gana deja de ser un foco: su encabezado se da de baja. Un
+  bigeminismo con duplas de los primeros diez minutos dejaba el encabezado de
+  la forma **normal** en la base y ninguno del ventricular, y el resultado
+  dependía de dónde caían los bordes de bloque. Un foco cerca del 50 % puede
+  cambiar de lugar con la normal más de una vez: cada cambio se rehace igual.
 
 Lo que queda sin resolver: a ~200 lpm el detector de R pierde un latido de cada
 dos (no acepta R-R menores de 300 ms). El R-R esperado queda en el doble del
@@ -79,6 +89,14 @@ sin adaptar, como prematuros: una taquicardia así sale en episodios MEDIUM
 partidos. Es un problema del detector, no de la forma. Y el arranque
 instantáneo de una taquicardia marca sus dos primeros latidos, que llegan antes
 de que la mediana se adapte: así arranca una supraventricular.
+
+La fracción de `is_recurrent` también deja sin encabezado a un foco real cuyos
+latidos casi no puntúan: en MIT-BIH 223 una plantilla de 55 miembros (53 V)
+con score medio 0,22 y 4 % por encima del umbral —sus V se parecen a las N en
+ese canal: correlación mediana 0,90— no tiene encabezado; sus latidos que sí
+puntúan salen en episodios. Y mientras un foco es la dominante, la forma normal
+se puntúa contra él: sus latidos pueden salir como episodios (no como
+encabezado, que se da de baja al recuperar el lugar).
 
 Sobre MIT-BIH (48 registros) cuesta 7 de 7.712 latidos anormales detectados
 —5 supraventriculares del 202, que no llegan prematuros— y saca 67 falsos. Por
@@ -625,6 +643,79 @@ def mark_reported(
     return replace(bank, templates=tuple(templates)) if changed else bank
 
 
+def hand_over_dominance(
+    before: TemplateBank,
+    after: TemplateBank,
+    *,
+    sample_rate: int,
+    match_threshold: float,
+    anomaly_score_min: float,
+) -> tuple[TemplateBank, tuple[int, ...]]:
+    """Rehace los contadores cuando la dominante cambia de una plantilla a otra.
+
+    Los miembros que se plegaron mientras una plantilla era la dominante no
+    puntuaron (`count_anomalous`): se medían contra ella misma. Un foco que
+    arrancó dominante —una dupla de V-V-N durante los primeros diez minutos—
+    llegaba a la recuperación de la forma normal con `scored_count` casi en
+    cero, y sin 30 latidos puntuados nunca se informaba; mientras tanto la
+    forma normal, puntuada contra la V, calificaba como foco y su encabezado
+    quedaba en la base, congelado. Y el resultado dependía de dónde caían los
+    bordes de bloque.
+
+    Al cambiar la dominante de A a B:
+
+    - A —la que pierde— juzga sus miembros sin puntuar por su centroide contra
+      B, a su frecuencia y como si llegaran a tiempo (el score más bajo
+      posible: sin prematuridad): todos anómalos si el centroide lo es, ninguno
+      si no. Desde ahí se juzga como cualquiera (`mark_reported`).
+    - B —la que gana— vuelve a cero: lo que había puntuado fue contra A. Si ya
+      se informaba como foco, su encabezado se retira (lo que se devuelve: los
+      `cluster_id` cuyo encabezado hay que dar de baja). Es el latido del
+      paciente.
+    """
+    old, new = dominant_template(before), dominant_template(after)
+    if old is None or new is None or old.cluster_id == new.cluster_id:
+        return after, ()
+    loser = next((t for t in after.templates if t.cluster_id == old.cluster_id), None)
+    retracted: tuple[int, ...] = ()
+    templates: list[Template] = []
+    for template in after.templates:
+        if template.cluster_id == new.cluster_id:
+            if template.reported:
+                retracted = (template.cluster_id,)
+            template = replace(template, scored_count=0, anomalous_count=0, reported=False)
+        elif loser is not None and template.cluster_id == loser.cluster_id:
+            unscored = max(template.count - template.scored_count, 0)
+            if unscored:
+                expected = template.mean_expected_rr
+                centroid = BeatMatrix(
+                    beat_index=np.zeros(1, dtype=np.int64),
+                    rpeaks=np.zeros(1, dtype=np.int64),
+                    waveforms=template.centroid[np.newaxis, :].astype(np.float32),
+                )
+                score = anomaly_score(
+                    dissimilarity_to_dominant(
+                        after,
+                        centroid,
+                        BeatRate(
+                            expected_rr=np.array([expected or np.nan], dtype=np.float32),
+                            prematurity=np.ones(1, dtype=np.float32),
+                            sample_rate=sample_rate,
+                        ),
+                    ),
+                    np.ones(1, dtype=np.float32),
+                    match_threshold=match_threshold,
+                )
+                anomalous = bool(score[0] >= anomaly_score_min)
+                template = replace(
+                    template,
+                    scored_count=template.scored_count + unscored,
+                    anomalous_count=template.anomalous_count + (unscored if anomalous else 0),
+                )
+        templates.append(template)
+    return replace(after, templates=tuple(templates)), retracted
+
+
 def dominant_template(bank: TemplateBank) -> Template | None:
     """La plantilla del paciente: la que más miembros tiene.
 
@@ -775,6 +866,15 @@ def _rate_aware_correlation(
         if learned is None
         else np.fmin(rate.expected_rr, np.float32(learned)).astype(np.float32),
         rate.sample_rate,
+    )
+    # Un prematuro conserva el lado izquierdo entero: la T del latido anterior
+    # encima de su P y de su QRS es lo que lo delata. Recortado con el R-R
+    # esperado, desde ~125 lpm ya no quedaba nada de ella y un supraventricular
+    # prematuro con el QRS normal no podía pasar el umbral solo por la
+    # prematuridad (a 130 lpm, 0 de ~110 detectados).
+    window = ScoringWindow(
+        start=np.where(rate.prematurity < ECTOPIC_PREMATURITY, 0, window.start),
+        stop=window.stop,
     )
     result = full.astype(np.float64)
     clipped = (window.start > 0) | (window.stop < length)

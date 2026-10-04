@@ -280,10 +280,12 @@ async def test_una_pausa_del_motor_notifica_con_su_kind(
     signal = synth_ecg(duration_s=120.0)
     señal = signal.signal_mv.copy()
     flags = signal.flags.copy()
-    # Una pausa de 2,6 s: genera hallazgo con alerta.
+    # Una pausa de 2,6 s: genera hallazgo con alerta. Queda la línea de base con
+    # su ruido; en cero exacto sería un riel (`quiet_gap.rail_mask`).
     inicio = 60 * SAMPLE_RATE
     largo = int(2.6 * SAMPLE_RATE)
-    señal[inicio : inicio + largo] = 0.0
+    ruido = 0.008 * np.random.default_rng(5).standard_normal(largo)
+    señal[inicio : inicio + largo] = (signal.signal_mv[0] + ruido).astype(señal.dtype)
     flags[inicio : inicio + largo] = 0
 
     await _ingest(client, db, device, api_key, _frames(señal, flags))

@@ -33,7 +33,7 @@ abierto: acá se mide qué marca el motor, no cuánto deja pasar el tope.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -199,11 +199,13 @@ def _modelo_adaptado(
     return _registro(instantes, ectopicos, señal, perfil)
 
 
-def _arranque_en_bigeminismo(duplas_s: float, duracion_s: float) -> Registro:
+def _arranque_en_bigeminismo(
+    duplas_s: float, duracion_s: float, *, despues_cada: int | None = 15
+) -> Registro:
     """75 lpm con el modelo adaptado. Hasta `duplas_s`, cada sinusal seguido de
     una dupla ventricular (N V V, el doble de ventriculares que de normales: el
-    foco es la plantilla dominante); después, sinusal con un ventricular cada 15
-    latidos y su pausa compensadora."""
+    foco es la plantilla dominante); después, sinusal con un ventricular cada
+    `despues_cada` latidos y su pausa compensadora (con None, ninguno)."""
     rng = np.random.default_rng(5)
     rr = 0.8
     instantes, ectopicos = [0.6], [False]
@@ -215,7 +217,7 @@ def _arranque_en_bigeminismo(duplas_s: float, duracion_s: float) -> Registro:
             ectopicos += [True, True, False]
             continue
         paso = rr * (1.0 + 0.01 * rng.standard_normal())
-        if indice % 15 == 14:
+        if despues_cada is not None and indice % despues_cada == despues_cada - 1:
             instantes += [t + 0.65 * paso, t + 2.0 * paso]
             ectopicos += [True, False]
             indice += 2
@@ -371,12 +373,17 @@ class Corrida:
     #: `group_beats` deja pasar un latido suelto.
     encabezados: list[list[Finding]]
     agrupables: list[frozenset[int]]
+    #: Por bloque, los encabezados que dio de baja (`retracted_headers`).
+    retirados: list[tuple[int, ...]] = field(default_factory=list)
 
     def en_la_base(self) -> dict[int, int | None]:
         """Los encabezados como quedan con la persistencia de verdad, que solo
-        hace upsert: `cluster_id → beatCount` de la última vez que se emitió."""
+        hace upsert: `cluster_id → beatCount` de la última vez que se emitió,
+        salvo los que un bloque posterior dio de baja (antes de sus upserts)."""
         base: dict[int, int | None] = {}
-        for bloque in self.encabezados:
+        for numero, bloque in enumerate(self.encabezados):
+            for cluster in self.retirados[numero] if numero < len(self.retirados) else ():
+                base.pop(cluster, None)
             for encabezado in bloque:
                 assert encabezado.cluster_id is not None
                 base[encabezado.cluster_id] = encabezado.beat_count
@@ -436,6 +443,7 @@ def _por_bloques(
     bancos: list[TemplateBank] = []
     encabezados: list[list[Finding]] = []
     agrupables: list[frozenset[int]] = []
+    retirados: list[tuple[int, ...]] = []
     inicio = 0
     while inicio < n:
         fin = min(inicio + bloque, n)
@@ -456,6 +464,7 @@ def _por_bloques(
         episodios += [f for f in resultado.findings if f.kind == "morphology_anomaly"]
         recurrentes = [f for f in resultado.findings if f.kind == "recurrent_morphology"]
         encabezados.append(recurrentes)
+        retirados.append(resultado.retracted_headers)
         agrupables.append(frozenset().union(*(c["recurrent"] for c in capturas)))
         if al_cerrar is not None:
             banco = al_cerrar(fin, banco)
@@ -475,6 +484,7 @@ def _por_bloques(
         bancos=bancos,
         encabezados=encabezados,
         agrupables=agrupables,
+        retirados=retirados,
     )
 
 
@@ -1126,6 +1136,120 @@ def test_un_foco_que_arranco_dominante_vuelve_a_informarse_enseguida(
     assert corrida.en_la_base()[primero.cluster_id] == pytest.approx(
         registro.ectopicos.size, rel=0.05
     )
+
+
+def _supraventriculares_en_taquicardia(lpm: float) -> Registro:
+    """70 lpm, diez minutos a `lpm` desde los 300 s y vuelta a 70. En la
+    meseta, cada 6 latidos uno supraventricular: el QRS y la T normales, sin la
+    P sinusal, a 0,75 del R-R."""
+    rng = np.random.default_rng(11)
+    instantes, ectopicos, rrs = [0.6], [False], [60.0 / 70.0]
+    indice = 1
+    while instantes[-1] < 1197.0:
+        t = instantes[-1]
+        rr = (60.0 / lpm if 300.0 <= t < 900.0 else 60.0 / 70.0) * (
+            1.0 + 0.01 * rng.standard_normal()
+        )
+        prematuro = 310.0 <= t < 890.0 and indice % 6 == 5
+        instantes.append(t + (0.75 if prematuro else 1.0) * rr)
+        ectopicos.append(prematuro)
+        rrs.append(rr)
+        indice += 1
+    n = int(1200.0 * SAMPLE_RATE)
+    señal = np.random.default_rng(7).normal(0.0, 0.008, n)
+    for instante, ectopico, rr in zip(instantes, ectopicos, rrs, strict=True):
+        centro = int(round(instante * SAMPLE_RATE))
+        bajo, alto = max(centro - SAMPLE_RATE, 0), min(centro + SAMPLE_RATE, n)
+        t = (np.arange(bajo, alto) - centro) / SAMPLE_RATE
+        latido = _latido_adaptado(t, rr, ectopico=False)
+        if ectopico:
+            latido -= _gaussiana(t, -0.16 * np.sqrt(np.sqrt(rr)), 0.025, 0.12)
+        señal[bajo:alto] += latido
+    tiempos = np.array(instantes)
+    return _registro(
+        tiempos, np.array(ectopicos), señal, lambda t: lpm if 300.0 <= t < 900.0 else 70.0
+    )
+
+
+@pytest.mark.parametrize("lpm", [130.0, 140.0])
+def test_un_supraventricular_prematuro_en_taquicardia_se_informa(
+    lpm: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Desde ~125 lpm la ventana del score se recortaba con el R-R esperado y
+    dejaba afuera la T del latido anterior, que es lo único que delata a un
+    supraventricular prematuro con el QRS normal: no podía pasar el umbral solo
+    por la prematuridad. Un prematuro conserva el lado izquierdo entero. La
+    taquicardia sinusal sola sigue sin marcarse (`test_rampa_de_esfuerzo...`)."""
+    registro = _supraventriculares_en_taquicardia(lpm)
+    corrida = _por_bloques(registro, monkeypatch)
+
+    assert registro.ectopicos.size >= 100
+    assert _ectopicos_marcados(corrida, registro).mean() >= 0.6
+    assert _normales_marcados(corrida, registro) <= 0.01 * registro.latidos.size
+
+
+@pytest.mark.parametrize("despues_cada", [None, 40])
+def test_un_foco_que_fue_dominante_diez_minutos_tiene_su_encabezado(
+    despues_cada: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Diez minutos de N V V —el foco es la dominante— y después sinusal, sin
+    ventriculares o con uno cada 40. Los miembros del foco no podían puntuar
+    mientras era la dominante: sin 30 puntuados después nunca tenía encabezado
+    (o lo tenía media hora tarde). Y la forma normal, puntuada contra la V,
+    calificaba como foco y su encabezado quedaba en la base, congelado. Al
+    cambiar la dominante (`morphology.hand_over_dominance`), el foco se juzga
+    por su centroide contra la normal y la normal deja de ser un foco: en la
+    base queda solo el del ventricular, con todos sus miembros."""
+    registro = _arranque_en_bigeminismo(600.0, 1500.0, despues_cada=despues_cada)
+    corrida = _por_bloques(registro, monkeypatch)
+
+    primero = morphology.dominant_template(corrida.bancos[0])
+    assert primero is not None
+    miembros = corrida.latidos[corrida.plantillas == primero.cluster_id]
+    assert _cerca(miembros, registro.ectopicos).mean() >= 0.9  # arrancó dominante
+    final = morphology.dominant_template(corrida.banco)
+    assert final is not None and final.cluster_id != primero.cluster_id
+    base = corrida.en_la_base()
+    assert set(base) == {primero.cluster_id}
+    assert base[primero.cluster_id] == pytest.approx(registro.ectopicos.size, rel=0.05)
+
+
+@pytest.mark.usefixtures("ml_engine")
+async def test_la_base_da_de_baja_el_encabezado_de_la_forma_normal(
+    client, s3, db, monkeypatch, sent_pushes, make_patient, make_device, make_study
+) -> None:
+    """Por la ingesta, con los bloques de producción: diez minutos de N V V y
+    después sinusal. Mientras el ventricular era la dominante, la forma normal
+    se informó como foco; cuando recupera el lugar su encabezado se da de baja
+    (`PipelineResult.retracted_headers`) y queda el del ventricular."""
+    from sqlalchemy import select
+
+    from app.db.models.ecg_event import ECGEvent
+    from tests.test_ml_blocks import _mundo
+    from tests.test_ml_ingest import finalizar
+
+    monkeypatch.setattr(settings, "ml_analysis_block_seconds", float(BLOCK_S))
+    monkeypatch.setattr(settings, "ml_analysis_context_seconds", float(CONTEXT_S))
+    monkeypatch.setattr(settings, "ml_analysis_lookahead_seconds", float(LOOKAHEAD_S))
+    registro = _arranque_en_bigeminismo(600.0, 1500.0, despues_cada=None)
+    chaleco, study = await _mundo(client, db, make_patient, make_device, make_study)
+    for lote in np.array_split(np.arange(registro.señal.size), 10):
+        await chaleco.enviar(registro.señal[lote], registro.flags[lote])
+    await finalizar(db, monkeypatch, study.id)
+
+    filas = (
+        await db.scalars(
+            select(ECGEvent).where(
+                ECGEvent.study_id == study.id,
+                ECGEvent.dedupe_key.like("cluster:%"),
+            )
+        )
+    ).all()
+    vivas = [fila for fila in filas if fila.deleted_at is None]
+    dadas_de_baja = [fila for fila in filas if fila.deleted_at is not None]
+    (foco,) = vivas
+    assert foco.event_metadata["beatCount"] == pytest.approx(registro.ectopicos.size, rel=0.05)
+    assert dadas_de_baja, "la forma normal se había informado mientras no era la dominante"
 
 
 def test_lo_que_queda_en_la_base_es_lo_que_el_banco_informa(

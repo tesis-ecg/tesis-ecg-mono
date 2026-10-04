@@ -61,7 +61,7 @@ from app.db.models.signal_quality import SignalQualityInterval
 from app.db.models.study import Study
 from app.ml import morphology
 from app.ml.contracts import Finding
-from app.ml.episodes import _merge_metadata
+from app.ml.episodes import _merge_metadata, open_edges
 from app.ml.morphology import TemplateBank
 from app.ml.pipeline import PIPELINE_VERSION, PipelineConfig, PipelineResult, empty_bank
 from app.ml.totals import summary_from_totals
@@ -385,7 +385,14 @@ def _stitch(
     previous: dict[str, Any] = dict(survivor.event_metadata or {})
     for other in absorbed:
         previous = _merge_metadata(previous, dict(other.event_metadata or {}), length, sample_rate)
-    metadata: dict[str, Any] = _merge_metadata(previous, finding.metadata, length, sample_rate)
+    metadata: dict[str, Any] = open_edges(
+        _merge_metadata(previous, finding.metadata, length, sample_rate),
+        [
+            (span[0], span[1], dict(event.event_metadata or {}))
+            for span, event in zip(spans, matches, strict=True)
+        ]
+        + [(start, end, finding.metadata)],
+    )
     if not absorbed and spans[0] == (union_start, union_end) and "medianBpm" in previous:
         # Un hallazgo que no lo agranda —el mismo episodio vuelto a informar
         # desde el contexto— no lo vuelve un episodio fundido: su mediana sigue
@@ -449,6 +456,23 @@ async def persist_analysis(
     igual que cualquier otro (`anomaly_title`).
     """
     findings = list(result.findings)
+    # El encabezado de una plantilla que pasó a ser la dominante se da de baja:
+    # es el latido del paciente, y se había informado como foco mientras otra
+    # forma (una dupla, un bigeminismo del principio) tenía más miembros
+    # (`morphology.hand_over_dominance`).
+    if result.retracted_headers:
+        await db.execute(
+            update(ECGEvent)
+            .where(
+                ECGEvent.study_id == study.id,
+                ECGEvent.dedupe_key.in_(
+                    [f"cluster:{cluster_id}" for cluster_id in result.retracted_headers]
+                ),
+                ECGEvent.event_metadata["scope"].astext == "study",
+                ECGEvent.deleted_at.is_(None),
+            )
+            .values(deleted_at=datetime.now(UTC))
+        )
     # Los encabezados por morfología se **upsertean**: su conteo de
     # ocurrencias crece bloque a bloque y la fila tiene que reflejar el total
     # del estudio, no el del último bloque.

@@ -76,14 +76,17 @@ def _analyze(
 def _with_pause(start_s: float, length_s: float, duration_s: float = 120.0):
     """ECG con los latidos de `[start_s, start_s + length_s)` borrados.
 
-    El tramo queda en el valor de la primera muestra y sin `FLAG_R_PEAK`, como
-    en `test_una_pausa_real_se_detecta_y_avisa_al_paciente`.
+    El tramo queda en la línea de base —el valor de la primera muestra con el
+    ruido de 8 µV de `ecg_synth`— y sin `FLAG_R_PEAK`, como en
+    `test_una_pausa_real_se_detecta_y_avisa_al_paciente`. Constante sería un
+    riel: señal que falta, no un corazón quieto (`quiet_gap.rail_mask`).
     """
     ecg = synth_ecg(duration_s=duration_s)
     signal_mv = ecg.signal_mv.copy()
     flags = ecg.flags.copy()
     tramo = slice(int(start_s * SR), int((start_s + length_s) * SR))
-    signal_mv[tramo] = ecg.signal_mv[0]
+    ruido = 0.008 * np.random.default_rng(5).standard_normal(tramo.stop - tramo.start)
+    signal_mv[tramo] = (ecg.signal_mv[0] + ruido).astype(signal_mv.dtype)
     flags[tramo] = 0
     return signal_mv, flags
 
@@ -132,9 +135,11 @@ def test_la_refractariedad_funde_a_traves_del_borde_como_en_un_lote_unico() -> N
     ecg = synth_ecg(duration_s=120.0)
     signal_mv = ecg.signal_mv.copy()
     flags = ecg.flags.copy()
+    rng = np.random.default_rng(5)
     for start_s in (55.2, 61.2):
         tramo = slice(int(start_s * SR), int((start_s + 2.6) * SR))
-        signal_mv[tramo] = ecg.signal_mv[0]
+        ruido = 0.008 * rng.standard_normal(tramo.stop - tramo.start)
+        signal_mv[tramo] = (ecg.signal_mv[0] + ruido).astype(signal_mv.dtype)
         flags[tramo] = 0
 
     entero = _pauses(_analyze(signal_mv, flags))

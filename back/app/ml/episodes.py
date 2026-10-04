@@ -20,6 +20,9 @@ Cuatro reglas, en orden:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import numpy as np
 
 from app.db.models.ecg_event import ECGEventSeverity, ECGEventType
@@ -175,7 +178,17 @@ def apply_refractory(
             if beat_samples
             else (previous.beat_count or 0) + (finding.beat_count or 0),
             alert_message=previous.alert_message or finding.alert_message,
-            metadata=_merge_metadata(previous.metadata, finding.metadata, length, sample_rate),
+            metadata=open_edges(
+                _merge_metadata(previous.metadata, finding.metadata, length, sample_rate),
+                [
+                    (previous.start_sample, previous_end, previous.metadata),
+                    (
+                        finding.start_sample,
+                        finding.start_sample + finding.length_samples,
+                        finding.metadata,
+                    ),
+                ],
+            ),
             beat_samples=beat_samples,
         )
     merged.sort(key=lambda item: item.start_sample)
@@ -216,6 +229,35 @@ def _merge_metadata(
             metadata[key] = min(values)
     if "durationSeconds" in metadata:
         metadata["durationSeconds"] = round(length_samples / sample_rate, 2)
+    return metadata
+
+
+def open_edges(
+    metadata: dict[str, Any], parts: Sequence[tuple[int, int, Mapping[str, Any]]]
+) -> dict[str, Any]:
+    """`openStart` y `openEnd` del hallazgo fundido (`quiet_gap`), de las partes
+    `(inicio, fin, metadata)` que lo forman.
+
+    `openStart` solo si todo lo que empieza donde empieza la unión es un tramo
+    abierto a la izquierda, y `openEnd` igual con el final. Si alguna parte
+    empieza en un R, la pausa tiene R que la abre aunque otro bloque la haya
+    visto sin él (y su `firstBeatRatio` es el de ese R); lo mismo con el que la
+    cierra.
+    """
+    first = min(start for start, _, _ in parts)
+    last = max(end for _, end, _ in parts)
+    for key, ratio, at_edge in (
+        ("openStart", "firstBeatRatio", [item for start, _, item in parts if start == first]),
+        ("openEnd", "lastBeatRatio", [item for _, end, item in parts if end == last]),
+    ):
+        if at_edge and all(item.get(key) for item in at_edge):
+            metadata[key] = True
+            metadata.pop(ratio, None)
+        else:
+            metadata.pop(key, None)
+            known = [item[ratio] for item in at_edge if ratio in item]
+            if known:
+                metadata[ratio] = known[0]
     return metadata
 
 
