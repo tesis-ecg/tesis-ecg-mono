@@ -12,16 +12,19 @@ Tres grupos de tests:
   de ruido, red de 0,5 mV): una pausa crítica, con un solo aviso. El barrido
   entero corre con `-m slow`. Y las que la regla todavía perdía: con las P de
   un bloqueo AV (paroxístico o completo, también con P del paciente de 0,25-0,34
-  del QRS), cerradas por un escape de otra amplitud o por un ritmo de escape que
-  el firmware no ve, con un transitorio suelto adentro, de dos minutos o más,
-  después de una T tardía, con un síncope convulsivo en el medio o hasta el
-  final de la corrida.
+  del QRS, vagal con P lentas o a 90-100 lpm), cerradas por un escape de otra
+  amplitud, por un ritmo de escape que el firmware no ve o por los latidos del
+  paciente que vuelven atenuados, con un transitorio suelto adentro (también
+  un pop que el firmware confirma), de dos minutos o más, después de una T
+  tardía, con un síncope convulsivo en el medio o hasta el final de la
+  corrida.
 - Lo que **no** es una pausa: ruido que tapa latidos, un hueco ruidoso,
   electrodo despegado, saturación, un riel sin `LEAD_OFF` aunque no llene una
   ventana, empalmes, el principio de una corrida, latidos atenuados por pérdida
-  de contacto o alrededor del umbral, un colapso de amplitud que se recupera, y
+  de contacto o alrededor del umbral, un colapso de amplitud que se recupera,
   latidos normales chicos al lado de extrasístoles grandes (también si el
-  firmware confirma solo estas).
+  firmware confirma solo estas), y una extrasístole en la T o temprana con su
+  pausa compensadora.
 - Los bordes de bloque del cursor (`processing.append_ml_analysis`): la
   asistolia que cruza el borde, la que cae en el contexto o en el contexto
   derecho, la más larga que el contexto derecho y la de la cola de una
@@ -368,6 +371,103 @@ def test_las_p_del_paciente_no_ocultan_un_paro_ventricular(amplitud: float, huec
     _verificar_la_asistolia(_pausas(_analizar(señal, flags)), ABRE_S, hueco_s)
 
 
+@pytest.mark.parametrize("pp_s", [1.25, 1.6, 2.0])
+@pytest.mark.parametrize("amplitud", [0.30, 0.35])
+def test_un_bloqueo_av_vagal_con_p_lentas_se_informa(amplitud: float, pp_s: float) -> None:
+    """Asistolia vagal: el sinusal se frena a 30-48 lpm y el nodo AV se bloquea.
+    NeuroKit marca cada P bloqueada y, a 1,2 s o más, parejas y sobresaliendo
+    del ruido, abrían y cerraban un "tren de escape" (`_train`): la asistolia
+    salía partida en pedazos de 1,25-2 s y no se informaba nada. Una P del
+    tamaño de la del paciente (`P_WAVE_MARGIN`) no es un escape."""
+    hueco_s = 20.0
+    señal, flags, latidos = _asistolia(hueco_s, base="ruido_25uv")
+    señal = señal + _ondas_p(latidos - 0.20, señal.size, amplitud=amplitud - 0.12)
+    señal = señal + _ondas_p(
+        np.arange(ABRE_S + pp_s, ABRE_S + hueco_s - 0.35, pp_s), señal.size, amplitud=amplitud
+    )
+
+    _verificar_la_asistolia(_pausas(_analizar(señal, flags)), ABRE_S, hueco_s)
+
+
+@pytest.mark.parametrize("lpm", [90.0, 95.0, 100.0])
+def test_un_bloqueo_av_paroxistico_a_frecuencia_alta_se_informa(lpm: float) -> None:
+    """Bloqueo AV paroxístico dependiente de la frecuencia, con P de 0,35 mV:
+    por encima de 84 lpm la ventana fija de la P pisaba la T anterior, no
+    quedaba ningún latido para medirla, la P del paciente era cero y las P
+    bloqueadas dejaban el hueco "ruidoso". La ventana ahora empieza donde
+    termina esa T (`P_T_END_S`)."""
+    rr, hueco_s, amplitud = 60.0 / lpm, 8.0, 0.35
+    cierra = ABRE_S + hueco_s
+    latidos = np.concatenate(
+        (np.arange(ABRE_S, 0.6, -rr)[::-1], np.arange(cierra, cierra + 60.0, rr))
+    )
+    señal = synthetic_ecg(latidos, cierra + 61.0, SR, noise_mv=0.025)
+    señal = señal + _ondas_p(latidos - 0.20, señal.size, amplitud=amplitud - 0.12)
+    bloqueadas = np.arange(ABRE_S + rr, cierra - 0.35, rr) - 0.20
+    señal = señal + _ondas_p(bloqueadas, señal.size, amplitud=amplitud)
+
+    _verificar_la_asistolia(
+        _pausas(_analizar(señal, _flags_del_firmware(latidos, señal.size))), ABRE_S, hueco_s
+    )
+
+
+@pytest.mark.parametrize("escape", ["angosto", "ancho"])
+@pytest.mark.parametrize("amplitud", [0.25, 0.30])
+def test_un_stokes_adams_con_p_grandes_se_informa(amplitud: float, escape: str) -> None:
+    """Bloqueo AV completo con P de 0,25-0,30 mV (0,2-0,3 del escape). NeuroKit
+    marca cada P, y con eso eran la mitad o más del censo (`CENSUS_MIN`): los
+    escapes que confirma el firmware no eran "el ritmo del paciente", no había
+    referencia y el paro no se informaba. Las P no tienen T
+    (`CENSUS_T_MIN`): no cuentan."""
+    rr = 60.0 / 35.0
+    abre_s, hueco_s, duracion = 119.7, 12.0, 240.0
+    latidos = np.concatenate(
+        (np.arange(abre_s, 0.6, -rr)[::-1], np.arange(abre_s + hueco_s, duracion - 1.0, rr))
+    )
+    n = int(duracion * SR)
+    if escape == "angosto":
+        señal = synthetic_ecg(latidos, duracion, SR, noise_mv=0.025) - _ondas_p(
+            latidos - 0.20, n, amplitud=0.12
+        )
+    else:
+        señal = synthetic_ecg(np.array([]), duracion, SR, noise_mv=0.025) + _escape(
+            latidos, n, escala=1.0
+        )
+    ondas_p = np.arange(0.5, duracion - 1.0, 0.8)
+    ondas_p = ondas_p[np.min(np.abs(ondas_p[:, None] - latidos[None, :]), axis=1) > 0.25]
+    señal = señal + _ondas_p(ondas_p, n, amplitud=amplitud)
+
+    _verificar_la_asistolia(
+        _pausas(_analizar(señal, _flags_del_firmware(latidos, n))), abre_s, hueco_s
+    )
+
+
+@pytest.mark.parametrize("hueco_s", [8.0, 30.0])
+@pytest.mark.parametrize("amplitud", [0.15, 0.20])
+def test_las_p_disociadas_no_ocultan_un_paro_que_cierra_un_escape_confirmado(
+    amplitud: float, hueco_s: float
+) -> None:
+    """Bloqueo AV paroxístico: paro ventricular con las P del paciente (de un
+    tamaño normal) siguiendo, cerrado por un escape ancho de 0,5× que el
+    firmware confirma. Una cota así tiene que sobresalir de lo quieto
+    (`QUIET_MAX_UNDER_WEAK_BOUND`), y las P contaban como "lo quieto": 0,161
+    contra 0,156, y nada. Si la cota no es de transición, las P del paciente no
+    cuentan (`_Block.only_p_waves`)."""
+    cierra = ABRE_S + hueco_s
+    antes = np.arange(ABRE_S, 0.6, -1.0)[::-1]
+    escapes = cierra + np.arange(41) * 60.0 / 35.0
+    duracion = escapes[-1] + 2.0
+    n = int(duracion * SR)
+    señal = synthetic_ecg(antes, duracion, SR, noise_mv=0.025) + _escape(escapes, n, escala=0.5)
+    señal = señal + _ondas_p(antes - 0.20, n, amplitud=amplitud - 0.12)
+    ondas_p = np.arange(ABRE_S + 0.8, duracion - 1.0, 0.8)
+    ondas_p = ondas_p[np.min(np.abs(ondas_p[:, None] - escapes[None, :]), axis=1) > 0.25]
+    señal = señal + _ondas_p(ondas_p, n, amplitud=amplitud)
+    flags = _flags_del_firmware(np.concatenate((antes, escapes)), n)
+
+    _verificar_la_asistolia(_pausas(_analizar(señal, flags)), ABRE_S, hueco_s)
+
+
 @pytest.mark.parametrize("hueco_s", [6.0, 60.0])
 @pytest.mark.parametrize("escapes", ["sostenido", "tres"])
 @pytest.mark.parametrize("escala", [0.4, 0.45])
@@ -420,6 +520,54 @@ def test_un_transitorio_suelto_no_anula_la_asistolia(evento: str) -> None:
     assert pausa.severity is ECGEventSeverity.CRITICAL
     assert pausa.alert_message == PAUSE_ALERT
     assert pausa.metadata["interiorEvents"] == 1
+
+
+@pytest.mark.parametrize("donde", [0.35, 0.6])
+@pytest.mark.parametrize("amplitud_mv", [0.5, 1.0])
+def test_un_pop_que_el_firmware_confirma_no_anula_la_asistolia(
+    amplitud_mv: float, donde: float
+) -> None:
+    """El detector del MCU de producción confirma un pop de electrodo de
+    0,2-0,55 de la referencia. NeuroKit también lo marca: es una cota chica
+    confirmada con la forma de un QRS angosto (0,95-0,98), y la guarda de forma
+    (`ATTENUATED_SHAPE`) descartaba los dos lados, la asistolia entera. Un pop
+    suelto, con una pausa de cada lado, no es la transición de un colapso:
+    salen los dos tramos y se funden en uno."""
+    hueco_s = 20.0
+    señal, _, latidos = _asistolia(hueco_s, base="ruido_25uv")
+    pop = ABRE_S + donde * hueco_s
+    señal[int(pop * SR) : int(pop * SR) + 4] += np.float32(amplitud_mv)
+    flags = _flags_del_firmware(np.sort(np.append(latidos, pop)), señal.size)
+
+    (pausa,) = _pausas(_analizar(señal, flags))
+    assert pausa.start_sample / SR == pytest.approx(ABRE_S, abs=0.1)
+    assert (pausa.start_sample + pausa.length_samples) / SR == pytest.approx(
+        ABRE_S + hueco_s, abs=0.1
+    )
+    assert pausa.severity is ECGEventSeverity.CRITICAL
+    assert pausa.alert_message == PAUSE_ALERT
+
+
+@pytest.mark.parametrize(("escala", "lpm"), [(0.4, 60.0), (0.5, 45.0), (0.55, 60.0)])
+def test_una_asistolia_que_cierran_latidos_atenuados_se_informa(escala: float, lpm: float) -> None:
+    """Después del síncope el paciente quedó en otra postura y sus latidos
+    vuelven con la misma forma a 0,4-0,55 de la amplitud de antes. El que
+    cierra es una cota chica con la forma del paciente, y la guarda de forma lo
+    tomaba por el final de un colapso: la asistolia, con el interior en 0,04,
+    no se informaba. Un nivel nuevo que se sostiene no es una transición."""
+    hueco_s = 20.0
+    cierra = ABRE_S + hueco_s
+    duracion = cierra + 60.0
+    antes = np.arange(ABRE_S, 0.6, -1.0)[::-1]
+    despues = np.arange(cierra, duracion - 1.0, 60.0 / lpm)
+    señal = (
+        synthetic_ecg(antes, duracion, SR)
+        + escala * synthetic_ecg(despues, duracion, SR)
+        + 0.025 * np.random.default_rng(3).standard_normal(int(duracion * SR))
+    ).astype(np.float32)
+    flags = _flags_del_firmware(np.concatenate((antes, despues)), señal.size)
+
+    _verificar_la_asistolia(_pausas(_analizar(señal, flags)), ABRE_S, hueco_s)
 
 
 def test_latidos_atenuados_alrededor_del_umbral_no_parten_un_hueco() -> None:
@@ -582,6 +730,76 @@ def test_una_t_tardia_no_acorta_la_pausa(hueco_s: float) -> None:
 # --------------------------------------------------------------------------- #
 # Lo que no es una pausa
 # --------------------------------------------------------------------------- #
+
+
+def _con_extrasistoles(
+    rr_s: float, acople_s: float, escala: float, *, cada: int, duracion_s: float = 120.0
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sinusal a `rr_s` con una extrasístole ancha (`_escape`) cada `cada`
+    latidos, acoplada a `acople_s`, y su pausa compensadora completa."""
+    normales: list[float] = []
+    extras: list[float] = []
+    t = 1.0
+    while t < duracion_s - 3.0:
+        normales.append(t)
+        if len(normales) % cada == 0:
+            extras.append(t + acople_s)
+            t += 2 * rr_s
+        else:
+            t += rr_s
+    n = int(duracion_s * SR)
+    señal = synthetic_ecg(np.array(normales), duracion_s, SR, noise_mv=0.025) + _escape(
+        np.array(extras), n, escala=escala
+    )
+    return señal.astype(np.float32), np.array(normales), np.array(extras)
+
+
+@pytest.mark.parametrize("acople_s", [0.52, 0.55, 0.6, 0.65])
+def test_una_extrasistole_en_la_t_con_su_pausa_compensadora_no_es_una_pausa(
+    acople_s: float,
+) -> None:
+    """Bradicardia sinusal a 40 lpm con extrasístoles chicas (0,35×) y anchas
+    que el firmware de producción no confirma, acopladas a 0,52-0,65 s. El R-R
+    más largo es de 2,35-2,48 s. Con la zona de la T del R que abre entera
+    exenta (`T_ZONE_S`), la extrasístole quedaba adentro del tramo y cada pausa
+    compensadora salía como una pausa CRITICAL de 3 s. Ahora solo la T del
+    paciente queda exenta (`own_t_wave`): la extrasístole acota."""
+    señal, normales, _ = _con_extrasistoles(1.5, acople_s, 0.35, cada=8)
+
+    assert _pausas(_analizar(señal, _flags_del_firmware(normales, señal.size))) == []
+
+
+@pytest.mark.parametrize(
+    ("acople_s", "escala", "confirmada"),
+    [(0.40, 0.5, False), (0.35, 0.35, False), (0.32, 0.8, True)],
+    ids=["chica", "muy_chica", "confirmada"],
+)
+def test_una_extrasistole_temprana_no_deja_una_pausa(
+    acople_s: float, escala: float, confirmada: bool
+) -> None:
+    """Extrasístoles acopladas a 0,32-0,40 s de un sinusal a 46 lpm: el R-R más
+    largo es de 2,2-2,3 s. Caían entre el R que abre y el interior
+    (`INTERIOR_PRE_S`), donde no miraba nada —ni lo quieto ni el firmware—, y
+    salía una pausa de 2,6 s sobre ellas. Ahora la pausa corre desde la
+    extrasístole (`_Block.early_beat`), y no llega."""
+    señal, normales, extras = _con_extrasistoles(1.3, acople_s, escala, cada=12)
+    vistos = np.sort(np.concatenate((normales, extras))) if confirmada else normales
+
+    assert _pausas(_analizar(señal, _flags_del_firmware(vistos, señal.size))) == []
+
+
+def test_la_pausa_despues_de_una_extrasistole_temprana_corre_desde_ella() -> None:
+    """A 40 lpm una extrasístole acoplada a 0,45 s deja 2,55 s hasta el latido
+    siguiente: eso es la pausa, HIGH, y no los 3 s CRITICAL de R a R."""
+    señal, normales, extras = _con_extrasistoles(1.5, 0.45, 0.5, cada=12)
+
+    pausas = _pausas(_analizar(señal, _flags_del_firmware(normales, señal.size)))
+    assert pausas
+    for pausa in pausas:
+        desde = pausa.start_sample / SR
+        assert np.min(np.abs(extras - desde)) < 0.05, desde
+        assert pausa.length_samples / SR == pytest.approx(2.55, abs=0.05)
+        assert pausa.severity is ECGEventSeverity.HIGH
 
 
 def _sinusal(duracion_s: float = 240.0, *, firmware: bool = True) -> tuple[np.ndarray, np.ndarray]:
@@ -999,6 +1217,30 @@ def test_una_pausa_real_del_motor_queda_como_estaba() -> None:
     assert [h.kind for h in del_motor] == ["pause"]
 
     assert refine_pauses(del_motor, evidencia, pause_seconds=2.5) == del_motor
+
+
+def test_una_pausa_del_motor_con_una_extrasistole_temprana_corre_desde_ella() -> None:
+    """Una extrasístole a 0,35 s que NeuroKit no vio y el firmware confirmó: el
+    R-R de 3 s es válido y el motor lo avisaba CRITICAL. El interior empieza a
+    0,5 s y el veto (`beat_inside`) no la veía. La pausa es la de la
+    extrasístole al latido siguiente: 2,65 s, HIGH."""
+    latidos = np.concatenate((np.arange(120.3, 0.6, -1.0)[::-1], np.arange(123.3, 239.0, 1.0)))
+    extrasistole = 120.65
+    señal = synthetic_ecg(latidos, 240.0, SR, noise_mv=0.025) + _escape(
+        np.array([extrasistole]), int(240.0 * SR), escala=0.8
+    )
+    flags = _flags_del_firmware(np.sort(np.append(latidos, extrasistole)), señal.size)
+    picos = detect_rpeaks(clean_signal(señal, SR), SR)
+    vistos = picos[np.abs(picos - extrasistole * SR) > 0.1 * SR]
+    evidencia = _evidencia(señal, flags, vistos)
+    del_motor = detect_rhythm(build_rr(vistos, evidencia.analyzable, SR), _config().rhythm, SR)
+    assert [(h.kind, h.severity) for h in del_motor] == [("pause", ECGEventSeverity.CRITICAL)]
+
+    (pausa,) = refine_pauses(del_motor, evidencia, pause_seconds=2.5)
+    assert pausa.start_sample / SR == pytest.approx(extrasistole, abs=0.05)
+    assert pausa.length_samples / SR == pytest.approx(2.65, abs=0.05)
+    assert pausa.metadata["pauseSeconds"] == pytest.approx(2.65, abs=0.05)
+    assert pausa.severity is ECGEventSeverity.HIGH
 
 
 # --------------------------------------------------------------------------- #
