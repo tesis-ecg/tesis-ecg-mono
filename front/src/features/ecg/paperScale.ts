@@ -217,6 +217,21 @@ export function autoVerticalRange(
   return [center - span / 2, center + span / 2]
 }
 
+/**
+ * Centro vertical con el desplazamiento del médico aplicado.
+ *
+ * Se acota a la extensión de la señal visible: el centro nunca se va más allá
+ * del pico más alto ni del valle más bajo, así que siempre queda algo de traza
+ * en pantalla para orientarse.
+ */
+export function pannedCenterMv(
+  baseline: number,
+  offsetMv: number,
+  extent: readonly [number, number],
+): number {
+  return Math.min(Math.max(baseline + offsetMv, extent[0]), extent[1])
+}
+
 /** El rótulo que va en pantalla, como en cualquier electrocardiógrafo. */
 export function scaleLabel(scale: PaperScale): string {
   return `${scale.paperSpeed} mm/s · ${amplitudeLabel(scale.autoAmplitude ? AUTO_AMPLITUDE : scale.amplitude)}`

@@ -225,6 +225,54 @@ async def test_manifest_normalizes_orders_and_clips_ingested_events(
     assert manifest["annotations"][1]["confidenceScore"] == 0.96
 
 
+def _quality_event(batch_id, kind: str, start: int, count: int) -> ECGEvent:
+    return ECGEvent(
+        batch_id=batch_id,
+        event_type=ECGEventType.NOISE,
+        severity=ECGEventSeverity.MEDIUM if kind == "lead_off" else ECGEventSeverity.LOW,
+        timestamp_in_recording=start / 500,
+        duration_seconds=count / 500,
+        confidence_score=None,
+        event_metadata={"kind": kind, "startSampleIndex": start, "sampleCount": count},
+    )
+
+
+async def test_contiguous_signal_quality_events_are_one_episode(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    """La ingesta deriva un evento por lote; el médico tiene que ver un episodio."""
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    batch = await db.scalar(select(ECGBatch).where(ECGBatch.study_id == study_id))
+    assert batch is not None
+    db.add_all(
+        [
+            # Un electrodo suelto partido en tres lotes, más su SQI inanalizable.
+            _quality_event(batch.id, "lead_off", 1000, 500),
+            _quality_event(batch.id, "lead_off", 500, 500),
+            _quality_event(batch.id, "lead_off", 1500, 500),
+            _quality_event(batch.id, "sqi_unanalyzable", 500, 500),
+            _quality_event(batch.id, "sqi_unanalyzable", 1000, 1000),
+            # Dos segundos después: otro episodio.
+            _quality_event(batch.id, "lead_off", 3000, 300),
+            # Inanalizable sin electrodo suelto debajo: se queda.
+            _quality_event(batch.id, "sqi_unanalyzable", 3500, 300),
+        ]
+    )
+    await db.flush()
+    as_user(await make_user(UserRole.ADMIN))
+
+    manifest = await _manifest(client, study_id)
+
+    assert [
+        (item["kind"], item["startOffsetMs"], item["endOffsetMs"])
+        for item in manifest["annotations"]
+    ] == [
+        ("lead_off", 1000, 4000),
+        ("lead_off", 6000, 6600),
+        ("sqi_unanalyzable", 7000, 7600),
+    ]
+
+
 async def test_a_study_without_any_signal_is_404(
     client, s3, db, as_user, make_user, make_patient, make_device, make_study
 ) -> None:

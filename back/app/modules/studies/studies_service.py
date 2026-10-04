@@ -253,6 +253,16 @@ def _recorded_ms(study: Study) -> float:
     return study.samples_count * 1000 / study.sample_rate
 
 
+class _EventSpan(NamedTuple):
+    """Dónde se dibuja un hallazgo y qué anotación lo representa."""
+
+    start_ms: int
+    end_ms: int
+    #: Id de la anotación que lo dibuja. Es el del propio evento, salvo cuando
+    #: quedó absorbido en un episodio continuo (`_merge_continuous_spans`).
+    annotation_id: uuid.UUID
+
+
 class _ReportPlacement(NamedTuple):
     """Coordenada del registro sobre la traza y el hallazgo del que cuelga."""
 
@@ -338,7 +348,7 @@ def _answered_event_id(report: PatientReport) -> uuid.UUID | None:
 def _report_placements(
     study: Study,
     reports: list[PatientReport],
-    event_offsets: dict[uuid.UUID, tuple[int, int]],
+    event_offsets: dict[uuid.UUID, _EventSpan],
     segments: list[StudyTimelineSegment],
 ) -> dict[uuid.UUID, _ReportPlacement]:
     """Dónde va cada registro sobre la traza, y de qué hallazgo cuelga.
@@ -366,9 +376,13 @@ def _report_placements(
     placements: dict[uuid.UUID, _ReportPlacement] = {}
     for report in reports:
         event_id = _answered_event_id(report)
-        offsets = event_offsets.get(event_id) if event_id is not None else None
-        if offsets is not None and event_id is not None:
-            placements[report.id] = _ReportPlacement((offsets[0] + offsets[1]) // 2, event_id)
+        span = event_offsets.get(event_id) if event_id is not None else None
+        if span is not None:
+            # Se vincula con la anotación que lo dibuja: si el hallazgo quedó
+            # dentro de un episodio, su id propio no viaja en el manifest.
+            placements[report.id] = _ReportPlacement(
+                (span.start_ms + span.end_ms) // 2, span.annotation_id
+            )
         else:
             placements[report.id] = _ReportPlacement(
                 _report_offset_ms(report, study, segments), None
@@ -406,8 +420,91 @@ def _report_annotations(
     return annotations
 
 
-def _event_offset_map(study: Study, events: list[ECGEvent]) -> dict[uuid.UUID, tuple[int, int]]:
-    """Offsets de los hallazgos **dibujables**, indexados por id de evento.
+#: Estados que el chaleco informa muestra a muestra. La ingesta los deriva por
+#: lote, así que un electrodo suelto durante dos minutos llega como una docena
+#: de eventos pegados: uno por cada lote de ~9 s. Para el médico es un único
+#: episodio, y así se dibuja.
+_CONTINUOUS_KINDS = frozenset({"lead_off", "sqi_unanalyzable", "adc_saturated"})
+#: Hasta cuánto pueden separarse dos tramos del mismo estado para seguir siendo
+#: el mismo episodio. Cubre el corte entre lotes (cero) y el rebote corto que
+#: `derive_events` descarta por debajo de medio segundo.
+_CONTINUOUS_MERGE_GAP_MS = 1000
+#: Un tramo inanalizable cubierto por un electrodo desconectado no agrega nada:
+#: la causa ya está marcada, y repetirla duplica cada aviso en el panel.
+_REDUNDANT_UNDER = {"sqi_unanalyzable": "lead_off"}
+
+
+def _merge_continuous_spans(
+    study: Study,
+    events: list[ECGEvent],
+    spans: dict[uuid.UUID, _EventSpan],
+    segments: list[StudyTimelineSegment],
+) -> dict[uuid.UUID, _EventSpan]:
+    """Funde los tramos contiguos de un mismo estado en un único episodio.
+
+    Dos tramos solo se funden si también son contiguos en hora de pared: el
+    buffer empaquetado no tiene huecos, así que un corte de grabación entre dos
+    lotes los deja pegados por offset aunque entre uno y otro haya pasado una
+    hora.
+    """
+    to_epoch_ms = _wall_clock_resolver(study, segments)
+    by_kind: dict[str, list[uuid.UUID]] = {}
+    for event in events:
+        kind = _annotation_kind(event)
+        if kind in _CONTINUOUS_KINDS and event.id in spans:
+            by_kind.setdefault(kind, []).append(event.id)
+
+    merged = dict(spans)
+    episodes: dict[str, list[_EventSpan]] = {}
+    for kind, ids in by_kind.items():
+        ids.sort(key=lambda event_id: (spans[event_id].start_ms, spans[event_id].end_ms))
+        current: _EventSpan | None = None
+        members: list[uuid.UUID] = []
+
+        def close() -> None:
+            if current is None:
+                return
+            episodes.setdefault(kind, []).append(current)
+            for member in members:
+                merged[member] = current
+
+        for event_id in ids:
+            span = spans[event_id]
+            if current is not None:
+                offset_gap = span.start_ms - current.end_ms
+                last_ms = max(current.end_ms - 1, current.start_ms)
+                wall_gap = to_epoch_ms(span.start_ms) - to_epoch_ms(last_ms) - 1
+                if offset_gap <= _CONTINUOUS_MERGE_GAP_MS and wall_gap <= _CONTINUOUS_MERGE_GAP_MS:
+                    current = current._replace(end_ms=max(current.end_ms, span.end_ms))
+                    members.append(event_id)
+                    continue
+            close()
+            current = span._replace(annotation_id=event_id)
+            members = [event_id]
+        close()
+
+    for kind, cause in _REDUNDANT_UNDER.items():
+        for episode in episodes.get(kind, []):
+            covering = next(
+                (
+                    other
+                    for other in episodes.get(cause, [])
+                    if other.start_ms <= episode.start_ms and episode.end_ms <= other.end_ms
+                ),
+                None,
+            )
+            if covering is None:
+                continue
+            for event_id, span in merged.items():
+                if span.annotation_id == episode.annotation_id:
+                    merged[event_id] = covering
+    return merged
+
+
+def _event_offset_map(
+    study: Study, events: list[ECGEvent], segments: list[StudyTimelineSegment]
+) -> dict[uuid.UUID, _EventSpan]:
+    """Dónde se dibuja cada hallazgo **dibujable**, indexado por id de evento.
 
     Vive aparte de `_event_annotations` porque hay dos consumidores con
     necesidades distintas: el manifest quiere las anotaciones armadas, y la
@@ -415,23 +512,27 @@ def _event_offset_map(study: Study, events: list[ECGEvent]) -> dict[uuid.UUID, t
     para anclarle su respuesta. Que los dos salgan de acá es lo que garantiza que
     la solapa y el gráfico nunca discrepen sobre dónde está una marca.
     """
-    offsets: dict[uuid.UUID, tuple[int, int]] = {}
+    spans: dict[uuid.UUID, _EventSpan] = {}
     for event in events:
         resolved = _event_offsets_ms(event, study)
         if resolved is not None:
-            offsets[event.id] = resolved
-    return offsets
+            spans[event.id] = _EventSpan(resolved[0], resolved[1], event.id)
+    return _merge_continuous_spans(study, events, spans, segments)
 
 
 def _event_annotations(
-    study: Study, events: list[ECGEvent], to_epoch_ms: Callable[[int], int]
-) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, tuple[int, int]]]:
-    """Los hallazgos dibujables, con sus offsets indexados por id de evento."""
+    study: Study,
+    events: list[ECGEvent],
+    to_epoch_ms: Callable[[int], int],
+    segments: list[StudyTimelineSegment],
+) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, _EventSpan]]:
+    """Los hallazgos dibujables, con dónde cae cada evento indexado por su id."""
     annotations: list[StudyEcgAnnotationOut] = []
-    offsets_by_event = _event_offset_map(study, events)
+    spans_by_event = _event_offset_map(study, events, segments)
     for event in events:
-        offsets = offsets_by_event.get(event.id)
-        if offsets is None:
+        span = spans_by_event.get(event.id)
+        # Un evento absorbido en un episodio lo dibuja la anotación del episodio.
+        if span is None or span.annotation_id != event.id:
             continue
         kind = _annotation_kind(event)
         annotations.append(
@@ -440,14 +541,14 @@ def _event_annotations(
                 kind=kind,
                 category=_annotation_category(event, kind),
                 severity=_ANNOTATION_SEVERITY[event.severity],
-                startOffsetMs=offsets[0],
-                endOffsetMs=offsets[1],
-                startEpochMs=to_epoch_ms(offsets[0]),
-                endEpochMs=to_epoch_ms(offsets[1]),
+                startOffsetMs=span.start_ms,
+                endOffsetMs=span.end_ms,
+                startEpochMs=to_epoch_ms(span.start_ms),
+                endEpochMs=to_epoch_ms(span.end_ms),
                 confidenceScore=event.confidence_score,
             )
         )
-    return annotations, offsets_by_event
+    return annotations, spans_by_event
 
 
 def _wall_clock_resolver(
@@ -495,7 +596,7 @@ def _study_annotations(
 ) -> list[StudyEcgAnnotationOut]:
     # Los hallazgos primero: los registros necesitan saber cuáles llegaron a la
     # señal para poder anclarse en el que contestaron.
-    annotations, event_offsets = _event_annotations(study, events, to_epoch_ms)
+    annotations, event_offsets = _event_annotations(study, events, to_epoch_ms, segments)
     annotations.extend(
         _report_annotations(
             reports, _report_placements(study, reports, event_offsets, segments), to_epoch_ms
@@ -1397,10 +1498,9 @@ async def list_study_patient_reports(
     # Los mismos offsets que el manifest: si la solapa dijera "visible" y el
     # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún
     # lado. La ubicación de un registro se decide en un solo lugar.
-    event_offsets = _event_offset_map(study, await repo.list_ecg_events(db, study.id))
-    placements = _report_placements(
-        study, reports, event_offsets, await repo.list_timeline_segments(db, study.id)
-    )
+    segments = await repo.list_timeline_segments(db, study.id)
+    event_offsets = _event_offset_map(study, await repo.list_ecg_events(db, study.id), segments)
+    placements = _report_placements(study, reports, event_offsets, segments)
 
     items: list[StudyPatientReportOut] = []
     pending = 0

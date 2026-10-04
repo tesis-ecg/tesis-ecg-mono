@@ -12,7 +12,6 @@ import {
   isAnnotationHighlighted,
 } from '../annotationMeta'
 import type { ECGAnnotation, ECGSignal, ECGViewportChange } from '../types'
-import { unprocessedTailStartMs } from '../utils/processedRange'
 
 interface ECGMinimapProps {
   signal: ECGSignal
@@ -52,7 +51,6 @@ export function ECGMinimap({
 
   const durationSec = signal.durationMs / 1000
   const endTimestamp = signal.startTimestamp + durationSec * 1000
-  const unprocessedStartMs = unprocessedTailStartMs(signal)
 
   const tokens = useMemo(() => readTokens(), [])
   const links = useMemo(() => buildAnnotationLinks(signal.annotations), [signal.annotations])
@@ -284,14 +282,6 @@ export function ECGMinimap({
         onPointerCancel={handlePointerUp}
       >
         <canvas ref={canvasRef} className="absolute inset-0 block" />
-        {unprocessedStartMs !== null && (
-          <span
-            title="Sin datos procesados"
-            data-testid="ecg-minimap-unprocessed"
-            className="pointer-events-none absolute top-0 bottom-0 right-0 border-l border-dashed border-border bg-bg-muted/80"
-            style={{ left: `${annotationPercent(unprocessedStartMs)}%` }}
-          />
-        )}
         {/* Ocultar los avisos del gráfico también los saca de la vista previa:
             si no, el médico sigue viendo las bandas de color sin saber de qué. */}
         {showAnnotations &&

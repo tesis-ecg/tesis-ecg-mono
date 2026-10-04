@@ -28,6 +28,7 @@ import {
   DEFAULT_PAPER_SPEED,
   autoVerticalRange,
   baselineMv,
+  pannedCenterMv,
   matchesScale,
   measurePxPerMm,
   paperScale,
@@ -44,7 +45,7 @@ import type {
   ECGViewportChange,
 } from '../types'
 import { formatWallClock, formatWallClockShort } from '../utils/formatEcgTimestamp'
-import { latestTimestampMs, unprocessedTailStartMs } from '../utils/processedRange'
+import { latestTimestampMs } from '../utils/processedRange'
 import { sampleRangeForSeconds } from '../utils/sampleRange'
 
 /**
@@ -113,8 +114,10 @@ const NO_ANNOTATIONS: ECGAnnotation[] = []
  *   se destruye en unmount.
  * - X axis en **segundos** desde el inicio del estudio (no timestamps absolutos
  *   reales — el formatter lo deriva de `startTimestamp`).
- * - Zoom con `Ctrl/Cmd + wheel`. Pan con drag o flechas izq/der cuando tiene
- *   focus.
+ * - Zoom con `Ctrl/Cmd + wheel`. Pan con drag o flechas cuando tiene focus.
+ *   Con ganancia fija el pan también es vertical: un trazado que se sale de
+ *   los mV que entran en pantalla se alcanza arrastrando, sin cambiar la
+ *   escala. En amplitud automática el rango lo pone la señal y no se mueve.
  * - Tooltip mostrado vía la legend nativa de uPlot, con formatter custom para
  *   timestamp en `HH:MM:SS.mmm`.
  */
@@ -134,6 +137,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     selectedAnnotationId = null,
     onAnnotationSelect,
     showAnnotations = true,
+    toolbar,
   },
   ref,
 ) {
@@ -192,6 +196,10 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // cambiar la ganancia repinta sin recrear la instancia de uPlot (que
   // significaría perder el viewport y rearmar el canvas).
   const scaleRef = useRef<PaperScale>(scale)
+  // Desplazamiento vertical que eligió el médico, en mV sobre la línea de base
+  // de la ventana visible. Relativo y no absoluto: así acompaña a la traza
+  // cuando la línea de base deriva al desplazarse en el tiempo.
+  const verticalOffsetRef = useRef(0)
   const onScaleMatchChangeRef = useRef(onScaleMatchChange)
   useEffect(() => {
     onScaleMatchChangeRef.current = onScaleMatchChange
@@ -416,7 +424,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
               if (uplotRef.current !== u) return
               const { min: nextMin, max: nextMax } = u.scales.x
               if (nextMin == null || nextMax == null) return
-              applyVerticalRange(u, scaleRef.current, signal, nextMin, nextMax)
+              applyVerticalRange(u, scaleRef.current, signal, nextMin, nextMax, verticalOffsetRef)
             })
             // El zoom libre sirve para navegar, no para medir. Si el rango
             // visible dejó de corresponder a `paperSpeed`, el rótulo de la barra
@@ -515,7 +523,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       // El alto pudo cambiar, y con él cuántos mV entran.
       const after = inst.scales.x
       if (after.min != null && after.max != null) {
-        applyVerticalRange(inst, scaleRef.current, signal, after.min, after.max)
+        applyVerticalRange(inst, scaleRef.current, signal, after.min, after.max, verticalOffsetRef)
       }
       syncPlotArea(inst)
     })
@@ -543,8 +551,15 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     container.addEventListener('wheel', handleWheel, { passive: false })
 
     // Pan con drag — botón izquierdo, sin Ctrl. (Ctrl+drag mantiene el zoom
-    // selection nativo de uPlot.)
-    let panStart: { px: number; min: number; max: number } | null = null
+    // selection nativo de uPlot.) Vertical solo con ganancia fija.
+    let panStart: {
+      px: number
+      py: number
+      min: number
+      max: number
+      offsetMv: number
+      spanMv: number
+    } | null = null
     let suppressClick = false
     let suppressClickTimeout: number | null = null
     const handlePointerDown = (e: PointerEvent) => {
@@ -553,7 +568,15 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       if (!inst) return
       const { min, max } = inst.scales.x
       if (min == null || max == null) return
-      panStart = { px: e.clientX, min, max }
+      const { min: yMin, max: yMax } = inst.scales.y
+      panStart = {
+        px: e.clientX,
+        py: e.clientY,
+        min,
+        max,
+        offsetMv: verticalOffsetRef.current,
+        spanMv: yMin != null && yMax != null ? yMax - yMin : 0,
+      }
       container.setPointerCapture(e.pointerId)
       container.style.cursor = 'grabbing'
     }
@@ -563,7 +586,17 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       if (!inst) return
       const rect = inst.over.getBoundingClientRect()
       const dxPx = e.clientX - panStart.px
-      if (Math.abs(dxPx) > 3) suppressClick = true
+      const dyPx = e.clientY - panStart.py
+      if (Math.hypot(dxPx, dyPx) > 3) suppressClick = true
+      if (!scaleRef.current.autoAmplitude && rect.height > 0 && panStart.spanMv > 0) {
+        // Se arrastra el papel: bajar el puntero baja la traza y deja ver lo
+        // que estaba por encima.
+        verticalOffsetRef.current = panStart.offsetMv + (dyPx / rect.height) * panStart.spanMv
+        const { min, max } = inst.scales.x
+        if (min != null && max != null) {
+          applyVerticalRange(inst, scaleRef.current, signal, min, max, verticalOffsetRef)
+        }
+      }
       const viewWidthSec = panStart.max - panStart.min
       const dSec = -(dxPx / rect.width) * viewWidthSec
       const [clampedMin, clampedMax] = clampRange(
@@ -623,11 +656,22 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     }
     container.addEventListener('click', handleClick)
 
-    // Teclado: flechas mueven el viewport en 10% del ancho actual.
+    // Teclado: flechas mueven el viewport en 10% del ancho (o del alto) actual.
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
       const inst = uplotRef.current
       if (!inst) return
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (scaleRef.current.autoAmplitude) return
+        const { min: yMin, max: yMax } = inst.scales.y
+        const { min, max } = inst.scales.x
+        if (yMin == null || yMax == null || min == null || max == null) return
+        const dir = e.key === 'ArrowUp' ? 1 : -1
+        verticalOffsetRef.current += (yMax - yMin) * 0.1 * dir
+        applyVerticalRange(inst, scaleRef.current, signal, min, max, verticalOffsetRef)
+        e.preventDefault()
+        return
+      }
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
       const { min, max } = inst.scales.x
       if (min == null || max == null) return
       const span = max - min
@@ -688,6 +732,9 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     const previous = appliedScaleRef.current
     appliedScaleRef.current = scale
     if (previous === null || previous === scale) return
+    // Otra ganancia es otro encuadre: el desplazamiento que servía para la
+    // anterior ya no apunta a lo mismo.
+    verticalOffsetRef.current = 0
     const inst = uplotRef.current
     if (!inst) return
     const { min, max } = inst.scales.x
@@ -702,7 +749,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     )
     const { min: nextMin, max: nextMax } = inst.scales.x
     if (nextMin != null && nextMax != null) {
-      applyVerticalRange(inst, scale, signalRef.current, nextMin, nextMax)
+      applyVerticalRange(inst, scale, signalRef.current, nextMin, nextMax, verticalOffsetRef)
     }
     inst.redraw()
   }, [scale, durationSec])
@@ -749,6 +796,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       resetScale() {
         const inst = uplotRef.current
         if (!inst) return
+        verticalOffsetRef.current = 0
         const { min, max } = inst.scales.x
         applyScaleSpanAtCursor(
           inst,
@@ -771,12 +819,6 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     [signal, durationSec],
   )
 
-  const unprocessedStartMs = unprocessedTailStartMs(signal)
-  const unprocessedBand =
-    plotArea && overlayViewport && unprocessedStartMs !== null
-      ? unprocessedBandPx(unprocessedStartMs, overlayViewport, plotArea.width)
-      : null
-
   return (
     <div className="relative w-full" style={{ height }}>
       <div
@@ -785,27 +827,6 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         aria-label="Gráfico ECG interactivo"
         tabIndex={0}
       />
-      {plotArea && unprocessedBand ? (
-        <div
-          role="note"
-          data-testid="ecg-unprocessed-band"
-          className="pointer-events-none absolute flex items-center justify-center overflow-hidden border-l border-dashed border-border bg-bg-muted/80"
-          style={{
-            left: plotArea.left + unprocessedBand.leftPx,
-            top: plotArea.top,
-            width: unprocessedBand.widthPx,
-            height: plotArea.height,
-          }}
-        >
-          {unprocessedBand.widthPx >= 120 ? (
-            <span className="rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-fg-muted shadow-sm">
-              Sin datos procesados
-            </span>
-          ) : (
-            <span className="sr-only">Sin datos procesados</span>
-          )}
-        </div>
-      ) : null}
       {plotArea && annotationLabelLayouts.length > 0 ? (
         <div
           ref={labelsOverlayRef}
@@ -862,24 +883,20 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           })}
         </div>
       ) : null}
+      {toolbar ? (
+        // Fuera del contenedor de uPlot a propósito: un click acá no tiene que
+        // arrancar un pan ni seleccionar el aviso que esté debajo.
+        <div
+          className="absolute z-10"
+          style={{ top: (plotArea?.top ?? 0) + 8, right: 8 }}
+          data-testid="ecg-viewer-toolbar"
+        >
+          {toolbar}
+        </div>
+      ) : null}
     </div>
   )
 })
-
-/**
- * Porción visible del tramo sin procesar, en px dentro del área de trazado.
- * `null` si el viewport no llega a ese tramo.
- */
-function unprocessedBandPx(
-  startMs: number,
-  viewport: ECGViewportChange,
-  plotWidth: number,
-): { leftPx: number; widthPx: number } | null {
-  const spanMs = viewport.endMs - viewport.startMs
-  if (spanMs <= 0 || plotWidth <= 0 || startMs >= viewport.endMs) return null
-  const leftPx = Math.max(0, ((startMs - viewport.startMs) / spanMs) * plotWidth)
-  return leftPx < plotWidth ? { leftPx, widthPx: plotWidth - leftPx } : null
-}
 
 /**
  * Eje X en segundos desde el inicio del estudio, derivado de la hora real de
@@ -978,6 +995,11 @@ function plotHeightPx(inst: uPlot): number {
  * mV sin que sea una falla (`INTEGRACION.md` §3.2, y es por eso que `raw_uV` es
  * int32 y no int16). Un rango anclado en 0 dejaría a esos pacientes con la
  * pantalla en blanco.
+ *
+ * Sobre ese centro se suma el desplazamiento vertical que eligió el médico,
+ * acotado para que la traza nunca quede entera fuera de pantalla. El valor
+ * acotado se escribe de vuelta en `offsetMv`: si no, seguir arrastrando más
+ * allá del tope dejaría un desplazamiento fantasma que habría que deshacer.
  */
 function applyVerticalRange(
   inst: uPlot,
@@ -985,6 +1007,7 @@ function applyVerticalRange(
   signal: ECGSignal,
   minSec: number,
   maxSec: number,
+  offsetMv: { current: number },
 ): void {
   const heightPx = plotHeightPx(inst)
   if (heightPx <= 0) return
@@ -996,9 +1019,16 @@ function applyVerticalRange(
   if (!extent) return
   // En modo automático el rango lo pone la señal visible: es lo que permite ver
   // un trazado que se sale de cualquier ganancia fija.
-  const [min, max] = scale.autoAmplitude
-    ? extent
-    : verticalRange(scale, heightPx, baselineMv(signal.samples, from, to))
+  let min: number
+  let max: number
+  if (scale.autoAmplitude) {
+    ;[min, max] = extent
+  } else {
+    const baseline = baselineMv(signal.samples, from, to)
+    const center = pannedCenterMv(baseline, offsetMv.current, extent)
+    offsetMv.current = center - baseline
+    ;[min, max] = verticalRange(scale, heightPx, center)
+  }
   const current = inst.scales.y
   // Sin la comparación esto se llamaría a sí mismo: `setScale` dispara el hook
   // que lo invocó. El epsilon absorbe el redondeo del centro.

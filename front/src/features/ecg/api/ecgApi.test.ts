@@ -57,10 +57,11 @@ describe('getStudyEcg', () => {
         sampleCount: 1000,
         sampleRate: 500,
         durationMs: 3 * 60 * 60 * 1000,
-        levels: [level({ samplesPerBucket: 256, pointCount: 4 })],
+        // Cuatro buckets de 256 cubren las 1000 muestras: nada queda sin procesar.
+        levels: [level({ samplesPerBucket: 256, pointCount: 8, byteLength: 32 })],
       }),
     })
-    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4, 5, 6, 7, 8])) as typeof fetch
 
     const signal = await getStudyEcg('study-id')
 
@@ -81,13 +82,13 @@ describe('getStudyEcg', () => {
     const signal = await getStudyEcg('study-id')
 
     expect(signal.metadata?.processedSampleCount).toBe(800)
-    // Sin tramos, la hora sale de la frecuencia: 800 muestras a 500 Hz.
-    expect(signal.metadata?.processedEndMs).toBe(1_700_000_001_600)
-    expect(signal.durationMs).toBe(3200)
+    // El eje termina en lo procesado, no en el final del estudio. Sin tramos,
+    // la hora sale de la frecuencia: 800 muestras a 500 Hz.
+    expect(signal.durationMs).toBe(1600)
     expect(signal.timestampsMs[99] - signal.timestampsMs[0]).toBe(1584)
   })
 
-  it('no informa tramo sin procesar cuando el nivel cubre todo el estudio', async () => {
+  it('el eje llega al final del estudio cuando el nivel lo cubre entero', async () => {
     installDecoderWorker()
     vi.spyOn(api, 'get').mockResolvedValue({
       data: manifest({
@@ -100,10 +101,10 @@ describe('getStudyEcg', () => {
     const signal = await getStudyEcg('study-id')
 
     expect(signal.metadata?.processedSampleCount).toBe(1600)
-    expect(signal.metadata?.processedEndMs).toBeUndefined()
+    expect(signal.durationMs).toBe(3200)
   })
 
-  it('ubica el final procesado en la hora de pared de su tramo', async () => {
+  it('termina el eje en la hora de pared del final procesado', async () => {
     installDecoderWorker()
     const start = 1_700_000_000_000
     vi.spyOn(api, 'get').mockResolvedValue({
@@ -123,10 +124,10 @@ describe('getStudyEcg', () => {
     const signal = await getStudyEcg('study-id')
 
     // La muestra 800 es la 300 del segundo tramo: 300 × 2 ms después de su inicio.
-    expect(signal.metadata?.processedEndMs).toBe(start + 3_601_000 + 600)
+    expect(signal.startTimestamp + signal.durationMs).toBe(start + 3_601_000 + 600)
   })
 
-  it('no tapa puntos dibujados cuando las anclas de dos tramos se solapan', async () => {
+  it('no corta puntos dibujados cuando las anclas de dos tramos se solapan', async () => {
     installDecoderWorker()
     const start = 1_700_000_000_000
     vi.spyOn(api, 'get').mockResolvedValue({
@@ -146,7 +147,7 @@ describe('getStudyEcg', () => {
 
     expect(signal.metadata?.processedSampleCount).toBe(544)
     expect(signal.timestampsMs.at(-1)).toBe(start + 992)
-    expect(signal.metadata?.processedEndMs).toBe(start + 992)
+    expect(signal.startTimestamp + signal.durationMs).toBe(start + 992)
   })
 
   it('marca la hora como no verificada si un tramo posterior no tiene bootId del ancla', async () => {
@@ -498,10 +499,11 @@ describe('línea de tiempo de pared', () => {
       data: manifest({
         sampleCount: 1000,
         sampleRate: 500,
-        levels: [level({ samplesPerBucket: 256, pointCount: 4 })],
+        // Cuatro buckets de 256 cubren las 1000 muestras: nada queda sin procesar.
+        levels: [level({ samplesPerBucket: 256, pointCount: 8, byteLength: 32 })],
       }),
     })
-    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4, 5, 6, 7, 8])) as typeof fetch
 
     const signal = await getStudyEcg('study-id')
 
