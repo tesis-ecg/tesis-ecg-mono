@@ -10,15 +10,18 @@ Reglas que atraviesan todo el módulo:
   la línea de tiempo, un hueco interno o una exclusión entre dos latidos lo
   invalida. Por eso un hueco de registro nunca se cuenta como pausa.
 - **Exclusiones:** los tramos `lead_off`, `sqi_unanalyzable` y `adc_saturated`
-  (reglas de `INTEGRACION.md` §4.5), y desde la versión 2 del algoritmo las
+  (reglas de `INTEGRACION.md` §4.5), desde la versión 2 del algoritmo las
   ventanas que el motor de detección marcó como ruido
-  (`QUALITY_EXCLUSION_REASONS`). Sus latidos no se cuentan.
+  (`QUALITY_EXCLUSION_REASONS`), y desde la 3 las que declaró riel
+  (`HARDWARE_QUALITY_REASONS`), que llegan con el hardware. Sus latidos no se
+  cuentan.
 - **Las pausas no miran el ruido del motor.** Una asistolia es señal sin QRS, y
   el gate de calidad la marca `bad` por pSQI o basSQI igual que al ruido: sus
   índices son cocientes de potencia y no ven la amplitud. Medido de punta a
   punta: con el ruido excluido, una asistolia de 12-26 s desaparecía del
   informe. Las pausas se buscan entonces con las exclusiones del hardware
-  solamente —como en la versión 1— y el médico las verifica en su tira.
+  solamente —como en la versión 1— y el médico las verifica en su tira. Un
+  riel no es ruido sino señal que falta: entra con el hardware y sí corta.
 - **Sin clasificación de latidos.** Todavía no hay motor que distinga latidos
   normales, supraventriculares y ventriculares (req. 3). Las métricas S y V y los
   latidos anormales quedan en `None`. La VFC usa como NN los RR que pasan el
@@ -44,6 +47,7 @@ from app.ml import hrv
 from app.ml.holter_contracts import BREAK_KINDS as BREAK_KINDS
 from app.ml.holter_contracts import ECTOPY_UNAVAILABLE as ECTOPY_UNAVAILABLE
 from app.ml.holter_contracts import EXCLUSION_KINDS as EXCLUSION_KINDS
+from app.ml.holter_contracts import HARDWARE_QUALITY_REASONS as HARDWARE_QUALITY_REASONS
 from app.ml.holter_contracts import QUALITY_EXCLUSION_REASONS as QUALITY_EXCLUSION_REASONS
 from app.ml.holter_contracts import TimelineRun as TimelineRun
 
@@ -56,12 +60,18 @@ from app.ml.holter_contracts import TimelineRun as TimelineRun
 #: - 2: además, sin las ventanas que el motor marcó como ruido
 #:   (`QUALITY_EXCLUSION_REASONS`) salvo para las pausas, y sin RR que crucen
 #:   un `frame_gap`.
+#: - 3: además, sin los rieles que el motor declaró señal que falta
+#:   (`HARDWARE_QUALITY_REASONS`), **pausas incluidas**: llegan desde
+#:   `studies_service` como un tramo del hardware. Con la 2, un riel sin
+#:   `LEAD_OFF` (segmento viejo, ADC congelado, corto) salía como una pausa de
+#:   lo que durara, que el motor nunca afirmó ni avisó.
 #:
 #: Es la versión vigente. Un cálculo concreto informa la 1 si no recibió el
 #: veredicto del motor (`noise=None`: apagado, o una señal que no evaluó
 #: entera), porque entonces es exactamente el algoritmo 1 y la nota de método
-#: no puede afirmar una exclusión que no se aplicó.
-ALGORITHM_VERSION = 2
+#: no puede afirmar una exclusión que no se aplicó: `studies_service` tampoco
+#: le pasa los rieles.
+ALGORITHM_VERSION = 3
 #: Versión que se informa cuando el motor no cubrió la señal.
 ALGORITHM_VERSION_WITHOUT_ENGINE = 1
 
@@ -338,10 +348,11 @@ def compute_holter_metrics(
 ) -> dict[str, Any]:
     """Métricas del informe en el formato de `HolterMetricsOut` (camelCase).
 
-    `exclusions` son los tramos del hardware (`EXCLUSION_KINDS`) y `noise` las
-    ventanas que el motor marcó como ruido. `None` en `noise` quiere decir que
-    el motor no evaluó la señal: el resultado es el del algoritmo 1 y lo
-    declara. Con una lista —aunque esté vacía— es el 2.
+    `exclusions` son los tramos del hardware (`EXCLUSION_KINDS`, más los
+    rieles del motor desde la versión 3) y `noise` las ventanas que el motor
+    marcó como ruido. `None` en `noise` quiere decir que el motor no evaluó la
+    señal: el resultado es el del algoritmo 1 y lo declara. Con una lista
+    —aunque esté vacía— es la vigente (`ALGORITHM_VERSION`).
 
     El ruido sale de todo salvo de las pausas (ver el docstring del módulo):
     sus latidos no se cuentan para la FC, la VFC ni los extremos, y un RR que

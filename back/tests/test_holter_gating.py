@@ -8,10 +8,15 @@ señal entra. Lo que fija este archivo:
   salen de la FC, la VFC y la cuenta de latidos como una exclusión más, **pero
   no de las pausas**: una asistolia es señal sin QRS y el gate la marca `bad`
   por pSQI igual que al ruido (lo fija un test de punta a punta acá abajo).
-  `no_beats`, `flatline` y `marginal` no excluyen nada.
-- **La versión dice la verdad.** Solo es la 2 si el motor evaluó toda la señal
-  analizada: con el motor apagado, o con filas que no la cubren desde el
-  inicio, las métricas son las del algoritmo 1 enteras y lo declaran.
+  `no_beats` y `marginal` no excluyen nada.
+- **G3.** Un riel (`flatline`) no es ruido sino señal que falta: sale de todo
+  **pausas incluidas**, igual que un `lead_off` sobre el mismo tramo. Es lo que
+  alinea el informe con el motor, que no infiere una pausa a través de un riel
+  sin `LEAD_OFF` y no le avisa al paciente (también de punta a punta).
+- **La versión dice la verdad.** Solo es la vigente (`ALGORITHM_VERSION`) si
+  el motor evaluó toda la señal analizada: con el motor apagado, o con filas
+  que no la cubren desde el inicio, las métricas son las del algoritmo 1
+  enteras —sin el ruido ni los rieles— y lo declaran.
 - **frame_gap** corta el RR: el buffer empaquetado pega las dos tramas y el RR
   que cruza el empalme mide adquisición perdida, no el corazón.
 - **G2.** Con el motor prendido, el informe final espera a que su cursor cubra
@@ -38,7 +43,7 @@ from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLev
 from app.db.models.user import User
 from app.ml.holter_metrics import ALGORITHM_VERSION
 from tests.ecg_synth import SAMPLE_RATE
-from tests.test_ml_blocks import _Chaleco, _ecg, _estudio, _latidos
+from tests.test_ml_blocks import _Chaleco, _ecg, _estudio, _eventos_del_motor, _latidos
 from tests.test_ml_ingest import finalizar
 from tests.test_studies_holter_metrics import RATE, _doctor_user, _study_with_signal
 
@@ -154,7 +159,7 @@ async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_pero_no_de_las_pausas(
     despues = await _metricas(db, as_user, doctor, study)
 
     assert antes["analysis"]["algorithmVersion"] == 1
-    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 2
+    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 3
     assert antes["analysis"]["excludedMs"] == 0
     assert despues["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
     assert despues["analysis"]["analyzedMs"] == (
@@ -171,7 +176,6 @@ async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_pero_no_de_las_pausas(
     ("level", "reason"),
     [
         (SignalQualityLevel.BAD, "no_beats"),
-        (SignalQualityLevel.BAD, "flatline"),
         (SignalQualityLevel.MARGINAL, "bsqi"),
         # Las filas de antes de separar los índices (y de quitar la red).
         (SignalQualityLevel.BAD, "spectral"),
@@ -189,10 +193,124 @@ async def test_un_veredicto_que_no_es_ruido_no_excluye_nada(
     await _calidad(db, study, level, reason, desde, hasta)
     body = await _metricas(db, as_user, doctor, study)
 
-    assert body["analysis"]["algorithmVersion"] == 2
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
     assert body["pauses"]["count"] == 1
     assert abs(body["pauses"]["longest"]["durationMs"] - 2600) <= 10
     assert body["analysis"]["excludedMs"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# G3: un riel del motor sale como el hardware, pausas incluidas
+# --------------------------------------------------------------------------- #
+
+
+async def _lead_off(db, study, desde: int, hasta: int) -> None:  # type: ignore[no-untyped-def]
+    """El evento de la Capa A que deja `derive_events` con `LEAD_OFF` en los flags."""
+    lote = await _lote(db, study)
+    db.add(
+        ECGEvent(
+            batch_id=lote.id,
+            study_id=study.id,
+            event_type=ECGEventType.NOISE,
+            severity=ECGEventSeverity.MEDIUM,
+            timestamp_in_recording=desde / RATE,
+            event_metadata={
+                "kind": "lead_off",
+                "startSampleIndex": desde,
+                "sampleCount": hasta - desde,
+            },
+        )
+    )
+    await db.commit()
+
+
+async def test_un_riel_del_motor_sale_de_las_pausas_como_un_lead_off(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """Un riel sin `LEAD_OFF` sobre la pausa (segmento viejo, ADC congelado,
+    corto): el motor lo declara `flatline` y no infiere una pausa a través de
+    él. El informe tampoco: el resultado es el mismo que con un `lead_off` de
+    la Capa A sobre el mismo tramo. Antes listaba la pausa."""
+    doctor, riel, times = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    antes = await _metricas(db, as_user, doctor, riel)
+    desde, hasta = _alrededor_de_la_pausa(times)
+    await _calidad(db, riel, SignalQualityLevel.BAD, "flatline", desde, hasta)
+    con_riel = await _metricas(db, as_user, doctor, riel)
+
+    doctor, desconectado, _ = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    await _calidad(
+        db,
+        desconectado,
+        SignalQualityLevel.GOOD,
+        "ok",
+        0,
+        desconectado.samples_count,
+        cubre_todo=False,
+    )
+    await _lead_off(db, desconectado, desde, hasta)
+    con_lead_off = await _metricas(db, as_user, doctor, desconectado)
+
+    assert antes["pauses"]["count"] == 1
+    assert con_riel["pauses"]["count"] == 0
+    assert con_riel["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 3
+    assert con_riel["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
+    assert con_riel["heartRate"]["totalBeats"] < antes["heartRate"]["totalBeats"]
+    assert con_riel["analysis"] == con_lead_off["analysis"]
+    assert con_riel["pauses"] == con_lead_off["pauses"]
+    assert con_riel["heartRate"]["totalBeats"] == con_lead_off["heartRate"]["totalBeats"]
+
+
+async def test_el_ruido_sigue_sin_tocar_las_pausas_aunque_haya_un_riel(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """El riel corta las pausas; el ruido no. pSQI sobre la pausa y un riel
+    lejos de ella: los dos salen de la FC y la pausa queda, porque el gate
+    marca así también una asistolia."""
+    doctor, study, times = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    desde, hasta = _alrededor_de_la_pausa(times)
+    riel_desde, riel_hasta = int(round(times[20] * RATE)), int(round(times[40] * RATE))
+    await _calidad(db, study, SignalQualityLevel.BAD, "psqi", desde, hasta, cubre_todo=False)
+    await _calidad(
+        db, study, SignalQualityLevel.BAD, "flatline", riel_desde, riel_hasta, cubre_todo=False
+    )
+    await _calidad(
+        db, study, SignalQualityLevel.GOOD, "ok", 0, study.samples_count, cubre_todo=False
+    )
+
+    body = await _metricas(db, as_user, doctor, study)
+
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
+    assert (
+        body["analysis"]["excludedMs"]
+        == ((hasta - desde) + (riel_hasta - riel_desde)) * 1000 // RATE
+    )
+    assert body["pauses"]["count"] == 1
+    assert abs(body["pauses"]["longest"]["durationMs"] - 2600) <= 10
+
+
+async def test_sin_el_veredicto_completo_del_motor_el_riel_no_se_aplica(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """Como el ruido: con filas que no cubren la señal, las métricas son las
+    del algoritmo 1 enteras, que no conoce rieles."""
+    doctor, study, times = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    antes = await _metricas(db, as_user, doctor, study)
+    desde, hasta = _alrededor_de_la_pausa(times)
+
+    await _calidad(db, study, SignalQualityLevel.BAD, "flatline", desde, hasta, cubre_todo=False)
+    despues = await _metricas(db, as_user, doctor, study)
+
+    assert despues == antes
+    assert despues["analysis"]["algorithmVersion"] == 1
+    assert despues["pauses"]["count"] == 1
 
 
 async def test_si_el_motor_no_evaluo_toda_la_senal_las_metricas_son_las_de_la_version_1(
@@ -244,7 +362,7 @@ async def test_con_el_motor_en_curso_lo_que_todavia_no_evaluo_no_baja_la_version
 
     body = await _metricas(db, as_user, doctor, study)
 
-    assert body["analysis"]["algorithmVersion"] == 2
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
     assert body["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
 
 
@@ -304,10 +422,68 @@ async def test_una_asistolia_que_el_motor_marca_como_ruido_sigue_en_el_informe(
     body = (await as_user(user).get(f"/studies/{study_id}/holter-metrics")).json()
     preview = (await as_user(user).get(f"/studies/{study_id}/clinical-report/preview")).json()
 
-    assert body["analysis"]["algorithmVersion"] == 2
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
     assert body["analysis"]["excludedMs"] > 0
     assert body["pauses"]["count"] == 1
     assert abs(body["pauses"]["longest"]["durationMs"] - (asistolia_s + 1) * 1000) <= 20
+    assert preview["snapshot"]["metrics"]["pauses"] == body["pauses"]
+
+
+@pytest.mark.usefixtures("ml_engine")
+async def test_un_riel_sin_lead_off_no_es_una_pausa_ni_para_el_motor_ni_para_el_informe(
+    client,
+    s3,
+    db,
+    monkeypatch,
+    sent_pushes,
+    as_user,
+    make_doctor,
+    make_patient,
+    make_device,
+    make_study,
+) -> None:
+    """De punta a punta, con el motor de verdad: 240 s a 60 lpm con 30 s de
+    riel en cero exacto desde t = 100 s y sin `LEAD_OFF` en los flags (un ADC
+    congelado, un corto, un segmento viejo). El motor marca `flatline`, no
+    escribe una pausa ni avisa; el informe tampoco lista una de 31 s —antes la
+    listaba—. La asistolia de verdad sigue saliendo en los dos
+    (`test_una_asistolia_que_el_motor_marca_como_ruido_sigue_en_el_informe`).
+    """
+    monkeypatch.setattr(settings, "ml_analysis_block_seconds", 60.0)
+    monkeypatch.setattr(settings, "ml_analysis_context_seconds", 30.0)
+    monkeypatch.setattr(settings, "ml_analysis_lookahead_seconds", 10.0)
+    doctor = await make_doctor()
+    patient = await make_patient(doctor=doctor)
+    device, api_key = await make_device(patient=patient)
+    study = await make_study(patient, device)
+    study_id, doctor_user_id = study.id, doctor.user_id
+    chaleco = _Chaleco(client, db, device, api_key)
+    senal, flags = _ecg(_latidos([(240.0, 60.0)]), 240.0, plano=(100.0, 130.0))
+    for inicio in range(0, 240, 15):
+        tramo = slice(inicio * SAMPLE_RATE, (inicio + 15) * SAMPLE_RATE)
+        await chaleco.enviar(senal[tramo], flags[tramo])
+    await finalizar(db, monkeypatch, study_id)
+    study = await _estudio(db, study_id)
+    assert study.ml_analyzed_samples == study.beats_analyzed_samples == study.samples_count
+    filas = (
+        await db.scalars(
+            select(SignalQualityInterval).where(SignalQualityInterval.study_id == study_id)
+        )
+    ).all()
+    rieles = [
+        fila for fila in filas if fila.level is SignalQualityLevel.BAD and fila.reason == "flatline"
+    ]
+    assert sum(fila.sample_count for fila in rieles) == 30 * SAMPLE_RATE
+    assert await _eventos_del_motor(db, study_id, "pause") == []
+    assert [p for p in sent_pushes if p[1].data.get("kind") == "pause"] == []
+
+    user = await db.get(User, doctor_user_id)
+    body = (await as_user(user).get(f"/studies/{study_id}/holter-metrics")).json()
+    preview = (await as_user(user).get(f"/studies/{study_id}/clinical-report/preview")).json()
+
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
+    assert body["analysis"]["excludedMs"] >= 30_000
+    assert body["pauses"]["count"] == 0
     assert preview["snapshot"]["metrics"]["pauses"] == body["pauses"]
 
 

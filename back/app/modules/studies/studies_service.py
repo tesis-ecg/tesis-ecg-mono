@@ -34,6 +34,7 @@ from app.ml.holter_contracts import (
     BREAK_KINDS,
     ECTOPY_UNAVAILABLE,
     EXCLUSION_KINDS,
+    HARDWARE_QUALITY_REASONS,
     QUALITY_EXCLUSION_REASONS,
     TimelineRun,
 )
@@ -1468,7 +1469,8 @@ def _metric_noise(
 
     Solo excluyen los `bad` por ruido (`QUALITY_EXCLUSION_REASONS`), con su
     tramo exacto: el motor los escribe troceados por bloque y
-    `compute_holter_metrics` funde los contiguos.
+    `compute_holter_metrics` funde los contiguos. Los rieles (`flatline`) no son
+    ruido: van con el hardware (`_metric_rails`), bajo esta misma condición.
 
     Pero solo si el motor evaluó **toda** la señal que tenía que evaluar —cada
     corrida desde su inicio, hasta donde llegó su cursor, o hasta el de los
@@ -1506,6 +1508,22 @@ def _metric_noise(
         (row.start_sample_index, row.start_sample_index + row.sample_count)
         for row in quality
         if row.level is SignalQualityLevel.BAD and row.reason in QUALITY_EXCLUSION_REASONS
+    ]
+
+
+def _metric_rails(quality: list[SignalQualityInterval]) -> list[tuple[int, int]]:
+    """Los rieles que el motor declaró señal que falta (`HARDWARE_QUALITY_REASONS`).
+
+    Entran como un tramo del hardware más —salen también de las pausas— y no
+    como ruido: un riel sin `LEAD_OFF` (segmento viejo, ADC congelado, corto)
+    no es una asistolia, y el motor no infiere una pausa a través de él
+    (`quiet_gap`). Sin esto `/holter-metrics` listaba una "pausa" de lo que
+    durara el riel. Solo con el veredicto del motor completo (`_metric_noise`).
+    """
+    return [
+        (row.start_sample_index, row.start_sample_index + row.sample_count)
+        for row in quality
+        if row.level is SignalQualityLevel.BAD and row.reason in HARDWARE_QUALITY_REASONS
     ]
 
 
@@ -1570,6 +1588,11 @@ async def _holter_metrics(
         return _metrics_unavailable("pending", "ANALYSIS_PENDING")
     runs = _metric_runs(study, timeline)
     exclusions, breaks = _metric_quality_marks(events)
+    noise = _metric_noise(study, runs, quality)
+    if noise is not None:
+        # El riel del motor sale como un `lead_off`, pausas incluidas; el ruido
+        # sale de todo salvo de las pausas (`compute_holter_metrics`).
+        exclusions += _metric_rails(quality)
     beats = await asyncio.to_thread(load_beats, study)
     raw = await asyncio.to_thread(
         compute_holter_metrics,
@@ -1579,7 +1602,7 @@ async def _holter_metrics(
         breaks,
         study.sample_rate or 500,
         study.beats_analyzed_samples,
-        noise=_metric_noise(study, runs, quality),
+        noise=noise,
     )
     return HolterMetricsOut.model_validate(raw)
 
