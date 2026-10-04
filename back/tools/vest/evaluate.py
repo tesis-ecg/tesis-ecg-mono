@@ -167,6 +167,8 @@ class CaptureResult:
     windows: tuple[QualityWindow, ...]
     findings: collections.Counter[str]
     metrics: dict[str, float]
+    #: Pausas que salieron por la regla de hueco quieto (`app/ml/quiet_gap.py`).
+    quiet_gap_pauses: int
     #: Falso si las ventanas recalculadas no coinciden con las que devolvió
     #: `analyze_batch`. No debería pasar nunca: es la misma cuenta.
     consistent: bool
@@ -223,6 +225,11 @@ def run_capture(path: Path, mains_hz: float | None) -> CaptureResult:
         windows=report.windows,
         findings=collections.Counter(finding.kind for finding in result.findings),
         metrics=result.metrics,
+        quiet_gap_pauses=sum(
+            1
+            for finding in result.findings
+            if finding.kind == "pause" and finding.metadata.get("quietGap")
+        ),
         consistent=recomputed == returned,
     )
 
@@ -277,6 +284,12 @@ def print_capture(result: CaptureResult, *, timeline: bool) -> None:
         f"  latidos analizados {metrics.get('analyzedBeats', 0):.0f}"
         f" · plantillas {metrics.get('templates', 0):.0f}"
         f" · hallazgos {_counter(result.findings)}"
+    )
+    print(
+        f"  ritmo     pausas {result.findings['pause']}"
+        f" (hueco quieto {result.quiet_gap_pauses})"
+        f" · taquicardias {result.findings['tachycardia']}"
+        f" · bradicardias {result.findings['bradycardia']}"
     )
     if not result.consistent:
         print("  ⚠ las ventanas recalculadas no coinciden con las de analyze_batch")
@@ -377,6 +390,18 @@ def all_good_inside(ranges: Sequence[tuple[float, float]]) -> Check:
     return check
 
 
+#: Hallazgos que son ritmo: los que le avisan al paciente.
+RHYTHM_KINDS = ("pause", "tachycardia", "bradycardia")
+
+
+def no_rhythm() -> Check:
+    def check(result: CaptureResult) -> tuple[bool, str]:
+        rhythm = sum(result.findings[kind] for kind in RHYTHM_KINDS)
+        return rhythm == 0, f"{rhythm} de ritmo ({result.findings['pause']} pausas)"
+
+    return check
+
+
 def all_reason(reason: str) -> Check:
     def check(result: CaptureResult) -> tuple[bool, str]:
         matching = sum(1 for window in result.windows if window.reason == reason)
@@ -398,6 +423,24 @@ EXPECTATIONS: tuple[tuple[str, str, Check], ...] = (
     ("captura_canal2_loff0C_seco_saturada", "todas lead_off", all_reason("lead_off")),
 )
 
+#: Capturas con ruido, electrodos despegados o mal contacto, y ningún episodio
+#: de ritmo real. Un hallazgo de ritmo ahí es una arritmia que el ruido inventó
+#: y que le avisaría al paciente: es lo que el gate existe para evitar, y la
+#: guarda de la regla de pausa por hueco quieto (`app/ml/quiet_gap.py`).
+NOISY_CAPTURES = (
+    "ab_cargador_vecino",
+    "ab_router",
+    "ab_tapa_router",
+    "aviso_ll_ra",
+    "leadoff_broches",
+    "leadoff_final",
+    "leadoff_head_con_puente",
+    "leadoff_piel_cargador",
+    "loff0C_gel",
+    "loff0C_seco_saturada",
+    "movimiento_con_puente",
+)
+
 #: Guardas de regresión: **no salen del plan** sino de lo que el motor da hoy,
 #: revisado ventana por ventana contra la bitácora de cada captura (README de
 #: `capturas/`). Fijan las dos direcciones en que un cambio de Q o de umbral
@@ -415,6 +458,7 @@ REGRESSION: tuple[tuple[str, str, Check], ...] = (
         "todas good en 130-210 s y 380-450 s",
         all_good_inside(((130.0, 210.0), (380.0, 450.0))),
     ),
+    *((f"captura_canal2_{name}", "0 hallazgos de ritmo", no_rhythm()) for name in NOISY_CAPTURES),
 )
 
 

@@ -12,7 +12,10 @@ El orden no es arbitrario, es la estrategia:
 
 El gate va **antes** que todo lo clínico. Un artefacto de movimiento se parece
 muchísimo más a una arritmia que a un latido normal, así que un motor que no
-descarta ruido primero produce cientos de falsos positivos por día.
+descarta ruido primero produce cientos de falsos positivos por día. Lo único
+que el ritmo mira detrás del gate es la asistolia larga, cuyas ventanas sin QRS
+el gate rechaza: `quiet_gap.py` la informa solo si el hueco está quieto contra
+los latidos del propio paciente y no falta señal.
 
 Al final, y solo si `ml_interval_measurements_enabled`, se miden QT, QTc y
 amplitud R del bloque (`app/ml/intervals.py`). Es dato de investigación: no
@@ -55,6 +58,7 @@ from app.ml.quality import (
     remove_mains,
     window_counts,
 )
+from app.ml.quiet_gap import GapEvidence, explained_by_pauses, refine_pauses
 from app.ml.rpeak_detection import (
     clean_signal,
     compensate_firmware_peaks,
@@ -288,6 +292,28 @@ def analyze_batch(
     analyzable = exclude_splices(report.analyzable, gap_samples, sample_rate)
 
     rr = build_rr(detected_peaks, analyzable, sample_rate)
+    # Las pausas que `detect_rhythm` no puede ver, y la depuración de las que
+    # sí (`quiet_gap.refine_pauses`): una asistolia larga deja ventanas enteras
+    # sin QRS, el gate las rechaza y el R-R que la cruza queda inválido. Corre
+    # sobre el bloque entero, contextos incluidos, igual que la serie R-R.
+    rhythm_findings = refine_pauses(
+        detect_rhythm(rr, config.rhythm, sample_rate),
+        GapEvidence(
+            signal=signal_mv,
+            flags=flags,
+            cleaned=cleaned,
+            rpeaks=detected_peaks,
+            firmware_peaks=firmware_peaks,
+            report=report,
+            analyzable=analyzable,
+            splice_free=exclude_splices(np.ones(n_samples, dtype=bool), gap_samples, sample_rate),
+            sample_rate=sample_rate,
+            tolerance_samples=config.quality.bsqi_tolerance_samples,
+            context_samples=context,
+            lookahead_samples=n_samples - end,
+        ),
+        pause_seconds=config.rhythm.pause_seconds,
+    )
     # La refractariedad corre ANTES de descartar lo del contexto: una pausa del
     # contexto y otra a 5 s, ya en la parte nueva, son un solo hallazgo cuando
     # el lote es uno solo, y tienen que seguir siéndolo cuando el borde cae
@@ -307,7 +333,7 @@ def analyze_batch(
     # separados por UNA ventana buena (hueco de 10 s justos) se volvían a fundir
     # en una banda de ruido pintada encima de la señal buena del medio.
     rhythm = apply_refractory(
-        detect_rhythm(rr, config.rhythm, sample_rate),
+        rhythm_findings,
         sample_rate=sample_rate,
         refractory_seconds=config.budget.refractory_seconds,
     )
@@ -330,7 +356,13 @@ def analyze_batch(
         for item in rhythm
         if item.start_sample + item.length_samples >= context - guard and item.start_sample < end
     ]
-    quality_findings = _quality_findings(reported, sample_rate)
+    # Las ventanas de una asistolia confirmada no se pintan como ruido: la pausa
+    # las explica (`quiet_gap.explained_by_pauses`). Siguen siendo `bad` en los
+    # intervalos de calidad, la máscara y los totales.
+    explained = set(explained_by_pauses(reported, rhythm))
+    quality_findings = _quality_findings(
+        tuple(window for window in reported if window not in explained), sample_rate
+    )
 
     # --- Etapa 2 ------------------------------------------------------------- #
     extracted = morphology.extract_beats(cleaned, detected_peaks, analyzable, sample_rate)

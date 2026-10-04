@@ -9,6 +9,11 @@ que la Etapa 1 marcó válidos. Un R-R que cruza un tramo de electrodo despegado
 no mide una pausa de cuatro segundos, mide que faltan los latidos que hubo ahí —
 y ese es exactamente el falso positivo que hace que un médico deje de confiar en
 la herramienta.
+
+La excepción es la asistolia larga: deja ventanas enteras sin un QRS, el gate
+las rechaza y el R-R que la cruza queda inválido. Esas pausas las agrega, y las
+de acá las depura, `quiet_gap.refine_pauses`, que corre después de esto en
+`pipeline.analyze_batch`.
 """
 
 from __future__ import annotations
@@ -47,6 +52,9 @@ _ALERT_MESSAGES = {
     "tachycardia": "Se detectó un episodio de taquicardia sostenida.",
     "bradycardia": "Se detectó un episodio de bradicardia sostenida.",
 }
+#: El de las pausas, que siempre avisan. Lo comparten las de hueco quieto
+#: (`quiet_gap.py`): para el paciente es la misma pausa.
+PAUSE_ALERT = "Se detectó una pausa en el ritmo."
 
 
 def _smooth_bpm(rr_seconds: Floats) -> Floats:
@@ -160,7 +168,7 @@ def detect_rhythm(rr: RRSeries, thresholds: RhythmThresholds, sample_rate: int) 
                 dedupe_key=f"pause:{start_sample}",
                 score=None,
                 beat_count=2,
-                alert_message="Se detectó una pausa en el ritmo.",
+                alert_message=PAUSE_ALERT,
                 beat_samples=(start_sample, int(rr.rpeaks[index + 1])),
                 metadata={"pauseSeconds": round(seconds, 3)},
             )

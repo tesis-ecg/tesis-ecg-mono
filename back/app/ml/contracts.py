@@ -99,6 +99,11 @@ class QualityReport:
     #: en falso el bSQI no se calcula: no se puede medir el acuerdo con un
     #: detector que no habló, y aplicarlo igual degradaría todo el registro.
     firmware_peaks_available: bool
+    #: La señal sin media y sin red sobre la que se calcularon los índices
+    #: (`quality.deinterfere`), del largo del lote. La lee la regla de pausa por
+    #: hueco quieto (`quiet_gap.py`): la red que se quitó es su medida del
+    #: contacto del electrodo, y volver a filtrar el bloque costaría otra pasada.
+    deinterfered: Signal
 
 
 @dataclass(frozen=True, slots=True)

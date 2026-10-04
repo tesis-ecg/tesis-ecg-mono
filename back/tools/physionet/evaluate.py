@@ -2,6 +2,8 @@
 
     uv run --with wfdb python -m tools.physionet.evaluate --download
     uv run --with wfdb python -m tools.physionet.evaluate
+    uv run --with wfdb python -m tools.physionet.evaluate --pauses --jobs 8   # pausas
+    uv run --with wfdb python -m tools.physionet.evaluate --pauses --wander 0.5
 
 **Nunca se entrena con estas etiquetas.** El motor es no supervisado; las
 anotaciones solo se leen después, para medir. Por eso reportar sobre el mismo
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -292,6 +295,150 @@ def quality_profile(
     return profile
 
 
+#: La verdad de las pausas: los latidos de las métricas más `!`, las ondas de
+#: aleteo ventricular. En el 207 son justo lo que tapa una pausa falsa.
+PAUSE_TRUTH_SYMBOLS = NORMAL_SYMBOLS | ABNORMAL_SYMBOLS | frozenset("!")
+#: Holgura con que una pausa del motor cubre un R-R anotado, y con que un
+#: latido anotado cae "adentro" de una pausa: la anotación y el detector marcan
+#: el R cada uno con su latencia de filtro.
+PAUSE_TOLERANCE_S = 0.15
+
+
+def _annotated_beats(name: str, base: str) -> np.ndarray:
+    """Los latidos anotados (`PAUSE_TRUTH_SYMBOLS`), en muestras a 500 Hz."""
+    import wfdb
+
+    annotation = wfdb.rdann(str(DATA_DIR / base / name), "atr")
+    samples = np.asarray(annotation.sample, dtype=np.int64) * TARGET_RATE // SOURCE_RATE
+    keep = np.array([symbol in PAUSE_TRUTH_SYMBOLS for symbol in annotation.symbol], dtype=bool)
+    return np.sort(samples[keep])
+
+
+def pause_config() -> pipeline.PipelineConfig:
+    """`public_data_config` sin refractariedad, sin tope por tipo y sin intervalos.
+
+    Así cada pausa sale por separado —solo se funden las que comparten un R, y
+    sus R quedan en `beat_samples`— y un registro de 30 min en un solo lote no
+    pierde pausas contra `max_per_kind`, que es un tope por bloque. La medición
+    de intervalos no toca el ritmo y es lo más lento del bloque.
+    """
+    config = public_data_config()
+    return replace(
+        config,
+        budget=replace(config.budget, refractory_seconds=0.0, max_per_kind=1_000_000),
+        intervals=None,
+    )
+
+
+#: Frecuencia de la deriva respiratoria de `--wander`, y cada cuánto se prende y
+#: se apaga: tramos alternados de 60 s, como un paciente que cambia de postura.
+WANDER_HZ = 0.25
+WANDER_PERIOD_S = 60.0
+
+
+def with_wander(signal_mv: np.ndarray, amplitude_mv: float) -> np.ndarray:
+    """La señal con deriva respiratoria de `amplitude_mv` en minutos alternados.
+
+    Es el adversario de `quiet_gap`: sobre un QRS chico la deriva deja ventanas
+    `bad` por kSQI/pSQI, y ahí la regla tiene que seguir viendo los latidos.
+    """
+    if amplitude_mv <= 0:
+        return signal_mv
+    t = np.arange(signal_mv.size) / TARGET_RATE
+    on = (np.floor(t / WANDER_PERIOD_S) % 2) == 1
+    out = signal_mv.astype(np.float64).copy()
+    out[on] += amplitude_mv * np.sin(2 * np.pi * WANDER_HZ * t[on])
+    return out.astype(np.float32)
+
+
+def pause_profile(name: str, base: str = "mitdb", wander_mv: float = 0.0) -> dict[str, float | str]:
+    """Las pausas del motor contra los R-R anotados de un registro.
+
+    - `cubiertas`: R-R anotados de más de `ml_pause_seconds` que alguna pausa
+      del motor cubre de punta a punta.
+    - `falsas`: pausas del motor con un latido anotado adentro. Cada una le
+      avisaría al paciente una pausa que no existió.
+    - `hueco_quieto`: cuántas pausas salieron por la regla de hueco quieto
+      (`app/ml/quiet_gap.py`), las que el gate de calidad tapaba.
+    """
+    record = load_record(name, base=base)
+    truth = _annotated_beats(name, base)
+    config = pause_config()
+    signal_mv = with_wander(record.signal_mv, wander_mv)
+    result = pipeline.analyze_batch(
+        signal_mv,
+        np.zeros(signal_mv.size, dtype=np.uint8),
+        start_sample_index=0,
+        bank=pipeline.empty_bank(config),
+        config=config,
+        fold_key=name,
+    )
+    tolerance = PAUSE_TOLERANCE_S * TARGET_RATE
+    pauses: list[tuple[int, int]] = []
+    quiet = 0
+    for finding in result.findings:
+        if finding.kind != "pause":
+            continue
+        pairs = list(zip(finding.beat_samples[:-1], finding.beat_samples[1:], strict=True))
+        pauses.extend(pairs)
+        quiet += len(pairs) if finding.metadata.get("quietGap") else 0
+    long_rr = np.flatnonzero(np.diff(truth) > config.rhythm.pause_seconds * TARGET_RATE)
+    covered = sum(
+        any(
+            start <= truth[index] + tolerance and end >= truth[index + 1] - tolerance
+            for start, end in pauses
+        )
+        for index in long_rr
+    )
+    false = sum(
+        bool(((truth > start + tolerance) & (truth < end - tolerance)).any())
+        for start, end in pauses
+    )
+    return {
+        "registro": name,
+        "anotadas": float(long_rr.size),
+        "cubiertas": float(covered),
+        "pausas": float(len(pauses)),
+        "hueco_quieto": float(quiet),
+        "falsas": float(false),
+    }
+
+
+def _pause_job(job: tuple[str, str, float]) -> dict[str, float | str]:
+    name, base, wander_mv = job
+    try:
+        return pause_profile(name, base, wander_mv)
+    except Exception as error:  # noqa: BLE001 — un registro faltante no corta el resto
+        return {"registro": name, "error": str(error)}
+
+
+def run_pauses(names: list[str], jobs: int, wander_mv: float = 0.0) -> None:
+    """Tabla de pausas por registro: `mitdb` entero (o `--records`) y `nstdb`.
+
+    En `nstdb` no hay R-R anotados de más de 2,5 s: toda pausa ahí es una que el
+    ruido inventó. `wander_mv` le suma a `mitdb` la deriva de `with_wander`
+    (`nstdb` ya trae la suya): con 0,5 mV, el 114 y el 228 daban pausas CRITICAL
+    falsas con la referencia en el percentil 90 de los latidos.
+    """
+    work = [(name, "mitdb", wander_mv) for name in names]
+    if (DATA_DIR / "nstdb").exists():
+        work += sorted((path.stem, "nstdb", 0.0) for path in (DATA_DIR / "nstdb").glob("*.hea"))
+    columns = ["anotadas", "cubiertas", "pausas", "hueco_quieto", "falsas"]
+    print(f"{'registro':<10}" + "".join(f"{column:>14}" for column in columns))
+    print("-" * (10 + 14 * len(columns)))
+    totals = {base: dict.fromkeys(columns, 0.0) for base in ("mitdb", "nstdb")}
+    with ProcessPoolExecutor(max_workers=max(jobs, 1)) as pool:
+        for (name, base, _), row in zip(work, pool.map(_pause_job, work), strict=True):
+            if "error" in row:
+                print(f"{name:<10} no se pudo leer: {row['error']}")
+                continue
+            print(f"{name:<10}" + "".join(f"{float(row[column]):>14.0f}" for column in columns))
+            for column in columns:
+                totals[base][column] += float(row[column])
+    for base, total in totals.items():
+        print(f"{'Σ ' + base:<10}" + "".join(f"{total[column]:>14.0f}" for column in columns))
+
+
 def run_stage1(base: str = NOISE_BASE, snrs: tuple[str, ...] = NOISE_SNR) -> None:
     """Tabla de `% analizable` contra SNR. La forma de la curva es el resultado.
 
@@ -352,6 +499,18 @@ def main() -> int:
         action="store_true",
         help="evalúa solo el gate de calidad contra nstdb (ruido real a SNR conocida)",
     )
+    parser.add_argument(
+        "--pauses",
+        action="store_true",
+        help="pausas del motor contra los R-R anotados (mitdb entero, o --records) y nstdb",
+    )
+    parser.add_argument("--jobs", type=int, default=1, help="procesos para --pauses")
+    parser.add_argument(
+        "--wander",
+        type=float,
+        default=0.0,
+        help="--pauses: deriva respiratoria de estos mV en minutos alternados de mitdb",
+    )
     args = parser.parse_args()
 
     if args.download:
@@ -372,6 +531,12 @@ def main() -> int:
     if not (DATA_DIR / "mitdb").exists():
         print("No hay datos. Corré con --download primero (ver tools/physionet/README.md).")
         return 1
+
+    if args.pauses:
+        print("▸ Pausas del motor contra los R-R anotados\n")
+        every = sorted(path.stem for path in (DATA_DIR / "mitdb").glob("*.hea"))
+        run_pauses(args.records or every, args.jobs, args.wander)
+        return 0
 
     names = args.records or [*HIGH_BURDEN, *LOW_BURDEN]
     config = public_data_config()

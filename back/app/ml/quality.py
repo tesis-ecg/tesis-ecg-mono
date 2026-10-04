@@ -617,6 +617,7 @@ def assess_quality(
         windows=tuple(windows),
         analyzable=analyzable,
         firmware_peaks_available=firmware_available,
+        deinterfered=deinterfered,
     )
 
 

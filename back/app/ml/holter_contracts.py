@@ -39,7 +39,14 @@ BREAK_KINDS = frozenset(
 #:
 #: - `no_beats`: la ventana pasó los índices y ningún detector vio un latido.
 #: - `flatline`: la línea plana por desconexión ya la marca la Capa A
-#:   (`lead_off`) y entra por `EXCLUSION_KINDS`.
+#:   (`lead_off`) y entra por `EXCLUSION_KINDS`. **Salvo** en un segmento
+#:   viejo sin flags archivados (o un ADC congelado, o electrodos en corto):
+#:   el riel llega sin `LEAD_OFF`, la ventana es `flatline` y el informe busca
+#:   pausas a través de ella. Ahí el informe y el motor no coinciden a
+#:   propósito: el motor (`quiet_gap`) no infiere una pausa sobre `flatline` y
+#:   no le avisa al paciente; el informe la lista y el médico la verifica en su
+#:   tira, que muestra el riel. Alinearlos es pasar las ventanas `flatline` como
+#:   tramos de hardware desde `studies_service`.
 #: - `marginal` y `bsqi`: sirven para contar latidos y medir RR; sacarlos
 #:   achicaría el tiempo analizado con electrodos secos sin ganar nada.
 #: - `spectral`: las filas de antes de separar los índices, que además son de
