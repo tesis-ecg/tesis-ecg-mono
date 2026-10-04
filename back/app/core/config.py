@@ -258,6 +258,15 @@ class Settings(BaseSettings):
     #: Sin tope, 99 % de especificidad por latido son ~1.000 falsos por día.
     ml_findings_max_per_study: int = Field(default=200, ge=10, le=5000)
     ml_findings_max_per_kind: int = Field(default=50, ge=5, le=1000)
+    #: Mide QT, QTc de Fridericia y amplitud R en cada bloque analizado
+    #: (`app/ml/intervals.py`) y los guarda en `ecg_interval_measurement`, una
+    #: fila por bloque. **Dato de investigación y nada más**: ninguna API, ni el
+    #: informe, ni el visor, ni un hallazgo los leen, porque la validación contra
+    #: la QT Database dejó un QTc que casi no sigue al del cardiólogo y que no
+    #: puede ver un QT largo (`tools/physionet/README.md`). Se exportan para la
+    #: tesis con `app.scripts.export_interval_measurements`. Cuesta ~0,03 s por
+    #: bloque de 5 min; en falso no se calcula nada.
+    ml_interval_measurements_enabled: bool = True
 
     @property
     def is_secure_environment(self) -> bool:

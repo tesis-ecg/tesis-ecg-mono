@@ -33,14 +33,18 @@ completo:**
   por bloque. Es la única medición con evidencia a nivel gate y es la que se usa
   acá.
 
-## La decisión: dato de investigación, hallazgos apagados
+## La decisión: dato de investigación, sin hallazgos
 
 Lo que prevé el plan cuando nada pasa con su definición: las mediciones salen
-marcadas `experimental=True` y los hallazgos `qrs_wide` / `qtc_long` /
-`qtc_short` quedan apagados (`ml_interval_findings_enabled`). Y más que eso:
-**el QTc no se le muestra al médico como un número por paciente**; se guarda
-como dato de investigación. Que el bias pase no dice que la medición siga al
-paciente:
+marcadas `experimental=True` y no hay hallazgos de intervalos (`qrs_wide`,
+`qtc_long`, `qtc_short` no existen en el motor). Y más que eso: **el QTc no se
+le muestra al médico como un número por paciente**. El pipeline mide cada
+bloque analizado (`pipeline.analyze_batch`, detrás de
+`ml_interval_measurements_enabled`) y `ml_persistence` guarda una fila por
+bloque en `ecg_interval_measurement`, que ninguna API, ni el informe, ni el
+visor leen: se exporta para la tesis con
+`app.scripts.export_interval_measurements`. Que el bias pase no dice que la
+medición siga al paciente:
 
 - el QT de `prominence` correlaciona con el manual entre registros (r = 0,71 a
   0,80), pero esa correlación es casi toda frecuencia cardíaca: el QT manual
@@ -196,8 +200,9 @@ class IntervalThresholds:
     contra QTDB: QTDB solo se usó para verificar que no rompen el gate.
     """
 
-    #: Latidos válidos mínimos para reportar el bloque (`ml_measure_min_beats`).
-    #: Con menos, la mediana la mueve un solo latido mal delineado.
+    #: Latidos válidos mínimos para reportar el bloque (`--min-block-beats` en
+    #: el harness de QTDB). Con menos, la mediana la mueve un solo latido mal
+    #: delineado.
     min_beats: int = 30
     #: Plausibilidad del QT, en ms. Es el filtro `plaus` del benchmark. El techo
     #: es el que saca de la mediana el QT > 1 s de un latido perdido por el
@@ -296,8 +301,9 @@ class IntervalMeasurement:
 
     #: Latidos válidos: los que entran en las medianas.
     beats: int
-    #: Latidos medibles en principio: R-R previo entero en señal GOOD y, con
-    #: `dominant`, latido y vecinos de la morfología dominante.
+    #: Latidos medibles en principio: R-R previo entero en señal GOOD; con
+    #: `dominant`, latido y vecinos de la morfología dominante; con `owned`,
+    #: solo los del llamador.
     candidate_beats: int
     #: `beats / candidate_beats`. Baja cuando el delineador falla sobre señal
     #: buena, cuando la T no entra en el segmento o cuando hay ectopia.
@@ -336,7 +342,8 @@ class BeatIntervals:
     #: El R corrido al máximo de la señal limpia en ±20 ms, como hace
     #: `prominence` antes de buscar R_onset. La amplitud se mide acá.
     r_peaks: Indices
-    #: R previo en el tren, R-R previo entero en señal GOOD y `dominant_ok`.
+    #: R previo en el tren, R-R previo entero en señal GOOD, `dominant_ok` y,
+    #: si el llamador pasó `owned`, latido suyo.
     candidate: Mask
     #: R_onset ≤ R < T_offset < R siguiente, con todo el latido en señal GOOD.
     ordered: Mask
@@ -385,6 +392,7 @@ def measure_intervals(
     thresholds: IntervalThresholds,
     *,
     dominant: Mask | None = None,
+    owned: Mask | None = None,
 ) -> IntervalMeasurement | None:
     """Medianas de QT, QTc, amplitud R y FC de un bloque, o None.
 
@@ -411,13 +419,28 @@ def measure_intervals(
       práctica clínica: el QT se mide en latidos sinusales, sin el ectópico, el
       pre- ni el post-ectópico. Un latido que no se pudo clasificar lo decide el
       llamador (falso lo excluye a él y a sus vecinos).
+    - `owned`: opcional, alineado 1 a 1 con `rpeaks`: los latidos que **este**
+      llamador informa. Es lo que usa el pipeline, que recibe el bloque con
+      contexto a los dos lados: la señal y el tren son los del bloque entero
+      —el R previo del primer latido nuevo es del contexto izquierdo, y la T
+      del último puede terminar en el derecho—, pero solo se miden los latidos
+      con el R en la parte nueva, así que cada latido del estudio entra en la
+      mediana de un solo bloque. A diferencia de `dominant`, no se contagia a
+      los vecinos: un latido del contexto sigue segmentando y aportando su RR.
 
     None cuando hay menos de `thresholds.min_beats` latidos válidos o cuando
-    NeuroKit falla. Las longitudes distintas entre señales, máscara y
-    `dominant` son un error del llamador y levantan `ValueError`.
+    NeuroKit falla. Las longitudes distintas entre señales, máscara,
+    `dominant` y `owned` son un error del llamador y levantan `ValueError`.
     """
     beats = measure_beats(
-        cleaned, raw_for_amplitude, rpeaks, good_mask, sample_rate, thresholds, dominant=dominant
+        cleaned,
+        raw_for_amplitude,
+        rpeaks,
+        good_mask,
+        sample_rate,
+        thresholds,
+        dominant=dominant,
+        owned=owned,
     )
     if beats is None:
         return None
@@ -449,6 +472,7 @@ def measure_beats(
     thresholds: IntervalThresholds,
     *,
     dominant: Mask | None = None,
+    owned: Mask | None = None,
 ) -> BeatIntervals | None:
     """Delineación y controles por latido; mismos argumentos que `measure_intervals`.
 
@@ -461,11 +485,12 @@ def measure_beats(
             f"cleaned ({n}), raw_for_amplitude ({raw_for_amplitude.size}) y good_mask "
             f"({good_mask.size}) tienen que tener el mismo largo"
         )
-    if dominant is not None and np.asarray(dominant).size != np.asarray(rpeaks).size:
-        raise ValueError(
-            f"dominant ({np.asarray(dominant).size}) tiene que estar alineado con rpeaks "
-            f"({np.asarray(rpeaks).size})"
-        )
+    for name, mask in (("dominant", dominant), ("owned", owned)):
+        if mask is not None and np.asarray(mask).size != np.asarray(rpeaks).size:
+            raise ValueError(
+                f"{name} ({np.asarray(mask).size}) tiene que estar alineado con rpeaks "
+                f"({np.asarray(rpeaks).size})"
+            )
     if sample_rate <= 0:
         raise ValueError("sample_rate tiene que ser positivo")
     fs = float(sample_rate)
@@ -491,10 +516,14 @@ def measure_beats(
     # `dominant`, el latido y sus vecinos son de la morfología dominante. Un
     # ectópico no es un latido que el delineador no pudo medir: no se mide, y
     # por eso no cuenta en `coverage_ratio` ni en la mediana de RR del bloque.
+    # Lo mismo un latido que no es del llamador (`owned`): lo informa otro
+    # bloque.
     dominant_ok = _dominant_neighbourhood(dominant, kept, m)
     candidate = np.zeros(m, dtype=bool)
     candidate[1:] = _span_usable(cumulative, train[:-1], train[1:])
     candidate &= dominant_ok
+    if owned is not None:
+        candidate &= np.asarray(owned, dtype=bool).ravel()[kept]
     if int(candidate.sum()) < thresholds.min_beats:
         return None
 

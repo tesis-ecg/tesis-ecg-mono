@@ -44,7 +44,8 @@ QTC_LONG_MS = 470.0
 #: QT válido por encima de esto = imposible: un latido perdido por el detector (en
 #: `prominence`, sele0203 y sel853 L1) o una T puesta lejos (`cwt`).
 QT_MISSED_BEAT_MS = 1000.0
-#: `ml_measure_min_beats`: con menos latidos válidos el bloque no reporta mediana.
+#: `IntervalThresholds.min_beats` (`app/ml/intervals.py`): con menos latidos
+#: válidos el bloque no reporta mediana.
 MIN_BLOCK_BEATS_DEFAULT = 30
 MEASURES = ("qrs", "qt", "qtc", "ramp", "ramp_hp")
 MEASURE_NAMES = {

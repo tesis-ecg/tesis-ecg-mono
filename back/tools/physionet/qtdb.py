@@ -561,7 +561,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--min-block-beats",
         type=int,
         default=30,
-        help="latidos válidos mínimos para que un bloque reporte mediana (`ml_measure_min_beats`)",
+        help=(
+            "latidos válidos mínimos para que un bloque reporte mediana "
+            "(`IntervalThresholds.min_beats`)"
+        ),
     )
     p.add_argument("--boot", type=int, default=2000, help="remuestreos del bootstrap de registros")
     p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))

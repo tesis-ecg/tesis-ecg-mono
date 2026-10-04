@@ -564,6 +564,54 @@ def test_mascara_dominante_sigue_al_tren_saneado() -> None:
     assert shuffled == ordered
 
 
+# --------------------------------------------------------------------------- #
+# `owned`: los latidos que informa el llamador
+# --------------------------------------------------------------------------- #
+
+
+def test_owned_limita_los_candidatos_sin_contagiarse_a_los_vecinos() -> None:
+    # Lo que hace el pipeline con el contexto de un bloque: la señal y el tren
+    # son los del bloque entero, pero se miden solo los latidos de la parte
+    # nueva. El primero de la parte nueva entra con el R-R que le da el último
+    # del contexto, y ningún otro control cambia.
+    synth = synth_ecg(120.0, bpm=60.0, firmware_lag_ms=0.0)
+    cleaned = clean_signal(synth.signal_mv, SAMPLE_RATE)
+    good = np.ones(cleaned.size, dtype=bool)
+    owned = synth.rpeaks >= 60 * SAMPLE_RATE
+
+    whole = measure_beats(cleaned, synth.signal_mv, synth.rpeaks, good, SAMPLE_RATE, DEFAULTS)
+    mine = measure_beats(
+        cleaned, synth.signal_mv, synth.rpeaks, good, SAMPLE_RATE, DEFAULTS, owned=owned
+    )
+
+    assert whole is not None and mine is not None
+    assert np.array_equal(mine.candidate, whole.candidate & owned)
+    assert np.array_equal(mine.valid, whole.valid & owned)
+    assert mine.candidate[int(np.argmax(owned))]
+    # Las dos mitades suman el todo: cada latido lo mide un solo llamador.
+    first = _measure(synth.signal_mv, synth.rpeaks)
+    halves = [
+        measure_intervals(
+            cleaned, synth.signal_mv, synth.rpeaks, good, SAMPLE_RATE, DEFAULTS, owned=mask
+        )
+        for mask in (~owned, owned)
+    ]
+    assert first is not None and halves[0] is not None and halves[1] is not None
+    assert halves[0].candidate_beats + halves[1].candidate_beats == first.candidate_beats
+
+
+def test_owned_desalineado_levanta() -> None:
+    synth = synth_ecg(60.0, bpm=60.0, firmware_lag_ms=0.0)
+    cleaned = clean_signal(synth.signal_mv, SAMPLE_RATE)
+    good = np.ones(cleaned.size, dtype=bool)
+    short = np.ones(synth.rpeaks.size - 1, dtype=bool)
+
+    with pytest.raises(ValueError, match="owned"):
+        measure_intervals(
+            cleaned, synth.signal_mv, synth.rpeaks, good, SAMPLE_RATE, DEFAULTS, owned=short
+        )
+
+
 @pytest.mark.parametrize("bpm", [30.0, 25.0, 20.0])
 def test_frecuencia_muy_baja_no_levanta(bpm: float) -> None:
     synth = synth_ecg(240.0, bpm=bpm, firmware_lag_ms=0.0)

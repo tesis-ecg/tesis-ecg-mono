@@ -280,8 +280,9 @@ R + RR/2 (se veía 451 con QTc real 500); a 90 lpm el pico de la T cae fuera y
 
 - **Ningún método de stock pasa el gate completo** con la definición del plan.
   Como prevé el plan para ese caso, las mediciones salen **experimentales** y
-  los hallazgos de intervalos (`qrs_wide`, `qtc_long`, `qtc_short`) quedan
-  **apagados** (`ml_interval_findings_enabled`).
+  **no hay hallazgos de intervalos**: `qrs_wide`, `qtc_long` y `qtc_short` no
+  existen en el motor, ni detrás de un flag. Ver "En producción: dato de
+  investigación" más abajo.
 - **QT y QTc con `prominence`.** Es la única medición con evidencia a nivel
   gate: pasa el QT en las cuatro combinaciones, con los dos fiduciales, con IC y
   con mediana de bloque, y tarda ~0,03 s por bloque.
@@ -303,6 +304,68 @@ R + RR/2 (se veía 451 con QTc real 500); a 90 lpm el pico de la T cae fuera y
   sobre la señal limpia, en el pico al que `prominence` corre el R: con la
   convención del módulo (pasaaltos + notch de red) da 1,01–1,02 por latido y
   1,02–1,03 por bloque.
+
+### En producción: dato de investigación
+
+Con `ML_INTERVAL_MEASUREMENTS_ENABLED` (prendido por omisión) el motor mide
+cada bloque que analiza (`pipeline.analyze_batch` → `_measure_intervals`) y
+guarda una fila por bloque en `ecg_interval_measurement`. **Nada del producto
+la lee**: ni una API, ni el informe, ni el visor, ni un hallazgo;
+`tests/test_ml_interval_rows.py` verifica que ningún schema de OpenAPI tenga un
+campo de intervalos. Es para juntar mediciones del chaleco real y compararlas
+con lo validado acá.
+
+- **Qué se mide.** `measure_intervals` tal cual lo validó `production`, con
+  los umbrales por defecto de `IntervalThresholds`, sobre:
+  - `cleaned`: la señal de `clean_signal` del bloque, la misma que delinea
+    QTDB;
+  - `raw_for_amplitude`: el bloque con el riel del AFE puenteado, la red
+    quitada (`quality.remove_mains` a `ML_MAINS_HZ`) y el pasaaltos de 0,5 Hz de
+    orden 5 de fase cero del harness (`highpass`), sin pasabajos;
+  - el tren de `detect_rpeaks` del bloque entero;
+  - las ventanas GOOD del bloque, sin el entorno de los empalmes;
+  - la morfología dominante de la asignación del bloque.
+
+  Se miden solo los latidos con el R en la parte nueva (`owned`): el contexto
+  izquierdo aporta el R-R previo del primero y el derecho deja terminar la T
+  del último, pero cada latido entra en la mediana de un solo bloque. Dos
+  bloques consecutivos suman los mismos candidatos que el registro de una vez.
+- **Una fila por bloque medido.** Clave `(study_id, start_sample_index)` con el
+  inicio de la parte nueva, idempotente. Un bloque sin medición (menos de
+  `min_beats` latidos válidos, cobertura < 0,5, bigeminismo) **no deja fila**: el
+  denominador, los bloques analizados, está en `signal_quality_interval`.
+  `qrs_ms` va siempre en NULL y `experimental` siempre en verdadero.
+- **Nunca tumba el bloque.** Un error de la medición se registra
+  (`ml_interval_measurement_failed`) y el bloque sigue sin fila: si la pasada
+  del motor fallara, su cursor no avanzaría y `ML_ANALYSIS_PENDING` trabaría el
+  informe del estudio.
+- **Costo, medido** (bloque de producción: 60 s de contexto + 300 s + 30 s de
+  contexto derecho, ECG sintético, Apple M4, solo CPU): el análisis entero
+  pasa de 0,034 a 0,063 s, **+0,029 s por bloque** a 70 lpm (+0,032 s con un
+  ectópico cada cinco latidos; +0,009 s con bigeminismo, que no llega a
+  delinear porque la máscara dominante deja menos de `min_beats` candidatos).
+  Un bloque sin latidos sobre señal GOOD no filtra ni delinea nada.
+
+Para exportarlas:
+
+    uv run python -m app.scripts.export_interval_measurements --out intervalos.csv
+    uv run python -m app.scripts.export_interval_measurements --study <uuid>   # a la salida estándar
+
+Una fila por bloque, en orden de registro: `study_id`, la posición del bloque
+(`start_sample_index`, `sample_count`, `sample_rate`, y en segundos `start_s` y
+`duration_s`, que son **tiempo de registro**, no hora de pared), `beats`,
+`candidate_beats`, `coverage_ratio`, `qt_ms`, `qtc_ms`, `r_amplitude_mv`,
+`heart_rate_bpm`, `candidate_heart_rate_bpm`, `qrs_ms` (vacío), `method`,
+`experimental`, `model_version` y `batch_id`. **Ningún dato del paciente ni
+ninguna fecha**: el estudio es la única referencia, y la hora en que se escribió
+la fila (`created_at`) queda afuera porque fecharía el monitoreo de cada
+paciente. Los estudios de pacientes dados de baja no se exportan.
+
+Lo que sirve para la tesis: la distribución del QTc y de la cobertura en el
+chaleco contra la de QTDB, cómo cambian con la colocación (seco, gel, bien
+puesto) y con la frecuencia, y la amplitud R por colocación. Lo que no: un QTc
+por paciente, por las mismas razones de arriba. Un bloque sin fila no es un QT
+normal, y un QT largo sale corto con cobertura completa.
 
 ### Lo que se exploró y quedó afuera de la corrida por defecto
 

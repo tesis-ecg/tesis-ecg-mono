@@ -13,6 +13,10 @@ El orden no es arbitrario, es la estrategia:
 El gate va **antes** que todo lo clínico. Un artefacto de movimiento se parece
 muchísimo más a una arritmia que a un latido normal, así que un motor que no
 descarta ruido primero produce cientos de falsos positivos por día.
+
+Al final, y solo si `ml_interval_measurements_enabled`, se miden QT, QTc y
+amplitud R del bloque (`app/ml/intervals.py`). Es dato de investigación: no
+produce hallazgos, no entra en los totales y ninguna API lo lee.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 import numpy as np
+import structlog
 
 from app.core.config import Settings
 from app.db.models.ecg_event import ECGEventSeverity, ECGEventType
@@ -30,6 +35,7 @@ from app.ml.contracts import (
     EpisodeBudget,
     Finding,
     Flags,
+    Indices,
     Mask,
     QualityReport,
     QualityThresholds,
@@ -39,8 +45,16 @@ from app.ml.contracts import (
 )
 from app.ml.episodes import RECURRENT_KIND, apply_refractory, enforce_budget, group_beats
 from app.ml.hrv import build_rr, prematurity
-from app.ml.morphology import TemplateBank
-from app.ml.quality import assess_quality, exclude_splices, merge_windows, window_counts
+from app.ml.intervals import IntervalMeasurement, IntervalThresholds, measure_intervals
+from app.ml.morphology import BeatAssignment, BeatMatrix, TemplateBank
+from app.ml.quality import (
+    assess_quality,
+    exclude_splices,
+    invalid_samples,
+    merge_windows,
+    remove_mains,
+    window_counts,
+)
 from app.ml.rpeak_detection import (
     clean_signal,
     compensate_firmware_peaks,
@@ -48,6 +62,8 @@ from app.ml.rpeak_detection import (
     firmware_rpeaks,
 )
 from app.ml.totals import block_totals, summary_from_totals
+
+logger = structlog.get_logger(__name__)
 
 #: Versión del pipeline. Viaja en `ecg_event.model_version` y se **pinnea por
 #: estudio** en el primer lote analizado: si el código sube de versión a mitad de
@@ -79,6 +95,9 @@ class PipelineConfig:
     recurrent_min_beats: int
     anomaly_score_min: float
     budget: EpisodeBudget
+    #: Umbrales de la medición de intervalos. `None` la apaga: no se filtra ni
+    #: se delinea nada (`ml_interval_measurements_enabled`).
+    intervals: IntervalThresholds | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +108,11 @@ class PipelineResult:
     acumulan en el estudio con `totals.combine_totals`. `metrics` es su resumen
     legible más el estado del banco, y existe para los lectores de
     `ml_state["metrics"]`; describe **este** bloque, no el estudio.
+
+    `intervals` son las medianas de QT, QTc y amplitud R de los latidos de la
+    parte nueva (`_measure_intervals`), o None: medición apagada, menos de
+    `min_beats` latidos válidos, o un error que no puede tumbar el bloque. Es
+    dato de investigación y se persiste aparte (`ecg_interval_measurement`).
     """
 
     quality_intervals: tuple[tuple[QualityWindow, int], ...]
@@ -97,6 +121,7 @@ class PipelineResult:
     metrics: dict[str, float]
     model_version: str
     totals: dict[str, float] = field(default_factory=dict)
+    intervals: IntervalMeasurement | None = None
 
 
 def build_config(
@@ -146,6 +171,10 @@ def build_config(
             max_per_kind=settings.ml_findings_max_per_kind,
             score_floor=score_floor,
         ),
+        # Los umbrales por defecto son los que se validaron contra la QT
+        # Database (`tools/physionet/README.md`): no se exponen como settings
+        # porque moverlos invalida esa evidencia.
+        intervals=IntervalThresholds() if settings.ml_interval_measurements_enabled else None,
     )
 
 
@@ -198,6 +227,9 @@ def analyze_batch(
       agrupar episodios a través del borde: se informa el grupo que tiene al
       menos un latido nuevo, aunque arranque en el contexto.
     - Totales: ver `totals.block_totals`.
+    - Intervalos (si `config.intervals`): se delinea el bloque entero, pero se
+      miden solo los latidos con el R en la parte nueva; ver
+      `_measure_intervals`.
 
     Las últimas `lookahead_samples` son **contexto derecho**: señal que es del
     bloque siguiente y se lee para que el final de la parte nueva no sea un
@@ -399,6 +431,25 @@ def analyze_batch(
         sample_rate=sample_rate,
         lookahead_samples=n_samples - end,
     )
+    measurement = (
+        _measure_intervals(
+            signal_mv,
+            flags,
+            cleaned,
+            detected_peaks,
+            analyzable,
+            extracted=extracted,
+            owned_beats=owned,
+            assignment=assignment,
+            bank=updated_bank,
+            context=context,
+            end=end,
+            config=config,
+            thresholds=config.intervals,
+        )
+        if config.intervals is not None
+        else None
+    )
     return PipelineResult(
         quality_intervals=intervals,
         findings=tuple(absolute),
@@ -406,7 +457,144 @@ def analyze_batch(
         metrics=_metrics(totals, report, reported, beats.n_beats, updated_bank),
         model_version=PIPELINE_VERSION,
         totals=totals,
+        intervals=measurement,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Intervalos (dato de investigación)
+# --------------------------------------------------------------------------- #
+
+
+#: Corte del pasaaltos de la señal para la amplitud R: el mismo de la primera
+#: etapa de `nk.ecg_clean` (Butterworth de orden 5, fase cero), sin la segunda,
+#: que es el pasabajos que aplana el R. Es la señal con la que se validó la
+#: amplitud en QTDB (`highpass` del harness, `tools/physionet/qtdb.py`).
+_AMPLITUDE_HIGHPASS_HZ = 0.5
+_AMPLITUDE_HIGHPASS_ORDER = 5
+
+
+def _measure_intervals(
+    signal_mv: Signal,
+    flags: Flags,
+    cleaned: Signal,
+    rpeaks: Indices,
+    analyzable: Mask,
+    *,
+    extracted: BeatMatrix,
+    owned_beats: Mask,
+    assignment: BeatAssignment,
+    bank: TemplateBank,
+    context: int,
+    end: int,
+    config: PipelineConfig,
+    thresholds: IntervalThresholds,
+) -> IntervalMeasurement | None:
+    """QT, QTc y amplitud R de los latidos de la parte nueva, o None.
+
+    Se delinea el bloque **entero** —el delineador segmenta cada latido hasta
+    la mitad del R-R con sus vecinos—, con `analyzable` como máscara de señal
+    buena: las ventanas GOOD de los tres tramos, sin el entorno de los
+    empalmes. Pero se miden solo los latidos con el R en la parte nueva
+    (`owned` de `intervals.measure_intervals`), así que cada latido del estudio
+    entra en la mediana de un solo bloque. El contexto izquierdo aporta el R-R
+    previo del primero y el derecho deja terminar la T del último; los
+    latidos de ahí no se miden.
+
+    La máscara de morfología dominante sale de la asignación del bloque:
+    `assignment` para los latidos que plegó este bloque y el banco ya
+    actualizado para los demás que se pudieron extraer (contexto y contexto
+    derecho). Un latido que no se pudo extraer —señal no GOOD, ventana
+    cortada— no es dominante, y eso lo saca a él y a sus vecinos.
+
+    **No tumba el bloque.** Un error acá —NeuroKit ya está cubierto adentro de
+    `intervals`; esto es para un defecto propio— se registra y devuelve None:
+    una medición de investigación no puede trabar el cursor del motor, que
+    desde la integración con las métricas Holter bloquea la finalización del
+    informe mientras no llegue al final del estudio.
+    """
+    try:
+        n_samples = int(cleaned.size)
+        new_part = (rpeaks >= context) & (rpeaks < end)
+        candidates = new_part & analyzable[np.clip(rpeaks, 0, max(n_samples - 1, 0))]
+        # Sin `min_beats` R de la parte nueva sobre señal GOOD no hay mediana
+        # posible: ni se filtra la señal para la amplitud ni se delinea.
+        if n_samples == 0 or int(np.count_nonzero(candidates)) < thresholds.min_beats:
+            return None
+        return measure_intervals(
+            cleaned,
+            _amplitude_signal(signal_mv, flags, config.sample_rate, config.quality.mains_hz),
+            rpeaks,
+            analyzable,
+            config.sample_rate,
+            thresholds,
+            dominant=_dominant_mask(
+                rpeaks.size, extracted, owned_beats, assignment, bank, config.match_threshold
+            ),
+            owned=new_part,
+        )
+    except Exception:  # noqa: BLE001 — ver el docstring: nunca tumba el bloque
+        logger.warning("ml_interval_measurement_failed", exc_info=True)
+        return None
+
+
+def _dominant_mask(
+    n_peaks: int,
+    extracted: BeatMatrix,
+    owned_beats: Mask,
+    assignment: BeatAssignment,
+    bank: TemplateBank,
+    match_threshold: float,
+) -> Mask:
+    """Por R del tren: verdadero si el latido es de la plantilla dominante del banco."""
+    mask = np.zeros(n_peaks, dtype=bool)
+    dominant = morphology.dominant_template(bank)
+    if dominant is None:
+        return mask
+    folded = extracted.beat_index[owned_beats]
+    mask[folded] = assignment.cluster_ids == dominant.cluster_id
+    others = morphology.select_beats(extracted, ~owned_beats)
+    scored = morphology.score_only(bank, others, match_threshold=match_threshold)
+    mask[others.beat_index] = scored.cluster_ids == dominant.cluster_id
+    return mask
+
+
+def _amplitude_signal(signal_mv: Signal, flags: Flags, sample_rate: int, mains_hz: float) -> Signal:
+    """La señal sin red y sin línea de base, **sin pasabajos**: `raw_for_amplitude`.
+
+    `clean_signal` aplana el R (~19 % en QTDB) y la amplitud se mide sobre
+    esto (ver `intervals.measure_intervals`). Las muestras inválidas —riel del
+    AFE, no finitas— se puentean con una recta antes de filtrar, como hace
+    `quality.deinterfere`: el notch sobre un escalón de cientos de milivoltios
+    oscila a 50 Hz durante ~1 s y esa oscilación caería encima de los R de la
+    primera ventana buena después de un electrodo despegado. Las inválidas
+    nunca son GOOD, así que su valor puenteado no se lee.
+
+    Los dos filtros son de fase cero (`filtfilt` y `sosfiltfilt`): los índices
+    de `cleaned` valen acá.
+    """
+    from scipy import signal as sp_signal
+
+    data = np.asarray(signal_mv, dtype=np.float64)
+    invalid = invalid_samples(signal_mv, flags)
+    valid_positions = np.flatnonzero(~invalid)
+    if valid_positions.size == 0:
+        return np.zeros(data.size, dtype=np.float32)
+    if valid_positions.size < data.size:
+        invalid_positions = np.flatnonzero(invalid)
+        data = data.copy()
+        data[invalid_positions] = np.interp(
+            invalid_positions, valid_positions, data[valid_positions]
+        )
+    notched = remove_mains(data.astype(np.float32), sample_rate, mains_hz)
+    sos = sp_signal.butter(
+        _AMPLITUDE_HIGHPASS_ORDER,
+        _AMPLITUDE_HIGHPASS_HZ,
+        btype="highpass",
+        output="sos",
+        fs=float(sample_rate),
+    )
+    return np.asarray(sp_signal.sosfiltfilt(sos, notched.astype(np.float64)), dtype=np.float32)
 
 
 # --------------------------------------------------------------------------- #

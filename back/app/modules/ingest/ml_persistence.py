@@ -33,6 +33,11 @@ Cuatro reglas:
 4. El banco no vuelve a plegar el último bloque que plegó (`lastFoldKey`, la
    clave del bloque): la misma red de seguridad, del lado de los conteos de
    plantillas.
+
+Aparte de lo clínico, cada bloque medido deja una fila de
+`ecg_interval_measurement` (QT, QTc y amplitud R): dato de investigación que no
+lee ninguna API (ver el modelo). Misma idempotencia que la calidad, por
+`(study_id, start_sample_index)`.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ from app.core.config import settings
 from app.core.s3 import get_object, put_object
 from app.db.models.alert import Alert, AlertSeverity
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
+from app.db.models.ecg_interval_measurement import ECGIntervalMeasurement
 from app.db.models.signal_quality import SignalQualityInterval
 from app.db.models.study import Study
 from app.ml import morphology
@@ -430,10 +436,11 @@ async def persist_analysis(
     """Escribe hallazgos y calidad de un bloque. Devuelve `(cuántos, alerta a notificar)`.
 
     El banco no: lo guarda `processing.append_ml_analysis` una vez por pasada,
-    después del último bloque (`store_bank`).
+    después del último bloque (`store_bank`). La medición de intervalos sí, si
+    el bloque tiene (`_persist_interval_measurement`).
 
-    `cuántos` son las filas escritas, actualizadas o empalmadas, para el log: el
-    `events_count` del estudio sale de `recount_events`, no de acá.
+    `cuántos` son los eventos escritos, actualizados o empalmados, para el log:
+    el `events_count` del estudio sale de `recount_events`, no de acá.
 
     La alerta viaja hacia arriba en vez de notificarse acá: la transacción
     todavía no cerró, y mandar un push con un `alertId` que después se descarta
@@ -556,7 +563,51 @@ async def persist_analysis(
             )
         )
 
+    await _persist_interval_measurement(db, study, result, scope)
+
     return len(study_rows) + len(inserted) + len(extended), pushable
+
+
+async def _persist_interval_measurement(
+    db: AsyncSession, study: Study, result: PipelineResult, scope: BlockScope
+) -> None:
+    """Una fila de `ecg_interval_measurement` por bloque medido; ninguna si no se midió.
+
+    El bloque es la parte nueva (`block_start`, `block_end`): las medianas son
+    de los latidos con el R ahí (`pipeline._measure_intervals`). No entra en
+    el conteo que devuelve `persist_analysis`, que es de eventos.
+    """
+    measurement = result.intervals
+    if measurement is None:
+        return
+    await db.execute(
+        pg_insert(ECGIntervalMeasurement)
+        .values(
+            id=uuid.uuid4(),
+            study_id=study.id,
+            batch_id=scope.batch_id,
+            start_sample_index=scope.block_start,
+            sample_count=scope.block_end - scope.block_start,
+            beats=measurement.beats,
+            candidate_beats=measurement.candidate_beats,
+            coverage_ratio=measurement.coverage_ratio,
+            qt_ms=measurement.qt_ms,
+            qtc_ms=measurement.qtc_ms,
+            r_amplitude_mv=measurement.r_amplitude_mv,
+            heart_rate_bpm=measurement.heart_rate_bpm,
+            candidate_heart_rate_bpm=measurement.candidate_heart_rate_bpm,
+            qrs_ms=measurement.qrs_ms,
+            method=measurement.method,
+            experimental=measurement.experimental,
+            model_version=result.model_version,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[
+                ECGIntervalMeasurement.study_id,
+                ECGIntervalMeasurement.start_sample_index,
+            ]
+        )
+    )
 
 
 async def _create_alerts(
