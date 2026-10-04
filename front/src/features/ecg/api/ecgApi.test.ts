@@ -81,8 +81,72 @@ describe('getStudyEcg', () => {
     const signal = await getStudyEcg('study-id')
 
     expect(signal.metadata?.processedSampleCount).toBe(800)
+    // Sin tramos, la hora sale de la frecuencia: 800 muestras a 500 Hz.
+    expect(signal.metadata?.processedEndMs).toBe(1_700_000_001_600)
     expect(signal.durationMs).toBe(3200)
     expect(signal.timestampsMs[99] - signal.timestampsMs[0]).toBe(1584)
+  })
+
+  it('no informa tramo sin procesar cuando el nivel cubre todo el estudio', async () => {
+    installDecoderWorker()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 1600,
+        levels: [level({ samplesPerBucket: 16, pointCount: 200, byteLength: 800 })],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse(Array(200).fill(1))) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.metadata?.processedSampleCount).toBe(1600)
+    expect(signal.metadata?.processedEndMs).toBeUndefined()
+  })
+
+  it('ubica el final procesado en la hora de pared de su tramo', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 1600,
+        startTimestamp: start,
+        levels: [level({ samplesPerBucket: 16, pointCount: 100, byteLength: 400 })],
+        timeline: [
+          timelineSegment(0, 0, 500, start, start + 1000),
+          // Segundo tramo después de un hueco de una hora.
+          timelineSegment(1, 500, 1100, start + 3_601_000, start + 3_603_200),
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse(Array(100).fill(1))) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    // La muestra 800 es la 300 del segundo tramo: 300 × 2 ms después de su inicio.
+    expect(signal.metadata?.processedEndMs).toBe(start + 3_601_000 + 600)
+  })
+
+  it('no tapa puntos dibujados cuando las anclas de dos tramos se solapan', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 1600,
+        startTimestamp: start,
+        levels: [level({ samplesPerBucket: 16, pointCount: 68, byteLength: 272 })],
+        timeline: [
+          timelineSegment(0, 0, 500, start, start + 1000),
+          timelineSegment(1, 500, 1100, start + 800, start + 3000),
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse(Array(68).fill(1))) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.metadata?.processedSampleCount).toBe(544)
+    expect(signal.timestampsMs.at(-1)).toBe(start + 992)
+    expect(signal.metadata?.processedEndMs).toBe(start + 992)
   })
 
   it('marca la hora como no verificada si un tramo posterior no tiene bootId del ancla', async () => {
@@ -207,6 +271,26 @@ describe('getStudyEcg', () => {
     ])
   })
 })
+
+function timelineSegment(
+  ordinal: number,
+  startSampleIndex: number,
+  sampleCount: number,
+  startEpochMs: number,
+  endEpochMs: number,
+) {
+  return {
+    ordinal,
+    startSampleIndex,
+    sampleCount,
+    startEpochMs,
+    endEpochMs,
+    bootId: 1,
+    anchorSource: 'ntp',
+    anchorUncertaintyMs: 10,
+    anchorMatchesBoot: true,
+  }
+}
 
 /** Un nivel de la pirámide, que desde el manifest v3 llega en chunks. */
 function level(overrides: Record<string, unknown> = {}) {

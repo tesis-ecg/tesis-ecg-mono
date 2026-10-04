@@ -278,7 +278,14 @@ async def test_una_linea_de_tiempo_que_no_arranca_en_cero_no_frena_la_ingesta(
     su primera corrida arranca en el `samples_count` que tenía. Esa señal no se
     puede analizar por corrida y se saltea. Antes el motor lo trataba como
     imposible y levantaba un error en cada lote: sin Capa A, sin visor, sin
-    vista filtrada para el resto del estudio."""
+    vista filtrada para el resto del estudio.
+
+    El análisis de latidos de las métricas Holter, en cambio, no la saltea: un
+    tramo contado como analizado y sin latidos bajaría `averageBpm`. Se queda
+    antes del hueco —el informe sigue `pending`— hasta que `backfill_timeline`
+    reescribe los tramos desde cero, y ahí analiza todo."""
+    from app.scripts.backfill_timeline import _batches, _segments_for
+
     chaleco, study = await _mundo(client, db, make_patient, make_device, make_study)
     study_id = study.id
     señal, flags = _sinusal(45.0)
@@ -295,6 +302,18 @@ async def test_una_linea_de_tiempo_que_no_arranca_en_cero_no_frena_la_ingesta(
     study = await _estudio(db, study_id)
     assert study.ml_analyzed_samples == study.samples_count
     assert [fila.start_sample_index for fila in await _calidad(db, study_id)] == [15 * SR]
+    assert study.beats_analyzed_samples < 15 * SR
+
+    await db.execute(delete(StudyTimelineSegment).where(StudyTimelineSegment.study_id == study_id))
+    for tramo in _segments_for(study, await _batches(db, study_id)):
+        db.add(tramo)
+    # `process_study_task` arranca con un rollback: el backfill commitea, como el script.
+    await db.commit()
+    await process_study_task(study_id)
+
+    study = await _estudio(db, study_id)
+    assert study.beats_analyzed_samples == study.samples_count
+    assert int(processing.load_beats(study)["sample_index"][0]) < 15 * SR
 
 
 async def test_una_falla_del_motor_no_frena_la_ingesta_ni_el_cierre(

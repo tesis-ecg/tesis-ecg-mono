@@ -88,6 +88,12 @@ export interface ECGSignal {
     /** Tamaño del bucket de la vista descargada; null si la señal es cruda. */
     overviewSamplesPerBucket: number | null
     processedSampleCount?: number
+    /**
+     * Hora de pared donde termina la señal procesada, solo si queda un tramo
+     * final sin procesar. Ahí el visor dice "Sin datos procesados" en vez de
+     * dejar el hueco vacío o anclarse al último punto dibujado.
+     */
+    processedEndMs?: number
     startTimeVerified?: boolean
     viewKind?: 'raw' | 'filtered_visualization'
   }

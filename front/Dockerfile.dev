@@ -7,10 +7,16 @@ WORKDIR /app
 # Install deps against the lockfile. The `prepare` script wires up husky git hooks
 # (`cd .. && git config ...`), which has no meaning inside the container and would fail,
 # so we drop it before installing. esbuild/rollup native binaries are still built normally.
+# The lockfile hash lets the entrypoint detect a stale node_modules volume later on.
 COPY package.json package-lock.json ./
-RUN npm pkg delete scripts.prepare && npm ci
+RUN npm pkg delete scripts.prepare && npm ci \
+  && sha256sum package-lock.json > node_modules/.lockfile.sha256
+
+COPY scripts/docker-dev-entrypoint.sh /usr/local/bin/docker-dev-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-dev-entrypoint.sh
 
 # Source is bind-mounted at runtime (see docker-compose.yml); nothing else to copy.
 EXPOSE 5173
 
+ENTRYPOINT ["docker-dev-entrypoint.sh"]
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

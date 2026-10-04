@@ -172,6 +172,9 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     level?.samplesPerBucket ?? null,
   )
   const startTimestamp = timestampsMs.length > 0 ? timestampsMs[0] : manifest.startTimestamp
+  const processedSampleCount = level
+    ? Math.min(manifest.sampleCount, (samples.length / 2) * level.samplesPerBucket)
+    : samples.length
 
   return {
     sampleRate: manifest.sampleRate,
@@ -206,9 +209,21 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       sampleCount: manifest.sampleCount,
       isSimulated: Boolean(manifest.isSimulated),
       overviewSamplesPerBucket: level?.samplesPerBucket ?? null,
-      processedSampleCount: level
-        ? Math.min(manifest.sampleCount, (samples.length / 2) * level.samplesPerBucket)
-        : samples.length,
+      processedSampleCount,
+      processedEndMs:
+        processedSampleCount < manifest.sampleCount
+          ? Math.max(
+              sampleToEpochMs(
+                processedSampleCount,
+                manifest.sampleRate,
+                manifest.startTimestamp,
+                timeline,
+              ),
+              // buildTimestamps aplana las anclas que retroceden entre tramos.
+              // La banda no puede empezar antes del último punto ya dibujado.
+              timestampsMs[timestampsMs.length - 1] ?? startTimestamp,
+            )
+          : undefined,
       startTimeVerified:
         (manifest.startTimeVerified ?? true) &&
         timeline.every((segment) => segment.anchorMatchesBoot === true),
@@ -286,6 +301,32 @@ function buildTimestamps(
     }
   }
   return { timestampsMs, gapIndices }
+}
+
+/**
+ * Hora de pared de un índice de muestra, con la misma cuenta que
+ * `buildTimestamps`: el tramo que lo contiene reparte su duración de pared
+ * entre sus muestras.
+ */
+function sampleToEpochMs(
+  sample: number,
+  sampleRate: number,
+  fallbackStartMs: number,
+  timeline: EcgTimelineSegment[],
+): number {
+  if (timeline.length === 0 || sampleRate <= 0) {
+    return fallbackStartMs + (sampleRate > 0 ? (sample * 1000) / sampleRate : 0)
+  }
+  let segment = timeline[0]
+  for (const candidate of timeline) {
+    if (candidate.startSampleIndex > sample) break
+    segment = candidate
+  }
+  const within = Math.min(Math.max(sample - segment.startSampleIndex, 0), segment.sampleCount)
+  return (
+    segment.startEpochMs +
+    (within * (segment.endEpochMs - segment.startEpochMs)) / Math.max(segment.sampleCount, 1)
+  )
 }
 
 export async function getStudyEcgLegacy(studyId: string, signal?: AbortSignal): Promise<ECGSignal> {

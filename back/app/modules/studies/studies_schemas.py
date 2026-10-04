@@ -285,9 +285,11 @@ class StudyClinicalReportDraftOut(CamelModel):
 
 class StudyClinicalReportWindowPlanOut(CamelModel):
     id: str
-    findingId: uuid.UUID
+    #: `None` en las tiras de evidencia de una métrica (FC mínima, pausa más
+    #: larga…), que no salen de un hallazgo sino del análisis de latidos.
+    findingId: uuid.UUID | None
     kind: str
-    category: Literal["clinical", "patient_marker"]
+    category: Literal["clinical", "patient_marker", "metric"]
     severity: Literal["low", "medium", "high", "critical"]
     findingStartEpochMs: int
     findingEndEpochMs: int
@@ -299,6 +301,152 @@ class StudyClinicalReportWindowPlanOut(CamelModel):
     confidenceScore: float | None
     description: str | None
     relatedSymptoms: list[str]
+
+
+class MetricEvidenceOut(CamelModel):
+    """Una estadística con el instante que la respalda (req. 5, «evidencia»).
+
+    `sampleIndex` es la coordenada del buffer empaquetado y `epochMs` la hora de
+    pared; con cualquiera de las dos el visor y el informe ubican la tira de ECG.
+    """
+
+    value: float | None
+    sampleIndex: int
+    epochMs: int
+    durationMs: int | None = None
+
+
+class HolterAnalysisOut(CamelModel):
+    algorithmVersion: int
+    #: Hasta qué muestra se buscaron latidos. Con el estudio abierto queda un
+    #: poco detrás del total: la cola del tramo activo espera contexto.
+    analyzedUntilSample: int
+    #: Tiempo analizable: grabado y sin tramos excluidos por calidad.
+    analyzedMs: int
+    excludedMs: int
+    rrIntervals: int
+    nnIntervals: int
+
+
+class HolterHeartRateOut(CamelModel):
+    averageBpm: float | None
+    min: MetricEvidenceOut | None
+    max: MetricEvidenceOut | None
+    totalBeats: int
+    #: `None` mientras no exista clasificación de latidos.
+    abnormalBeats: int | None
+    abnormalPerThousand: float | None
+    #: FC mínima y máxima salen del promedio móvil de esta cantidad de NN.
+    windowBeats: int
+
+
+class HolterPausesOut(CamelModel):
+    thresholdMs: int
+    count: int
+    longest: MetricEvidenceOut | None
+    items: list[MetricEvidenceOut]
+
+
+class HolterEctopyCountOut(CamelModel):
+    episodes: int
+    beats: int
+
+
+class HolterEctopyOut(CamelModel):
+    """Contrato de los recuadros S y V. Hoy siempre llega `None`: requiere el
+    motor de clasificación de latidos (req. 3)."""
+
+    total: int
+    single: int
+    pairs: HolterEctopyCountOut
+    bigeminy: HolterEctopyCountOut
+    trigeminy: HolterEctopyCountOut
+    runs: HolterEctopyCountOut
+    perThousand: float
+    maxPerMinute: MetricEvidenceOut | None
+
+
+class HolterHrvTimeOut(CamelModel):
+    sdnnMs: float | None
+    sdannMs: float | None
+    rmssdMs: float | None
+    pnn50Percent: float | None
+    cv: float | None
+    meanNnMs: float | None
+
+
+class HolterSpectrumOut(CamelModel):
+    frequenciesHz: list[float]
+    powerMs2PerHz: list[float]
+
+
+class HolterHrvFrequencyOut(CamelModel):
+    #: «Energía» del informe: ULF + VLF + LF + HF.
+    totalPowerMs2: float | None
+    ulfMs2: float | None
+    vlfMs2: float | None
+    lfMs2: float | None
+    hfMs2: float | None
+    lfHfRatio: float | None
+    windows: int
+    spectrum: HolterSpectrumOut
+
+
+class HolterStKindOut(CamelModel):
+    episodes: int
+    durationSeconds: int
+    #: Magnitud en mV (positiva también para la depresión).
+    maxDeviation: MetricEvidenceOut | None
+    maxSlopeMvPerMin: float | None
+
+
+class HolterStChannelOut(CamelModel):
+    channel: int
+    label: str
+    analyzedMinutes: int
+    medianLevelMv: float | None
+    elevation: HolterStKindOut
+    depression: HolterStKindOut
+
+
+class HolterHourOut(CamelModel):
+    hourStartEpochMs: int
+    beats: int
+    avgBpm: float | None
+    minBpm: float | None
+    maxBpm: float | None
+
+
+class HolterRrHistogramOut(CamelModel):
+    startMs: int
+    binMs: int
+    counts: list[int]
+
+
+class HolterMetricsOut(CamelModel):
+    """Métricas del informe Holter estándar (`Requerimientos.md` §4).
+
+    `status`:
+    - `ok`: calculadas sobre lo analizado hasta `analysis.analyzedUntilSample`.
+    - `pending`: el estudio tiene señal pero todavía no se buscaron latidos
+      (estudio previo a esta función: corre el backfill).
+    - `insufficient_data`: no hay latidos suficientes para medir nada.
+    - `unavailable`: el estudio no tiene señal segmentada que analizar.
+    """
+
+    status: Literal["ok", "pending", "insufficient_data", "unavailable"]
+    unavailableReason: str | None
+    analysis: HolterAnalysisOut | None
+    heartRate: HolterHeartRateOut | None
+    pauses: HolterPausesOut | None
+    supraventricular: HolterEctopyOut | None
+    ventricular: HolterEctopyOut | None
+    ectopyUnavailableReason: str | None
+    hrvTime: HolterHrvTimeOut | None
+    hrvFrequency: HolterHrvFrequencyOut | None
+    st: list[HolterStChannelOut]
+    hourly: list[HolterHourOut]
+    rrHistogram: HolterRrHistogramOut | None
 
 
 class StudyClinicalReportIssueOut(CamelModel):

@@ -215,7 +215,10 @@ export function ECGClinicalReportDialog({
             {previewQ.data.windows.length === 0 && (
               <p className="mt-1">No hay hallazgos elegibles: el PDF no agregará páginas ECG.</p>
             )}
-            <ReportIssues issues={previewQ.data.issues} />
+            <ReportIssues
+              issues={previewQ.data.issues}
+              canGenerateDraft={previewQ.data.canGenerateDraft}
+            />
           </div>
         ) : null}
 
@@ -316,40 +319,41 @@ export function ECGClinicalReportDialog({
   )
 }
 
-function ReportIssues({ issues }: { issues: StudyClinicalReportPreview['issues'] }) {
+function ReportIssues({
+  issues,
+  canGenerateDraft,
+}: {
+  issues: StudyClinicalReportPreview['issues']
+  canGenerateDraft: boolean
+}) {
   const blocking = issues.filter((issue) => issue.severity === 'blocking')
   const warnings = issues.filter((issue) => issue.severity === 'warning')
   if (blocking.length === 0 && warnings.length === 0) return null
 
+  // El detalle de cada requisito vive en el checklist de la pestaña "Informe clínico";
+  // acá sólo se resume para no recargar el diálogo.
   return (
-    <div className="mt-3 grid gap-2">
+    <ul className="mt-3 flex flex-col gap-2 border-t border-border pt-3">
       {blocking.length > 0 && (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-destructive">
-          <p className="flex items-center gap-2 font-medium">
-            <CircleAlert className="size-4" aria-hidden />
-            Faltan datos para generar la versión final
-          </p>
-          <ul className="mt-1 list-disc pl-6 text-sm">
-            {blocking.map((issue) => (
-              <li key={issue.code}>{issue.message}</li>
-            ))}
-          </ul>
-        </div>
+        <li className="flex gap-2.5">
+          <CircleAlert className="mt-0.5 size-4 shrink-0 text-warning-700" aria-hidden />
+          <span>
+            <span className="font-medium text-gray-900">
+              {blocking.length === 1
+                ? 'Falta 1 requisito para la versión final'
+                : `Faltan ${blocking.length} requisitos para la versión final`}
+            </span>
+            {canGenerateDraft && ' · podés generar un borrador igualmente.'}
+          </span>
+        </li>
       )}
-      {warnings.length > 0 && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900">
-          <p className="flex items-center gap-2 font-medium">
-            <TriangleAlert className="size-4" aria-hidden />
-            Advertencias
-          </p>
-          <ul className="mt-1 list-disc pl-6 text-sm">
-            {warnings.map((issue) => (
-              <li key={issue.code}>{issue.message}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
+      {warnings.map((issue) => (
+        <li key={issue.code} className="flex gap-2.5">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning-700" aria-hidden />
+          <span>{issue.message}</span>
+        </li>
+      ))}
+    </ul>
   )
 }
 

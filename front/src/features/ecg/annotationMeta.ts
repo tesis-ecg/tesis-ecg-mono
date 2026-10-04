@@ -33,6 +33,10 @@ export const ANNOTATION_SEVERITY: Record<
 }
 
 const KIND_LABEL: Record<string, string> = {
+  // Evidencia de las métricas del Holter (tiras del informe).
+  hr_min: 'FC mínima',
+  hr_max: 'FC máxima',
+  pause_longest: 'Pausa más larga',
   tachycardia: 'Taquicardia',
   bradycardia: 'Bradicardia',
   afib: 'Fibrilación auricular',

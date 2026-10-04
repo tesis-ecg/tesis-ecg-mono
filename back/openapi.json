@@ -781,6 +781,44 @@
         "title": "HeartRateMetric",
         "type": "object"
       },
+      "HolterAnalysisOut": {
+        "properties": {
+          "algorithmVersion": {
+            "title": "Algorithmversion",
+            "type": "integer"
+          },
+          "analyzedMs": {
+            "title": "Analyzedms",
+            "type": "integer"
+          },
+          "analyzedUntilSample": {
+            "title": "Analyzeduntilsample",
+            "type": "integer"
+          },
+          "excludedMs": {
+            "title": "Excludedms",
+            "type": "integer"
+          },
+          "nnIntervals": {
+            "title": "Nnintervals",
+            "type": "integer"
+          },
+          "rrIntervals": {
+            "title": "Rrintervals",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "algorithmVersion",
+          "analyzedUntilSample",
+          "analyzedMs",
+          "excludedMs",
+          "rrIntervals",
+          "nnIntervals"
+        ],
+        "title": "HolterAnalysisOut",
+        "type": "object"
+      },
       "HolterApiKeyOut": {
         "description": "La API key en claro de un equipo. Solo la ve un admin.\n\nLa devuelven tanto el alta y la rotación como `GET /devices/{id}/api-key`:\nla key se guarda cifrada además de hasheada, así que se puede volver a leer.\n`rotatedAt` es cuándo se generó la que se está devolviendo.",
         "properties": {
@@ -973,6 +1011,75 @@
         "title": "HolterCreateRequest",
         "type": "object"
       },
+      "HolterEctopyCountOut": {
+        "properties": {
+          "beats": {
+            "title": "Beats",
+            "type": "integer"
+          },
+          "episodes": {
+            "title": "Episodes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "episodes",
+          "beats"
+        ],
+        "title": "HolterEctopyCountOut",
+        "type": "object"
+      },
+      "HolterEctopyOut": {
+        "description": "Contrato de los recuadros S y V. Hoy siempre llega `None`: requiere el\nmotor de clasificación de latidos (req. 3).",
+        "properties": {
+          "bigeminy": {
+            "$ref": "#/components/schemas/HolterEctopyCountOut"
+          },
+          "maxPerMinute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricEvidenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pairs": {
+            "$ref": "#/components/schemas/HolterEctopyCountOut"
+          },
+          "perThousand": {
+            "title": "Perthousand",
+            "type": "number"
+          },
+          "runs": {
+            "$ref": "#/components/schemas/HolterEctopyCountOut"
+          },
+          "single": {
+            "title": "Single",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "trigeminy": {
+            "$ref": "#/components/schemas/HolterEctopyCountOut"
+          }
+        },
+        "required": [
+          "total",
+          "single",
+          "pairs",
+          "bigeminy",
+          "trigeminy",
+          "runs",
+          "perThousand",
+          "maxPerMinute"
+        ],
+        "title": "HolterEctopyOut",
+        "type": "object"
+      },
       "HolterHealthOut": {
         "properties": {
           "batteryPercent": {
@@ -1105,6 +1212,305 @@
         "title": "HolterHealthOut",
         "type": "object"
       },
+      "HolterHeartRateOut": {
+        "properties": {
+          "abnormalBeats": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Abnormalbeats"
+          },
+          "abnormalPerThousand": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Abnormalperthousand"
+          },
+          "averageBpm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Averagebpm"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricEvidenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "min": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricEvidenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totalBeats": {
+            "title": "Totalbeats",
+            "type": "integer"
+          },
+          "windowBeats": {
+            "title": "Windowbeats",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "averageBpm",
+          "min",
+          "max",
+          "totalBeats",
+          "abnormalBeats",
+          "abnormalPerThousand",
+          "windowBeats"
+        ],
+        "title": "HolterHeartRateOut",
+        "type": "object"
+      },
+      "HolterHourOut": {
+        "properties": {
+          "avgBpm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avgbpm"
+          },
+          "beats": {
+            "title": "Beats",
+            "type": "integer"
+          },
+          "hourStartEpochMs": {
+            "title": "Hourstartepochms",
+            "type": "integer"
+          },
+          "maxBpm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxbpm"
+          },
+          "minBpm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minbpm"
+          }
+        },
+        "required": [
+          "hourStartEpochMs",
+          "beats",
+          "avgBpm",
+          "minBpm",
+          "maxBpm"
+        ],
+        "title": "HolterHourOut",
+        "type": "object"
+      },
+      "HolterHrvFrequencyOut": {
+        "properties": {
+          "hfMs2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hfms2"
+          },
+          "lfHfRatio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lfhfratio"
+          },
+          "lfMs2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lfms2"
+          },
+          "spectrum": {
+            "$ref": "#/components/schemas/HolterSpectrumOut"
+          },
+          "totalPowerMs2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totalpowerms2"
+          },
+          "ulfMs2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ulfms2"
+          },
+          "vlfMs2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vlfms2"
+          },
+          "windows": {
+            "title": "Windows",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "totalPowerMs2",
+          "ulfMs2",
+          "vlfMs2",
+          "lfMs2",
+          "hfMs2",
+          "lfHfRatio",
+          "windows",
+          "spectrum"
+        ],
+        "title": "HolterHrvFrequencyOut",
+        "type": "object"
+      },
+      "HolterHrvTimeOut": {
+        "properties": {
+          "cv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cv"
+          },
+          "meanNnMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meannnms"
+          },
+          "pnn50Percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pnn50Percent"
+          },
+          "rmssdMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rmssdms"
+          },
+          "sdannMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sdannms"
+          },
+          "sdnnMs": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sdnnms"
+          }
+        },
+        "required": [
+          "sdnnMs",
+          "sdannMs",
+          "rmssdMs",
+          "pnn50Percent",
+          "cv",
+          "meanNnMs"
+        ],
+        "title": "HolterHrvTimeOut",
+        "type": "object"
+      },
       "HolterListResponse": {
         "properties": {
           "items": {
@@ -1134,6 +1540,154 @@
           "offset"
         ],
         "title": "HolterListResponse",
+        "type": "object"
+      },
+      "HolterMetricsOut": {
+        "description": "Métricas del informe Holter estándar (`Requerimientos.md` §4).\n\n`status`:\n- `ok`: calculadas sobre lo analizado hasta `analysis.analyzedUntilSample`.\n- `pending`: el estudio tiene señal pero todavía no se buscaron latidos\n  (estudio previo a esta función: corre el backfill).\n- `insufficient_data`: no hay latidos suficientes para medir nada.\n- `unavailable`: el estudio no tiene señal segmentada que analizar.",
+        "properties": {
+          "analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterAnalysisOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ectopyUnavailableReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ectopyunavailablereason"
+          },
+          "heartRate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterHeartRateOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hourly": {
+            "items": {
+              "$ref": "#/components/schemas/HolterHourOut"
+            },
+            "title": "Hourly",
+            "type": "array"
+          },
+          "hrvFrequency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterHrvFrequencyOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hrvTime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterHrvTimeOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pauses": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterPausesOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rrHistogram": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterRrHistogramOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "st": {
+            "items": {
+              "$ref": "#/components/schemas/HolterStChannelOut"
+            },
+            "title": "St",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "pending",
+              "insufficient_data",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supraventricular": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterEctopyOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unavailableReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailablereason"
+          },
+          "ventricular": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HolterEctopyOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "unavailableReason",
+          "analysis",
+          "heartRate",
+          "pauses",
+          "supraventricular",
+          "ventricular",
+          "ectopyUnavailableReason",
+          "hrvTime",
+          "hrvFrequency",
+          "st",
+          "hourly",
+          "rrHistogram"
+        ],
+        "title": "HolterMetricsOut",
         "type": "object"
       },
       "HolterOut": {
@@ -1256,6 +1810,177 @@
           "createdAt"
         ],
         "title": "HolterOut",
+        "type": "object"
+      },
+      "HolterPausesOut": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MetricEvidenceOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "longest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricEvidenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thresholdMs": {
+            "title": "Thresholdms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "thresholdMs",
+          "count",
+          "longest",
+          "items"
+        ],
+        "title": "HolterPausesOut",
+        "type": "object"
+      },
+      "HolterRrHistogramOut": {
+        "properties": {
+          "binMs": {
+            "title": "Binms",
+            "type": "integer"
+          },
+          "counts": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "array"
+          },
+          "startMs": {
+            "title": "Startms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "startMs",
+          "binMs",
+          "counts"
+        ],
+        "title": "HolterRrHistogramOut",
+        "type": "object"
+      },
+      "HolterSpectrumOut": {
+        "properties": {
+          "frequenciesHz": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Frequencieshz",
+            "type": "array"
+          },
+          "powerMs2PerHz": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Powerms2Perhz",
+            "type": "array"
+          }
+        },
+        "required": [
+          "frequenciesHz",
+          "powerMs2PerHz"
+        ],
+        "title": "HolterSpectrumOut",
+        "type": "object"
+      },
+      "HolterStChannelOut": {
+        "properties": {
+          "analyzedMinutes": {
+            "title": "Analyzedminutes",
+            "type": "integer"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "integer"
+          },
+          "depression": {
+            "$ref": "#/components/schemas/HolterStKindOut"
+          },
+          "elevation": {
+            "$ref": "#/components/schemas/HolterStKindOut"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "medianLevelMv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Medianlevelmv"
+          }
+        },
+        "required": [
+          "channel",
+          "label",
+          "analyzedMinutes",
+          "medianLevelMv",
+          "elevation",
+          "depression"
+        ],
+        "title": "HolterStChannelOut",
+        "type": "object"
+      },
+      "HolterStKindOut": {
+        "properties": {
+          "durationSeconds": {
+            "title": "Durationseconds",
+            "type": "integer"
+          },
+          "episodes": {
+            "title": "Episodes",
+            "type": "integer"
+          },
+          "maxDeviation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricEvidenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maxSlopeMvPerMin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maxslopemvpermin"
+          }
+        },
+        "required": [
+          "episodes",
+          "durationSeconds",
+          "maxDeviation",
+          "maxSlopeMvPerMin"
+        ],
+        "title": "HolterStKindOut",
         "type": "object"
       },
       "HolterUpdateRequest": {
@@ -1429,6 +2154,48 @@
           "expiresAt"
         ],
         "title": "LoginResponse",
+        "type": "object"
+      },
+      "MetricEvidenceOut": {
+        "description": "Una estadística con el instante que la respalda (req. 5, «evidencia»).\n\n`sampleIndex` es la coordenada del buffer empaquetado y `epochMs` la hora de\npared; con cualquiera de las dos el visor y el informe ubican la tira de ECG.",
+        "properties": {
+          "durationMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durationms"
+          },
+          "epochMs": {
+            "title": "Epochms",
+            "type": "integer"
+          },
+          "sampleIndex": {
+            "title": "Sampleindex",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "value",
+          "sampleIndex",
+          "epochMs"
+        ],
+        "title": "MetricEvidenceOut",
         "type": "object"
       },
       "MobileAccessOut": {
@@ -3365,7 +4132,8 @@
           "category": {
             "enum": [
               "clinical",
-              "patient_marker"
+              "patient_marker",
+              "metric"
             ],
             "title": "Category",
             "type": "string"
@@ -3405,9 +4173,16 @@
             "type": "integer"
           },
           "findingId": {
-            "format": "uuid",
-            "title": "Findingid",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Findingid"
           },
           "findingStartEpochMs": {
             "title": "Findingstartepochms",
@@ -10497,6 +11272,81 @@
           }
         },
         "summary": "Get Study Findings",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/holter-metrics": {
+      "get": {
+        "operationId": "get_holter_metrics_studies__study_id__holter_metrics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HolterMetricsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Holter Metrics",
         "tags": [
           "studies"
         ]

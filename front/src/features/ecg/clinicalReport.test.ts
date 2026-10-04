@@ -1,9 +1,90 @@
 import { describe, expect, it } from 'vitest'
 
+import type { HolterMetrics } from '@/features/studies/types'
+
 import { automaticAnnotations, buildClinicalReport } from './clinicalReport'
+import { formatMetricValue, sexLabel } from './clinicalReportFormat'
+import { metricsStatusText } from './clinicalReportSummary'
 import type { ClinicalReportInput } from './clinicalReportTypes'
 
 const start = 1_700_000_000_000
+
+function evidence(value: number, offsetMs: number, durationMs: number | null = null) {
+  return { value, sampleIndex: offsetMs / 2, epochMs: start + offsetMs, durationMs }
+}
+
+function metrics(): HolterMetrics {
+  const stKind = { episodes: 0, durationSeconds: 0, maxDeviation: null, maxSlopeMvPerMin: null }
+  return {
+    status: 'ok',
+    unavailableReason: null,
+    analysis: {
+      algorithmVersion: 1,
+      analyzedUntilSample: 3_600_000,
+      analyzedMs: 7_100_000,
+      excludedMs: 100_000,
+      rrIntervals: 8_000,
+      nnIntervals: 7_900,
+    },
+    heartRate: {
+      averageBpm: 72,
+      min: evidence(55, 3_000_000),
+      max: evidence(118, 5_000_000),
+      totalBeats: 8_520,
+      abnormalBeats: null,
+      abnormalPerThousand: null,
+      windowBeats: 8,
+    },
+    pauses: {
+      thresholdMs: 2000,
+      count: 2,
+      longest: evidence(2600, 4_000_000, 2600),
+      items: [evidence(2600, 4_000_000, 2600), evidence(2100, 6_000_000, 2100)],
+    },
+    supraventricular: null,
+    ventricular: null,
+    ectopyUnavailableReason: 'BEAT_CLASSIFICATION_UNAVAILABLE',
+    hrvTime: { sdnnMs: 84.1, sdannMs: 69, rmssdMs: 50.5, pnn50Percent: 2, cv: 0.05, meanNnMs: 830 },
+    hrvFrequency: {
+      totalPowerMs2: 3271,
+      ulfMs2: 2073.4,
+      vlfMs2: 779.6,
+      lfMs2: 172.5,
+      hfMs2: 245.6,
+      lfHfRatio: 0.7,
+      windows: 24,
+      spectrum: {
+        frequenciesHz: Array.from({ length: 120 }, (_, index) => index / 300),
+        powerMs2PerHz: Array.from({ length: 120 }, (_, index) => 4000 / (1 + index)),
+      },
+    },
+    st: [
+      {
+        channel: 1,
+        label: 'Canal 1 (LL-RA)',
+        analyzedMinutes: 118,
+        medianLevelMv: 0.02,
+        elevation: {
+          ...stKind,
+          episodes: 1,
+          durationSeconds: 120,
+          maxSlopeMvPerMin: 0.12,
+          maxDeviation: evidence(0.18, 2_000_000),
+        },
+        depression: stKind,
+      },
+    ],
+    hourly: [
+      { hourStartEpochMs: start, beats: 4300, avgBpm: 74, minBpm: 60, maxBpm: 118 },
+      { hourStartEpochMs: start + 3_600_000, beats: 4220, avgBpm: 70, minBpm: 55, maxBpm: 96 },
+    ],
+    rrHistogram: {
+      startMs: 300,
+      binMs: 50,
+      counts: Array.from({ length: 34 }, (_, index) => Math.max(0, 400 - (index - 10) ** 2 * 6)),
+    },
+  }
+}
 
 function input(): ClinicalReportInput {
   const draft = {
@@ -88,6 +169,57 @@ describe('clinical ECG report', () => {
     expect(new TextDecoder().decode(pdf.slice(0, 8))).toContain('%PDF-')
   })
 
+  it('genera la hoja resumen y la de tendencias con métricas completas', () => {
+    const value = input()
+    value.snapshot.schemaVersion = 2
+    value.snapshot.metrics = metrics()
+    value.windowPlans = [
+      {
+        id: 'metric:pause_longest',
+        findingId: null,
+        kind: 'pause_longest',
+        category: 'metric',
+        severity: 'medium',
+        findingStartEpochMs: start + 4_000_000,
+        findingEndEpochMs: start + 4_002_600,
+        findingDurationMs: 2_600,
+        startEpochMs: start + 3_998_000,
+        endEpochMs: start + 4_004_600,
+        blockIndex: 1,
+        blockCount: 1,
+        confidenceScore: null,
+        description: null,
+        relatedSymptoms: [],
+      },
+    ]
+    value.detailWindows = [
+      {
+        id: 'metric:pause_longest',
+        startEpochMs: start + 3_998_000,
+        endEpochMs: start + 4_004_600,
+        timestampsMs: Array.from({ length: 66 }, (_, index) => start + 3_998_000 + index * 100),
+        samplesMv: Array.from({ length: 66 }, (_, index) => Math.sin(index / 3)),
+        gapIndices: [],
+        source: 'raw',
+      },
+    ]
+
+    const pdf = buildClinicalReport(value)
+
+    expect(new TextDecoder().decode(pdf.slice(0, 8))).toContain('%PDF-')
+  })
+
+  it('genera el resumen aunque las métricas no estén disponibles', () => {
+    const pending = input()
+    pending.snapshot.metrics = { ...metrics(), status: 'pending', heartRate: null, hrvTime: null }
+    const missing = input()
+    missing.snapshot.metrics = null
+
+    for (const value of [pending, missing]) {
+      expect(new TextDecoder().decode(buildClinicalReport(value).slice(0, 8))).toContain('%PDF-')
+    }
+  })
+
   it('genera tiras desde las ventanas crudas planificadas', () => {
     const value = input()
     value.windowPlans = [
@@ -144,5 +276,27 @@ describe('clinical ECG report', () => {
     }
 
     expect(automaticAnnotations([clinical, patientMarker])).toEqual([clinical])
+  })
+})
+
+describe('formato de métricas del informe', () => {
+  it('distingue "no calculado" de cero y usa coma decimal', () => {
+    expect(formatMetricValue(null)).toBe('N/D')
+    expect(formatMetricValue(undefined, 1)).toBe('N/D')
+    expect(formatMetricValue(0)).toBe('0')
+    expect(formatMetricValue(84.06, 1, 'ms')).toBe('84,1 ms')
+    expect(formatMetricValue(100624)).toBe('100.624')
+  })
+
+  it('muestra el sexo con su nombre y no con el código', () => {
+    expect(sexLabel('F')).toBe('Femenino')
+    expect(sexLabel('M')).toBe('Masculino')
+    expect(sexLabel('X')).toBe('No binario')
+  })
+
+  it('explica por qué faltan las métricas', () => {
+    expect(metricsStatusText(metrics())).toBeNull()
+    expect(metricsStatusText({ ...metrics(), status: 'pending' })).toMatch(/pendiente/)
+    expect(metricsStatusText(null)).toMatch(/no incluidas/)
   })
 })

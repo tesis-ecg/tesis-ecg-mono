@@ -653,6 +653,11 @@ async def test_the_work_per_batch_does_not_grow_with_the_study(
         return real_get(key)
 
     monkeypatch.setattr(processing, "get_object", counting_get)
+    # El análisis de latidos relee los segmentos previos que caen dentro de su
+    # contexto. Es un costo constante —lo fija el contexto, no el largo del
+    # estudio—, pero con 30 s de contexto y lotes de 4 s este test terminaría
+    # antes de verlo estabilizarse. Con 2 s se estabiliza en el segundo lote.
+    monkeypatch.setattr(processing, "BEAT_CONTEXT_SECONDS", 2)
 
     frames = build_frames(24_000)
     per_batch = max(len(frames) // 12, 1)
@@ -667,10 +672,12 @@ async def test_the_work_per_batch_does_not_grow_with_the_study(
         "una compactación es una lectura grande legítima y amortizada, y taparía "
         "la tendencia que se está midiendo"
     )
-    # Cota justa a propósito. Cada lote lee sus propias tramas y nada más, así
-    # que el piso es 1 y el techo tiene que ser el piso. Con el comportamiento
-    # viejo el lote N leía N envolventes y esto daba `reads[-1] ≈ len(reads)`.
-    assert max(reads) <= reads[0] + 1, f"el trabajo por lote crece con el estudio: {reads}"
+    # Cota justa a propósito. Cada lote lee sus propias tramas más los segmentos
+    # del contexto de latidos, y nada más: pasado el arranque, el número tiene
+    # que quedar fijo. Con el comportamiento viejo el lote N leía N envolventes
+    # y esto daba `reads[-1] ≈ len(reads)`.
+    steady = reads[2:]
+    assert max(steady) <= min(steady) + 1, f"el trabajo por lote crece con el estudio: {reads}"
 
 
 async def test_a_contended_lock_leaves_the_batch_pending_not_failed(

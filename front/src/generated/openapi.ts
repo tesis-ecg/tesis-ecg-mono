@@ -158,6 +158,15 @@ export interface HeartRateMetric {
   "deltaBpm": number
 }
 
+export interface HolterAnalysisOut {
+  "algorithmVersion": number
+  "analyzedUntilSample": number
+  "analyzedMs": number
+  "excludedMs": number
+  "rrIntervals": number
+  "nnIntervals": number
+}
+
 export interface HolterApiKeyOut {
   "deviceId": string
   "serial": string
@@ -187,6 +196,22 @@ export interface HolterCreateRequest {
   "firmwareVersion"?: string | null
 }
 
+export interface HolterEctopyCountOut {
+  "episodes": number
+  "beats": number
+}
+
+export interface HolterEctopyOut {
+  "total": number
+  "single": number
+  "pairs": HolterEctopyCountOut
+  "bigeminy": HolterEctopyCountOut
+  "trigeminy": HolterEctopyCountOut
+  "runs": HolterEctopyCountOut
+  "perThousand": number
+  "maxPerMinute": MetricEvidenceOut | null
+}
+
 export interface HolterHealthOut {
   "deviceId": string
   "serial": string
@@ -203,11 +228,65 @@ export interface HolterHealthOut {
   "storageTotalMb": number | null
 }
 
+export interface HolterHeartRateOut {
+  "averageBpm": number | null
+  "min": MetricEvidenceOut | null
+  "max": MetricEvidenceOut | null
+  "totalBeats": number
+  "abnormalBeats": number | null
+  "abnormalPerThousand": number | null
+  "windowBeats": number
+}
+
+export interface HolterHourOut {
+  "hourStartEpochMs": number
+  "beats": number
+  "avgBpm": number | null
+  "minBpm": number | null
+  "maxBpm": number | null
+}
+
+export interface HolterHrvFrequencyOut {
+  "totalPowerMs2": number | null
+  "ulfMs2": number | null
+  "vlfMs2": number | null
+  "lfMs2": number | null
+  "hfMs2": number | null
+  "lfHfRatio": number | null
+  "windows": number
+  "spectrum": HolterSpectrumOut
+}
+
+export interface HolterHrvTimeOut {
+  "sdnnMs": number | null
+  "sdannMs": number | null
+  "rmssdMs": number | null
+  "pnn50Percent": number | null
+  "cv": number | null
+  "meanNnMs": number | null
+}
+
 export interface HolterListResponse {
   "items": Array<HolterOut>
   "total": number
   "limit": number
   "offset": number
+}
+
+export interface HolterMetricsOut {
+  "status": "ok" | "pending" | "insufficient_data" | "unavailable"
+  "unavailableReason": string | null
+  "analysis": HolterAnalysisOut | null
+  "heartRate": HolterHeartRateOut | null
+  "pauses": HolterPausesOut | null
+  "supraventricular": HolterEctopyOut | null
+  "ventricular": HolterEctopyOut | null
+  "ectopyUnavailableReason": string | null
+  "hrvTime": HolterHrvTimeOut | null
+  "hrvFrequency": HolterHrvFrequencyOut | null
+  "st": Array<HolterStChannelOut>
+  "hourly": Array<HolterHourOut>
+  "rrHistogram": HolterRrHistogramOut | null
 }
 
 export interface HolterOut {
@@ -223,6 +302,40 @@ export interface HolterOut {
   "assignedDoctorName": string | null
   "lastSeenAt": string | null
   "createdAt": string
+}
+
+export interface HolterPausesOut {
+  "thresholdMs": number
+  "count": number
+  "longest": MetricEvidenceOut | null
+  "items": Array<MetricEvidenceOut>
+}
+
+export interface HolterRrHistogramOut {
+  "startMs": number
+  "binMs": number
+  "counts": Array<number>
+}
+
+export interface HolterSpectrumOut {
+  "frequenciesHz": Array<number>
+  "powerMs2PerHz": Array<number>
+}
+
+export interface HolterStChannelOut {
+  "channel": number
+  "label": string
+  "analyzedMinutes": number
+  "medianLevelMv": number | null
+  "elevation": HolterStKindOut
+  "depression": HolterStKindOut
+}
+
+export interface HolterStKindOut {
+  "episodes": number
+  "durationSeconds": number
+  "maxDeviation": MetricEvidenceOut | null
+  "maxSlopeMvPerMin": number | null
 }
 
 export interface HolterUpdateRequest {
@@ -257,6 +370,13 @@ export interface LoginRequest {
 export interface LoginResponse {
   "user": UserOut
   "expiresAt": string
+}
+
+export interface MetricEvidenceOut {
+  "value": number | null
+  "sampleIndex": number
+  "epochMs": number
+  "durationMs"?: number | null
 }
 
 export interface MobileAccessOut {
@@ -573,9 +693,9 @@ export interface StudyClinicalReportVersionsOut {
 
 export interface StudyClinicalReportWindowPlanOut {
   "id": string
-  "findingId": string
+  "findingId": string | null
   "kind": string
-  "category": "clinical" | "patient_marker"
+  "category": "clinical" | "patient_marker" | "metric"
   "severity": "low" | "medium" | "high" | "critical"
   "findingStartEpochMs": number
   "findingEndEpochMs": number

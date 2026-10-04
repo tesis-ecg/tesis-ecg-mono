@@ -41,8 +41,8 @@ Siete cosas:
   curso: `(study_id, received_at)` para saber si llegó un lote reciente sin
   recorrer la historia del estudio, y uno parcial de los lotes sin terminar.
 
-Revision ID: d0e1f2a3b4c5
-Revises: c9d0e1f2a3b4
+Revision ID: 32266feb49f2
+Revises: d0e1f2a3b4c5
 Create Date: 2026-10-01 12:00:00.000000
 """
 
@@ -54,8 +54,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "d0e1f2a3b4c5"
-down_revision: str | Sequence[str] | None = "c9d0e1f2a3b4"
+revision: str = "32266feb49f2"
+down_revision: str | Sequence[str] | None = "d0e1f2a3b4c5"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

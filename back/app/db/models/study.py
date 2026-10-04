@@ -111,6 +111,14 @@ class Study(TimestampMixin, Base):
         JSONB, default=dict, nullable=False
     )
     filtered_samples_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Latidos detectados por el backend: `[{key, startSampleIndex, sampleCount,
+    #: beatCount, byteLength, sha256}]`. Cada objeto es un arreglo de registros
+    #: `(sample_index int64, st_mv float32)` en orden; ver `app/ml/beats.py`.
+    ecg_beat_chunks: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, nullable=False
+    )
+    #: Hasta qué muestra del buffer empaquetado se buscaron latidos.
+    beats_analyzed_samples: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: Cursor del ACK go-back-N: la última `seq` confirmada de forma contigua.
     last_ingested_seq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: `bootId` de esa última trama. Un cambio de bootId invalida la comparación

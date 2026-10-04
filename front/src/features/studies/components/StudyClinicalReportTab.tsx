@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   CircleAlert,
+  CircleCheck,
+  CircleX,
   Download,
   Eye,
   FileCheck2,
@@ -29,9 +31,48 @@ import {
 import type {
   Study,
   StudyClinicalReportDraft,
+  StudyClinicalReportIssue,
   StudyClinicalReportPreview,
 } from '@/features/studies/types'
 import { isApiError, unwrapError } from '@/lib/api'
+import { cn } from '@/lib/utils'
+
+type PreviewState = 'loading' | 'error' | 'ready'
+
+// Requisitos conocidos para emitir el informe final. El backend sólo devuelve los que fallan,
+// así que este catálogo permite mostrar también los cumplidos.
+const REPORT_REQUIREMENTS: { code: string; label: string; fieldId?: string }[] = [
+  { code: 'STUDY_NOT_COMPLETED', label: 'Estudio completado' },
+  { code: 'TIME_NOT_VERIFIED', label: 'Hora de las muestras verificada' },
+  { code: 'MISSING_RAW_SIGNAL', label: 'Señal cruda disponible' },
+  { code: 'BEAT_ANALYSIS_PENDING', label: 'Análisis de latidos completo' },
+  { code: 'MISSING_INDICATION', label: 'Indicación del estudio', fieldId: 'report-indication' },
+  { code: 'MISSING_CONCLUSION', label: 'Conclusión clínica', fieldId: 'report-conclusion' },
+]
+
+interface RequirementItem {
+  code: string
+  label: string
+  fieldId?: string
+  issue?: StudyClinicalReportIssue
+}
+
+function buildRequirements(preview: StudyClinicalReportPreview) {
+  const blocking = preview.issues.filter((issue) => issue.severity === 'blocking')
+  const warnings = preview.issues.filter((issue) => issue.severity === 'warning')
+  const known = new Set(REPORT_REQUIREMENTS.map((item) => item.code))
+  const items: RequirementItem[] = [
+    ...REPORT_REQUIREMENTS.map((item) => ({
+      ...item,
+      issue: blocking.find((issue) => issue.code === item.code),
+    })),
+    // Requisitos nuevos del backend que el catálogo todavía no conoce.
+    ...blocking
+      .filter((issue) => !known.has(issue.code))
+      .map((issue) => ({ code: issue.code, label: issue.message, issue })),
+  ]
+  return { items, pending: items.filter((item) => item.issue), warnings }
+}
 
 interface StudyClinicalReportTabProps {
   study: Study
@@ -42,6 +83,11 @@ export function StudyClinicalReportTab({ study, onPreview }: StudyClinicalReport
   const draftQ = useStudyClinicalReportDraft(study.id)
   const previewQ = useStudyClinicalReportPreview(study.id)
   const versionsQ = useStudyClinicalReportVersions(study.id)
+  const previewState: PreviewState = previewQ.isLoading
+    ? 'loading'
+    : previewQ.isError
+      ? 'error'
+      : 'ready'
 
   if (draftQ.isLoading) return <Spinner label="Cargando informe clínico…" />
   if (draftQ.isError || !draftQ.data) {
@@ -65,11 +111,16 @@ export function StudyClinicalReportTab({ study, onPreview }: StudyClinicalReport
         study={study}
         draft={draftQ.data}
         preview={previewQ.data}
-        previewState={previewQ.isLoading ? 'loading' : previewQ.isError ? 'error' : 'ready'}
+        previewState={previewState}
         onReload={() => void draftQ.refetch()}
         onPreview={onPreview}
       />
       <div className="flex flex-col gap-4">
+        <ReportRequirementsCard
+          preview={previewQ.data}
+          state={previewState}
+          error={previewQ.error}
+        />
         <Card className="flex flex-col gap-4 p-5">
           <div>
             <h3 className="text-h6 text-gray-900">Resumen del informe</h3>
@@ -153,7 +204,7 @@ function ClinicalReportForm({
   study: Study
   draft: StudyClinicalReportDraft
   preview: StudyClinicalReportPreview | undefined
-  previewState: 'loading' | 'error' | 'ready'
+  previewState: PreviewState
   onReload: () => void
   onPreview: () => void
 }) {
@@ -198,6 +249,13 @@ function ClinicalReportForm({
     onPreview()
   }
   const conflict = isApiError(update.error) && update.error.code === 'CONFLICT'
+  const pendingCodes = new Set(
+    reportPreview?.issues
+      .filter((issue) => issue.severity === 'blocking')
+      .map((issue) => issue.code) ?? [],
+  )
+  const requiredHint = (code: string) =>
+    pendingCodes.has(code) ? 'Requerido para finalizar' : undefined
 
   return (
     <Card className="flex flex-col gap-6 p-5">
@@ -205,8 +263,7 @@ function ClinicalReportForm({
         <div>
           <h2 className="text-h5 text-gray-900">Datos clínicos e interpretación</h2>
           <p className="mt-1 text-sm text-gray-500">
-            Podés guardar el borrador durante el estudio. Indicación y conclusión son obligatorias
-            para finalizar.
+            Podés guardar el borrador en cualquier momento mientras el estudio está en curso.
           </p>
           <p className="mt-1 text-body3 text-gray-500">
             Revisión {draft.revision}
@@ -219,12 +276,13 @@ function ClinicalReportForm({
         </Badge>
       </div>
 
-      <ReportReadiness preview={reportPreview} state={previewState} />
+      <ReadinessStatus preview={reportPreview} state={previewState} />
 
       <div className="grid gap-4 md:grid-cols-2">
         <Field
-          label="Indicación del estudio *"
+          label="Indicación del estudio"
           htmlFor="report-indication"
+          hint={requiredHint('MISSING_INDICATION')}
           className="md:col-span-2"
         >
           <Textarea
@@ -275,8 +333,9 @@ function ClinicalReportForm({
           />
         </Field>
         <Field
-          label="Conclusión / interpretación final *"
+          label="Conclusión / interpretación final"
           htmlFor="report-conclusion"
+          hint={requiredHint('MISSING_CONCLUSION')}
           className="md:col-span-2"
         >
           <Textarea
@@ -334,76 +393,192 @@ function ClinicalReportForm({
   )
 }
 
-function ReportReadiness({
+function ReadinessStatus({
   preview,
   state,
 }: {
   preview: StudyClinicalReportPreview | undefined
-  state: 'loading' | 'error' | 'ready'
+  state: PreviewState
 }) {
+  let icon: ReactNode
+  let text: ReactNode
   if (state === 'loading') {
-    return <p className="text-sm text-muted-foreground">Verificando requisitos del informe…</p>
+    icon = <Spinner size="sm" />
+    text = 'Verificando requisitos del informe…'
+  } else if (state === 'error' || !preview) {
+    icon = <CircleAlert className="size-4 text-destructive" aria-hidden />
+    text = 'No se pudo verificar si el informe puede emitirse.'
+  } else {
+    const { pending, warnings } = buildRequirements(preview)
+    const warningText =
+      warnings.length > 0
+        ? ` · ${warnings.length} ${warnings.length === 1 ? 'advertencia' : 'advertencias'}`
+        : ''
+    if (pending.length === 0) {
+      icon = <CircleCheck className="size-4 text-success-700" aria-hidden />
+      text = (
+        <>
+          <span className="font-medium text-gray-900">Listo para emitir el informe final</span>
+          <span className="text-gray-500">{warningText}</span>
+        </>
+      )
+    } else {
+      icon = <CircleAlert className="size-4 text-warning-700" aria-hidden />
+      text = (
+        <>
+          <span className="font-medium text-gray-900">
+            {pending.length === 1
+              ? 'Falta 1 requisito para emitir el informe final'
+              : `Faltan ${pending.length} requisitos para emitir el informe final`}
+          </span>
+          <span className="text-gray-500">{warningText}</span>
+        </>
+      )
+    }
   }
-  if (state === 'error' || !preview) {
-    return (
-      <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-        <p className="flex items-center gap-2 font-medium">
-          <CircleAlert className="size-4" aria-hidden />
-          No se pudo verificar si el informe puede generarse.
-        </p>
-      </div>
-    )
-  }
-  const blocking = preview.issues.filter((issue) => issue.severity === 'blocking')
-  const warnings = preview.issues.filter((issue) => issue.severity === 'warning')
-  if (blocking.length === 0 && warnings.length === 0) return null
 
   return (
-    <div className="grid gap-2">
-      {blocking.length > 0 && (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-          <p className="flex items-center gap-2 font-medium">
-            <CircleAlert className="size-4" aria-hidden />
-            Faltan datos para generar el informe final
-          </p>
-          <ul className="mt-1 list-disc pl-6">
-            {blocking.map((issue) => (
-              <li key={issue.code}>{issue.message}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {warnings.length > 0 && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-          <p className="flex items-center gap-2 font-medium">
-            <TriangleAlert className="size-4" aria-hidden />
-            Advertencias que no bloquean la generación
-          </p>
-          <ul className="mt-1 list-disc pl-6">
-            {warnings.map((issue) => (
-              <li key={issue.code}>{issue.message}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+    <div
+      aria-live="polite"
+      className="flex items-center gap-2.5 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-gray-600"
+    >
+      <span className="flex shrink-0 items-center">{icon}</span>
+      <p className="min-w-0">{text}</p>
     </div>
   )
+}
+
+function ReportRequirementsCard({
+  preview,
+  state,
+  error,
+}: {
+  preview: StudyClinicalReportPreview | undefined
+  state: PreviewState
+  error: unknown
+}) {
+  const summary = preview ? buildRequirements(preview) : null
+  const done = summary ? summary.items.length - summary.pending.length : 0
+
+  return (
+    <Card className="flex flex-col gap-4 p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-h6 text-gray-900">Requisitos para finalizar</h3>
+          <p className="mt-1 text-body3 text-gray-500">
+            Condiciones para emitir una versión final.
+          </p>
+        </div>
+        {summary && (
+          <Badge variant={summary.pending.length === 0 ? 'success' : 'neutral'}>
+            {done}/{summary.items.length}
+          </Badge>
+        )}
+      </div>
+
+      {state === 'loading' ? (
+        <Spinner label="Verificando requisitos…" />
+      ) : state === 'error' || !summary ? (
+        <p className="text-sm text-destructive">{unwrapError(error)}</p>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-1">
+            {summary.items.map((item) => (
+              <RequirementRow key={item.code} item={item} />
+            ))}
+          </ul>
+          {summary.warnings.length > 0 && (
+            <div className="flex flex-col gap-2 border-t border-border pt-4">
+              <p className="text-body3 font-medium tracking-wide text-gray-500 uppercase">
+                Advertencias
+              </p>
+              <ul className="flex flex-col gap-2">
+                {summary.warnings.map((issue) => (
+                  <li key={issue.code} className="flex gap-2.5 text-sm text-gray-600">
+                    <TriangleAlert
+                      className="mt-0.5 size-4 shrink-0 text-warning-700"
+                      aria-hidden
+                    />
+                    <span>{issue.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  )
+}
+
+function RequirementRow({ item }: { item: RequirementItem }) {
+  const pending = Boolean(item.issue)
+  const content = (
+    <>
+      {pending ? (
+        <CircleX className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+      ) : (
+        <CircleCheck className="mt-0.5 size-4 shrink-0 text-success-700" aria-hidden />
+      )}
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn('block text-sm', pending ? 'font-medium text-gray-900' : 'text-gray-600')}
+        >
+          {item.label}
+          <span className="sr-only">{pending ? ' (pendiente)' : ' (cumplido)'}</span>
+        </span>
+        {/* En los campos del formulario la acción "Completar" ya explica qué falta. */}
+        {pending && !item.fieldId && item.issue && item.issue.message !== item.label && (
+          <span className="mt-0.5 block text-body3 text-gray-500">{item.issue.message}</span>
+        )}
+      </span>
+      {pending && item.fieldId && (
+        <span className="shrink-0 text-body3 font-medium text-primary">Completar</span>
+      )}
+    </>
+  )
+
+  if (pending && item.fieldId) {
+    const fieldId = item.fieldId
+    return (
+      <li>
+        <button
+          type="button"
+          className="-mx-2 flex w-[calc(100%+1rem)] gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          onClick={() => {
+            const field = document.getElementById(fieldId)
+            field?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            field?.focus({ preventScroll: true })
+          }}
+        >
+          {content}
+        </button>
+      </li>
+    )
+  }
+
+  return <li className="flex gap-2.5 py-1.5">{content}</li>
 }
 
 function Field({
   label,
   htmlFor,
+  hint,
   className,
   children,
 }: {
   label: string
   htmlFor: string
+  hint?: string
   className?: string
   children: ReactNode
 }) {
   return (
     <div className={className}>
-      <Label htmlFor={htmlFor}>{label}</Label>
+      <div className="flex items-baseline justify-between gap-3">
+        <Label htmlFor={htmlFor}>{label}</Label>
+        {hint && <span className="text-body3 text-gray-500">{hint}</span>}
+      </div>
       <div className="mt-1.5">{children}</div>
     </div>
   )
