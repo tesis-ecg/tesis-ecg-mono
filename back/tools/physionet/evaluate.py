@@ -337,10 +337,16 @@ def main() -> int:
         from tools.physionet import qtdb
 
         return qtdb.main([arg for arg in sys.argv[1:] if arg != "--qtdb"])
+    if "--detectors" in sys.argv[1:]:
+        # Se/PPV de los dos detectores de R: tiene su propia CLI (ver DETECTORS.md).
+        from tools.physionet import detectors
+
+        return detectors.main([arg for arg in sys.argv[1:] if arg != "--detectors"])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--records", nargs="*", default=None)
     parser.add_argument("--qtdb", action="store_true", help="delineación vs. QTDB (ver README)")
+    parser.add_argument("--detectors", action="store_true", help="Se/PPV de R (ver DETECTORS.md)")
     parser.add_argument(
         "--stage1",
         action="store_true",
