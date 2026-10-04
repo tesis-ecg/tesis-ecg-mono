@@ -53,9 +53,15 @@ ingesta. La ingesta, en cambio, analiza lote por lote, del largo que mande el
 chaleco: los bordes de lote caen en otro lado, y eso solo toca el primer y el
 último segundo de cada lote (donde la curtosis no mira la señal sin red). Por
 captura imprime ventanas `good`/`marginal`/`bad`, conteo por motivo, medianas de
-pSQI/kSQI/basSQI/bSQI, cuántas ventanas falla cada índice por separado y los
-hallazgos. `--timeline` agrega una línea por ventana de 10 s. Tarda ~10 s con
-las 16 capturas.
+pSQI/kSQI/basSQI/bSQI, cuántas ventanas falla cada índice por separado, los
+hallazgos y una línea de **ritmo** con las pausas (cuántas salieron por la regla
+de hueco quieto de `app/ml/quiet_gap.py`), taquicardias y bradicardias.
+`--timeline` agrega una línea por ventana de 10 s. Tarda ~10 s con las 16
+capturas.
+
+`uv run python -m tools.vest.detectors` mide, sobre estas mismas capturas, el Se y el PPV
+de los dos detectores de R del backend contra el tren del firmware; método y
+números en `../physionet/DETECTORS.md`.
 
 ## Expectativas
 
@@ -100,6 +106,27 @@ de Q o de umbral puede romper algo sin que ninguna expectativa lo note:
 | `captura_canal2_leadoff_final` | ≤ 3 `good` |
 | `captura_canal2_leadoff_piel_cargador` | ≤ 12 `good` |
 | `captura_canal2_ab_router` | todas `good` en 130-210 s y 380-450 s (posiciones "cerca": 2-4 mV de red, sin ráfagas) |
+
+### Guardas de ritmo
+
+Las capturas con ruido, electrodos despegados o mal contacto no tienen ningún
+episodio de ritmo real, así que **todo hallazgo de ritmo** (`pause`,
+`tachycardia`, `bradycardia`) ahí es una arritmia que el ruido inventó, y le
+avisaría al paciente: lo que el gate existe para evitar. La regla de pausa por hueco
+quieto (`app/ml/quiet_gap.py`) informa asistolias que el gate rechaza, y estas guardas
+son lo que le exige no inventarlas sobre capturas reales del chaleco. Las 11 capturas
+de la lista deben dar **0 hallazgos de ritmo**:
+
+| Captura |
+|---|
+| `ab_cargador_vecino`, `ab_router`, `ab_tapa_router`, `aviso_ll_ra` |
+| `leadoff_broches`, `leadoff_final`, `leadoff_head_con_puente`, `leadoff_piel_cargador` |
+| `loff0C_gel`, `loff0C_seco_saturada`, `movimiento_con_puente` |
+
+`aviso_ll_ra` es la más exigente: entre los 43,2 y los 47,3 s hay 4 s quietos sin R
+del firmware, pero con la red 19,6 veces y la deriva 7,4 veces más altas que alrededor
+(pérdida de contacto), y la regla tiene que callarse. Las guardas se imprimen junto
+con las de arriba y siguen la misma política: no se ajustan a los resultados.
 
 ## Lo que mostró
 

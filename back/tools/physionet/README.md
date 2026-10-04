@@ -68,6 +68,66 @@ Dos consecuencias concretas que el script ya aplica:
   (`firmware_peaks_available` en falso) y no degrada el registro por una ausencia
   que no dice nada sobre la señal.
 
+## Pausas del motor (`--pauses`, `--wander`)
+
+Mide las pausas que informa el motor contra los R-R anotados de MIT-BIH, y que el
+ruido de NSTDB no invente ninguna. Es la evaluación de la regla de hueco quieto
+(`app/ml/quiet_gap.py`): una asistolia larga deja ventanas enteras sin QRS, el
+gate las rechaza y, sin esa regla, el motor no informaba pausa ni aviso al paciente.
+
+```bash
+cd back
+uv run python -m tools.physionet.evaluate --pauses --jobs 8                # mitdb entero + nstdb
+uv run python -m tools.physionet.evaluate --pauses --jobs 8 --wander 0.5   # + deriva respiratoria de 0,5 mV
+```
+
+Evalúa los registros que haya en `data/mitdb` (o los de `--records`) y todos los de
+`data/nstdb`. El `--download` de arriba solo trae los 7 de la Etapa 2: para los 48 de
+`mitdb` y `nstdb` 118/119 hay que correr `--detectors --download`. Cada registro se
+analiza entero, en un solo lote, sin refractariedad y sin intervalos; tarda segundos
+con `--jobs 8`. Por registro y en el total (`Σ mitdb`, `Σ nstdb`):
+
+| Columna | Qué cuenta |
+|---|---|
+| `anotadas` | R-R anotados de más de `ml_pause_seconds` (2,5 s) |
+| `cubiertas` | de esas, las que alguna pausa del motor cubre de punta a punta (±0,15 s) |
+| `pausas` | las que informó el motor |
+| `hueco_quieto` | de las `pausas`, las que salieron por la regla de hueco quieto |
+| `falsas` | pausas con un latido anotado adentro: cada una le avisaría al paciente una pausa que no existió |
+
+En `nstdb` no hay R-R anotados de esa duración, así que toda pausa ahí es una que el
+ruido inventó. Hoy: `mitdb` da 85 anotadas, 78 cubiertas, 80 pausas (10 por hueco
+quieto) y 0 falsas; `nstdb`, 0 pausas.
+
+`--wander <mV>` (solo con `--pauses`) le suma a `mitdb` una deriva respiratoria de
+0,25 Hz y esa amplitud, en minutos alternados de 60 s, como un paciente que cambia de
+postura (`nstdb` ya trae la suya). Es el adversario de la regla: sobre un QRS chico, la
+deriva deja ventanas `bad` por kSQI o pSQI y la regla tiene que seguir viendo los
+latidos. Lo que no puede aparecer son `falsas`: con 0,5 mV dan 0, pero las `cubiertas`
+bajan a 39 de 85.
+
+## Benchmark de detectores de R (`--detectors`)
+
+`app/ml/rpeak_detection.py` tiene dos detectores de QRS que todavía no se unificaron:
+`nk` (NeuroKit, el del motor) y `pt` (Pan-Tompkins, el de las métricas Holter y de
+`/holter-metrics`). `--detectors` mide su Se y PPV latido a latido, cada uno como corre
+en producción, contra las anotaciones de MIT-BIH (ANSI/AAMI EC57 y criterios más
+estrictos), contra NSTDB por SNR y contra el detector del firmware en las capturas del
+chaleco (`tools/vest/detectors.py`). Método, resultados y lectura para la unificación:
+[`DETECTORS.md`](DETECTORS.md).
+
+```bash
+cd back
+uv run python -m tools.physionet.evaluate --detectors --jobs 8   # mitdb + nstdb + chaleco
+```
+
+Los datos se bajan antes con `--detectors --download` (los 48 de `mitdb` y `nstdb`
+118/119; baja y sale). `--part mitdb,nstdb,vest` y `--records` acotan la corrida, y
+`--summarize-only` rehace el reporte desde `data/detectors_results.json`, donde la
+corrida deja los conteos por registro. Las capturas del chaleco se leen de
+`../Holter-ECG-System/capturas/` (`--captures-dir` para otra ruta).
+`python -m tools.physionet.detectors` acepta lo mismo.
+
 ## Etapa 3: intervalos contra la QT Database (`--qtdb`)
 
 La pregunta acá es otra: no si el motor encuentra los latidos, sino si los
