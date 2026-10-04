@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { loadClocks, loadFleet, saveClocks, saveFleet } from './storage'
 import { makeVestConfig } from './defaults'
+import { initialClock } from './deviceClock'
 
 /** `localStorage` mínimo: el entorno de test es `node` y no trae `window`. */
 function stubStorage(initial: Record<string, string> = {}) {
@@ -77,6 +78,49 @@ describe('persistencia de la flota', () => {
     expect(loadFleet()).toEqual([])
   })
 
+  it('migra una config de la señal vieja sin perder semilla, FC ni anomalías', () => {
+    const legacy = {
+      ...makeVestConfig({ label: 'Vieja' }),
+      signal: {
+        seed: 77,
+        durationSec: 600,
+        sampleRateHz: 500,
+        nChannels: 1,
+        baseBpm: 81,
+        bpmVariability: 6,
+        qrsAmplitudeUV: 1100,
+        noiseUV: 25,
+        baselineOffsetUV: 0,
+        leadOffSpans: [{ startSec: 30, durationSec: 5 }],
+        rldOffSpans: [],
+        saturatedSpans: [],
+        unanalyzableSpans: [],
+        symptomMarkersSec: [12],
+      },
+      network: {
+        truncateBodyPct: 0,
+        invalidApiKey: true,
+        unknownSerial: false,
+        omitUptime: false,
+        maxRetries: 2,
+      },
+    } as Record<string, unknown>
+    delete legacy.episodes
+    delete legacy.pendingInjections
+    stubStorage({ 'holter:vest-fleet': JSON.stringify([legacy]) })
+
+    const [config] = loadFleet()
+
+    expect(config.signal).toMatchObject({ seed: 77, baseBpm: 81, electrode: 'dry' })
+    expect(config.episodes.map((e) => [e.kind, e.batch, e.startSec])).toEqual([
+      ['lead_off', 1, 30],
+      ['symptom', 1, 12],
+    ])
+    expect(config.pendingInjections).toEqual([])
+    expect(config.network).toMatchObject({ invalidApiKey: true, postFrames: 48, graceSeconds: 60 })
+    expect(config.network).not.toHaveProperty('maxRetries')
+  })
+
   it('no rompe si el navegador niega el storage', () => {
     // Safari en modo privado tira al escribir. Perder la persistencia no puede
     // cortar la corrida en curso.
@@ -102,12 +146,14 @@ describe('persistencia del reloj', () => {
   })
 
   const clock = {
+    ...initialClock(1_757_000_000_000),
     bootId: 3,
     nextSeq: 162_944,
     t0Ms: 1200,
-    uptimeMs: 36_000_000,
-    bootEpochMs: 1_757_000_000_000,
+    bootAnchors: { 3: 1_757_000_000_000 - 30_000 },
+    bootEpochMs: 1_757_000_000_000 - 30_000,
     batteryPct: 72,
+    fresh: false,
   }
 
   it('el cursor sobrevive a un F5', () => {
@@ -122,6 +168,32 @@ describe('persistencia del reloj', () => {
 
   it('devuelve vacío cuando no hay nada guardado', () => {
     expect(loadClocks()).toEqual({})
+  })
+
+  it('migra un reloj viejo conservando la hora de la próxima muestra', () => {
+    // El formato viejo mandaba `bootEpochMs + uptimeMs` como hora del puente:
+    // el origen del 422. Lo que vale de él es `bootEpochMs + t0Ms`, la hora de
+    // la próxima muestra, que es donde tiene que seguir la señal.
+    stubStorage({
+      'holter:vest-clocks': JSON.stringify({
+        'vest-1': {
+          bootId: 2,
+          nextSeq: 5000,
+          t0Ms: 1_800_000,
+          uptimeMs: 2_400_000,
+          bootEpochMs: 1_757_000_000_000,
+          batteryPct: 80,
+        },
+      }),
+    })
+
+    const restored = loadClocks()['vest-1']
+
+    expect(restored).not.toHaveProperty('uptimeMs')
+    expect(restored.bootEpochMs + restored.t0Ms).toBe(1_757_000_000_000 + 1_800_000)
+    expect(restored.bootAnchors).toEqual({ 2: 1_757_000_000_000 })
+    expect(restored.fresh).toBe(false)
+    expect(restored.genState).toBeNull()
   })
 
   it('descarta los relojes corruptos sin tirar abajo los buenos', () => {

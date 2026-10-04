@@ -1,4 +1,4 @@
-import { HeartPulse, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { Activity, HeartPulse, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
@@ -27,18 +27,25 @@ interface VestTestPanelProps {
   vest: VestState
   onSetPlacement: (ok: boolean) => void
   onSimulateAnomaly: (body: SimulateAnomalyBody) => void
+  onInjectAnomaly: (type: SimulatedAnomalyType) => void
 }
 
 /**
- * Los dos avisos que la app del paciente sabe recibir, disparables a mano.
+ * Acciones que se disparan **durante** la prueba, con la app abierta al lado.
  *
- * Está aparte del ciclo de lotes porque ninguno de los dos viaja con la señal:
- * la colocación va por el canal corto del equipo y la anomalía la produce el
- * backend. Los dos existen acá y no en `ScenarioForm` porque no son
- * configuración de la corrida sino acciones que se disparan **durante** la
- * prueba, con la app abierta al lado.
+ * - La colocación va por el canal corto del equipo. El equipo también la manda
+ *   solo cuando la señal grabada tiene un electrodo suelto o mala calidad
+ *   sostenidos; esto es el atajo manual.
+ * - Una arritmia se puede **inyectar** en el próximo lote, y entonces está en el
+ *   trazado y la mide el backend; o **simular** del lado del backend sobre la
+ *   señal ya subida, que es lo rápido para probar la notificación al paciente.
  */
-export function VestTestPanel({ vest, onSetPlacement, onSimulateAnomaly }: VestTestPanelProps) {
+export function VestTestPanel({
+  vest,
+  onSetPlacement,
+  onSimulateAnomaly,
+  onInjectAnomaly,
+}: VestTestPanelProps) {
   const [eventType, setEventType] = useState<SimulatedAnomalyType>('afib')
   const [severity, setSeverity] = useState<'high' | 'critical'>('high')
 
@@ -49,7 +56,7 @@ export function VestTestPanel({ vest, onSetPlacement, onSimulateAnomaly }: VestT
   return (
     <section className="flex flex-col gap-3 rounded-md border border-gray-200 bg-gray-50 p-4">
       <div className="flex items-center justify-between gap-2">
-        <h4 className="text-body2 font-medium text-gray-900">Avisos al paciente</h4>
+        <h4 className="text-body2 font-medium text-gray-900">Avisos y arritmias</h4>
         <Badge variant={misplaced ? 'destructive' : 'success'}>
           {misplaced ? 'Mal colocado' : 'Bien colocado'}
         </Badge>
@@ -76,7 +83,7 @@ export function VestTestPanel({ vest, onSetPlacement, onSimulateAnomaly }: VestT
         </span>
       </div>
 
-      <div className="grid gap-3 border-t border-gray-200 pt-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+      <div className="grid gap-3 border-t border-gray-200 pt-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <div className="flex flex-col gap-1">
           <Label className="text-body3">Hallazgo</Label>
           <Select
@@ -112,26 +119,40 @@ export function VestTestPanel({ vest, onSetPlacement, onSimulateAnomaly }: VestT
             </SelectContent>
           </Select>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => onSimulateAnomaly({ eventType, severity })}
-          disabled={!stats.studyId}
-          title={
-            stats.studyId ? undefined : 'Hace falta señal ingerida: mandá al menos un lote antes.'
-          }
-        >
-          <HeartPulse className="mr-1 size-4" aria-hidden />
-          Simular anomalía
-        </Button>
+        <div className="flex flex-wrap gap-2 sm:col-span-2">
+          <Button
+            size="sm"
+            onClick={() => onInjectAnomaly(eventType)}
+            title="La arritmia queda grabada en el ECG del próximo lote que se genere."
+          >
+            <Activity className="mr-1 size-4" aria-hidden />
+            Inyectar en el próximo lote
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onSimulateAnomaly({ eventType, severity })}
+            disabled={!stats.studyId}
+            title={
+              stats.studyId ? undefined : 'Hace falta señal ingerida: mandá al menos un lote antes.'
+            }
+          >
+            <HeartPulse className="mr-1 size-4" aria-hidden />
+            Simular hallazgo en el backend
+          </Button>
+        </div>
       </div>
 
-      {!stats.studyId && (
-        <p className="text-body3 text-gray-600">
-          La anomalía se ancla dentro de la señal ya subida, así que la respuesta del paciente cae
-          sobre el ECG. Mandá un lote primero.
+      {config.pendingInjections.length > 0 && (
+        <p className="text-body3 text-primary-500">
+          {config.pendingInjections.length} arritmia(s) esperando el próximo lote.
         </p>
       )}
+      <p className="text-body3 text-gray-600">
+        Inyectar la pone en la señal: se ve en el trazado y la mide el backend. Simular fabrica el
+        hallazgo sobre la señal ya subida (la severidad aplica solo acá), para probar la
+        notificación al paciente.
+      </p>
     </section>
   )
 }

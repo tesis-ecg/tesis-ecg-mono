@@ -3,17 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { buildBatch, splitFrames } from './batchBuilder'
 import { decodeFrame } from './riceDecoder'
 import { FRAME_BYTES, readHeader } from './frame'
-import { DEFAULT_SIGNAL_CONFIG } from './signal'
+import { batchRequest } from './testSignals'
 
 function build(durationSec = 20, simulated = true) {
-  return buildBatch({
-    requestId: 1,
-    signal: { ...DEFAULT_SIGNAL_CONFIG, durationSec, seed: 5 },
-    firstSeq: 100,
-    bootId: 3,
-    t0Ms: 0,
-    simulated,
-  })
+  return buildBatch(batchRequest({ durationSec, simulated }))
 }
 
 describe('generación de lotes', () => {
@@ -36,7 +29,7 @@ describe('generación de lotes', () => {
   it('lo que sale del generador está limpio: sin huecos ni CRC roto', () => {
     // Las anomalías de transmisión viven en `channel.ts`. Que acá salga siempre
     // un lote íntegro es lo que permite retransmitir: una trama perdida en el
-    // aire sigue existiendo en la SD.
+    // aire sigue existiendo en la flash.
     const batch = build()
     const frames = splitFrames(batch.body)
 
@@ -51,8 +44,18 @@ describe('generación de lotes', () => {
     expect(splitFrames(batch.body).every((f) => !readHeader(f).simulated)).toBe(true)
   })
 
-  it('es reproducible: misma configuración, mismos bytes', () => {
+  it('es reproducible: misma configuración y mismo estado, mismos bytes', () => {
     expect(new Uint8Array(build().body)).toEqual(new Uint8Array(build().body))
+  })
+
+  it('devuelve el estado del generador para que el lote siguiente continúe', () => {
+    const first = build()
+    const second = buildBatch(batchRequest({ genState: first.genState, t0Ms: 20_000 }))
+
+    // Antes cada lote arrancaba de la misma semilla: todos eran idénticos.
+    expect(new Uint8Array(second.body)).not.toEqual(new Uint8Array(first.body))
+    expect(second.genState.t).toBeCloseTo(40, 6)
+    expect(first.secondStatus).toHaveLength(20)
   })
 })
 
@@ -68,7 +71,7 @@ describe('volumen', () => {
     const batch = build(60)
 
     // Cota amplia: lo que se está fijando es el orden de magnitud del caudal,
-    // que depende del ruido configurado.
+    // que depende de la red configurada.
     const framesPerSecond = batch.framesGenerated / 60
     expect(framesPerSecond).toBeGreaterThan(0.5)
     expect(framesPerSecond).toBeLessThan(6)

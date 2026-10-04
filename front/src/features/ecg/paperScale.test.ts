@@ -10,6 +10,7 @@ import {
   autoVerticalRange,
   baselineMv,
   matchesScale,
+  pannedCenterMv,
   paperScale,
   scaleLabel,
   verticalRange,
@@ -96,6 +97,17 @@ describe('rango vertical', () => {
       visibleMillivolts(paperScale(25, 10, PX_PER_MM), 400) / 2,
       10,
     )
+  })
+})
+
+describe('desplazamiento vertical', () => {
+  it('suma el desplazamiento a la línea de base', () => {
+    expect(pannedCenterMv(0.2, 1.5, [-1, 3])).toBeCloseTo(1.7)
+  })
+
+  it('no deja que la traza se vaya entera de pantalla', () => {
+    expect(pannedCenterMv(0, 10, [-1, 3])).toBe(3)
+    expect(pannedCenterMv(0, -10, [-1, 3])).toBe(-1)
   })
 })
 

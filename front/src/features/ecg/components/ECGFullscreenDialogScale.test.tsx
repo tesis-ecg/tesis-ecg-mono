@@ -57,6 +57,7 @@ vi.mock('./ECGViewer', () => ({
       initialCursorMs,
       onViewportChange,
       onCursorChange,
+      toolbar,
     }: {
       paperSpeed: number
       amplitude: number
@@ -64,6 +65,7 @@ vi.mock('./ECGViewer', () => ({
       initialCursorMs?: number
       onViewportChange: (viewport: { startMs: number; endMs: number }) => void
       onCursorChange: (cursorMs: number) => void
+      toolbar?: ReactNode
     },
     ref,
   ) {
@@ -75,6 +77,7 @@ vi.mock('./ECGViewer', () => ({
         <output data-testid="viewer-initial-cursor">{initialCursorMs}</output>
         <button onClick={() => onViewportChange({ startMs: 30, endMs: 40 })}>Mover viewport</button>
         <button onClick={() => onCursorChange(35)}>Mover cursor</button>
+        {toolbar}
       </div>
     )
   }),

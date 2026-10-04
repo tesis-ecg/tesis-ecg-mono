@@ -175,15 +175,31 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
   const processedSampleCount = level
     ? Math.min(manifest.sampleCount, (samples.length / 2) * level.samplesPerBucket)
     : samples.length
+  const recordedEndMs =
+    timeline.length > 0
+      ? timeline[timeline.length - 1].endEpochMs
+      : startTimestamp + recordingDurationMs(manifest.sampleCount, manifest.sampleRate)
+  // El eje termina donde termina la señal procesada. El tramo que el backend
+  // todavía no filtró no se muestra: aparece solo cuando llega, en vez de
+  // ocupar el final del eje con una franja vacía.
+  const endMs =
+    processedSampleCount < manifest.sampleCount
+      ? Math.max(
+          sampleToEpochMs(
+            processedSampleCount,
+            manifest.sampleRate,
+            manifest.startTimestamp,
+            timeline,
+          ),
+          // buildTimestamps aplana las anclas que retroceden entre tramos. El
+          // eje no puede terminar antes del último punto ya dibujado.
+          timestampsMs[timestampsMs.length - 1] ?? startTimestamp,
+        )
+      : recordedEndMs
 
   return {
     sampleRate: manifest.sampleRate,
-    // El eje cubre todo el estudio. Si el nivel descargado está incompleto,
-    // sus puntos quedan en su posición real y el tramo restante se ve vacío.
-    durationMs:
-      timeline.length > 0
-        ? timeline[timeline.length - 1].endEpochMs - startTimestamp
-        : recordingDurationMs(manifest.sampleCount, manifest.sampleRate),
+    durationMs: endMs - startTimestamp,
     samples,
     startTimestamp,
     timestampsMs,
@@ -210,20 +226,6 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       isSimulated: Boolean(manifest.isSimulated),
       overviewSamplesPerBucket: level?.samplesPerBucket ?? null,
       processedSampleCount,
-      processedEndMs:
-        processedSampleCount < manifest.sampleCount
-          ? Math.max(
-              sampleToEpochMs(
-                processedSampleCount,
-                manifest.sampleRate,
-                manifest.startTimestamp,
-                timeline,
-              ),
-              // buildTimestamps aplana las anclas que retroceden entre tramos.
-              // La banda no puede empezar antes del último punto ya dibujado.
-              timestampsMs[timestampsMs.length - 1] ?? startTimestamp,
-            )
-          : undefined,
       startTimeVerified:
         (manifest.startTimeVerified ?? true) &&
         timeline.every((segment) => segment.anchorMatchesBoot === true),

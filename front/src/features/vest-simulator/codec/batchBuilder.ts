@@ -6,20 +6,33 @@
  * `vestWorker.ts`.
  *
  * Acá **no** se aplican anomalías de transmisión. Lo que sale es lo que el equipo
- * graba en la SD; lo que le pasa después en el aire es cosa de `channel.ts`. La
- * separación es lo que permite retransmitir: una trama descartada sigue existiendo.
+ * graba en la flash; lo que le pasa después en el aire es cosa de `channel.ts`.
+ * La separación es lo que permite retransmitir: una trama descartada sigue
+ * existiendo.
  */
 
 import { FRAME_BYTES } from './frame'
 import { encodeSamples } from './riceEncoder'
-import { generateSignal, type SignalConfig } from './signal'
+import {
+  generateEcg,
+  type GeneratorState,
+  type ResolvedEpisode,
+  type SignalProfile,
+} from './signal'
 
 export interface VestWorkerRequest {
   requestId: number
-  signal: SignalConfig
+  profile: SignalProfile
+  durationSec: number
+  episodes: ResolvedEpisode[]
+  /** Estado del generador al terminar el lote anterior: la señal continúa. */
+  genState: GeneratorState
   firstSeq: number
   bootId: number
+  /** `millis()` del equipo en la primera muestra. */
   t0Ms: number
+  /** Hora de pared de la primera muestra. */
+  wallStartEpochMs: number
   /** `hdrFlags` bit 3. Va en la cabecera, así que se define al grabar. */
   simulated: boolean
 }
@@ -33,12 +46,23 @@ export interface VestWorkerResponse {
   uncompressedBytes: number
   sampleCount: number
   beats: number
+  genState: GeneratorState
+  /** 0 bien, 1 electrodo suelto, 2 calidad mala; uno por segundo de señal. */
+  secondStatus: Uint8Array
+  leadFlags: number
+  worstSqi: number
 }
 
 export function buildBatch(request: VestWorkerRequest): VestWorkerResponse {
-  const { samples, beats } = generateSignal(request.signal, request.t0Ms)
-  const encoded = encodeSamples(samples, {
-    nChannels: request.signal.nChannels,
+  const generated = generateEcg({
+    profile: request.profile,
+    durationSec: request.durationSec,
+    episodes: request.episodes,
+    state: request.genState,
+    startT0Ms: request.t0Ms,
+    wallStartEpochMs: request.wallStartEpochMs,
+  })
+  const encoded = encodeSamples(generated.samples, {
     firstSeq: request.firstSeq,
     bootId: request.bootId,
     simulated: request.simulated,
@@ -52,9 +76,13 @@ export function buildBatch(request: VestWorkerRequest): VestWorkerResponse {
     body: body.buffer,
     framesGenerated: encoded.length,
     lastSeq: request.firstSeq + encoded.length - 1,
-    uncompressedBytes: samples.length * 4 * request.signal.nChannels,
-    sampleCount: samples.length,
-    beats,
+    uncompressedBytes: generated.samples.length * 4,
+    sampleCount: generated.samples.length,
+    beats: generated.beats,
+    genState: generated.state,
+    secondStatus: generated.secondStatus,
+    leadFlags: generated.leadFlags,
+    worstSqi: generated.worstSqi,
   }
 }
 

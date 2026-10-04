@@ -58,8 +58,8 @@ interface ECGFullscreenDialogProps {
  * `Esc` o click fuera), opcionalmente se propaga el viewport final via
  * `onClose`.
  *
- * No hay X de cierre — el control de cerrar vive en el `ECGZoomControls`
- * arriba a la derecha junto al zoom in/out (botón Minimize).
+ * No hay X de cierre — el control de cerrar vive en el `ECGZoomControls` que
+ * flota arriba a la derecha del visor, junto al zoom in/out (botón Minimize).
  */
 export function ECGFullscreenDialog({
   signal,
@@ -250,11 +250,6 @@ function ECGFullscreenBody({
             cerrar.
           </DialogDescription>
         </div>
-        <ECGZoomControls
-          onZoomIn={handleZoomIn}
-          onZoomOut={handleZoomOut}
-          onMinimize={onMinimize}
-        />
       </DialogHeader>
 
       <ECGPaperControls
@@ -291,6 +286,13 @@ function ECGFullscreenBody({
             selectedAnnotationId={selectedAnnotationId}
             onAnnotationSelect={handleAnnotationSelect}
             showAnnotations={showAnnotations}
+            toolbar={
+              <ECGZoomControls
+                onZoomIn={handleZoomIn}
+                onZoomOut={handleZoomOut}
+                onMinimize={onMinimize}
+              />
+            }
           />
         </div>
         <ECGFindingsPanel

@@ -40,6 +40,7 @@ export function VestSimulator() {
     rebootVest,
     setPlacement,
     simulateAnomaly,
+    injectAnomaly,
     stop,
     stopAll,
   } = useVestFleet()
@@ -65,10 +66,12 @@ export function VestSimulator() {
       <header className="flex flex-col gap-1">
         <h1 className="text-h4 text-gray-900">Simulador de chalecos</h1>
         <p className="text-body2 text-gray-600">
-          Genera señal ECG, la comprime con el mismo codec Rice del firmware y la sube al endpoint
-          real de ingesta. Las tramas van marcadas como <strong>dato simulado</strong>, así que los
-          estudios que produce quedan identificados como de banco y no como clínicos. Los chalecos
-          configurados quedan guardados en este navegador.
+          Genera señal ECG de una derivación, la comprime con el mismo codec Rice del firmware y la
+          sube al endpoint real de ingesta como el puente WiFi del equipo: POSTs de 48 tramas, hora
+          real del puente y backlog en la flash. Las tramas van marcadas como{' '}
+          <strong>dato simulado</strong>, así que los estudios que produce quedan identificados como
+          de banco y no como clínicos. Los chalecos, su reloj y su flash quedan guardados en este
+          navegador.
         </p>
       </header>
 
@@ -109,9 +112,10 @@ export function VestSimulator() {
               onStop={() => stop(vest.config.id)}
               onRemove={() => removeVest(vest.config.id)}
               onEdit={() => setEditing(vest.config.id)}
-              onReboot={() => rebootVest(vest.config.id)}
+              onReboot={() => void rebootVest(vest.config.id)}
               onSetPlacement={(ok) => void setPlacement(vest.config.id, ok)}
               onSimulateAnomaly={(body) => void simulateAnomaly(vest.config.id, body)}
+              onInjectAnomaly={(type) => injectAnomaly(vest.config.id, type)}
             />
           ))}
         </div>
