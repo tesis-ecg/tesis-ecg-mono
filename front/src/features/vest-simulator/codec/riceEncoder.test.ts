@@ -13,7 +13,7 @@ import {
 } from './frame'
 import { decodeFrame } from './riceDecoder'
 import { FrameEncoder, encodeSamples, type EcgSample } from './riceEncoder'
-import { DEFAULT_SIGNAL_CONFIG, generateSignal } from './signal'
+import { DEFAULT_SIGNAL_CONFIG, generateSignal } from './legacySignal'
 import { flatSamples, valueSamples } from './testSignals'
 
 function decodeAll(frames: Uint8Array[]): { values: number[]; flags: number[] } {

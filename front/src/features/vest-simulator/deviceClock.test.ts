@@ -1,34 +1,52 @@
 import { describe, expect, it } from 'vitest'
 
+import { buildBatch, splitFrames } from './codec/batchBuilder'
+import { BOOTID_MODULO, FRAME_BYTES, readHeader } from './codec/frame'
+import { batchRequest } from './codec/testSignals'
 import {
   ackUpTo,
   acquireDevice,
   advanceClock,
+  anchorFirstRun,
   backlogBytes,
-  bridgeEpochMs,
-  initialClock,
+  bridgeTimeForPost,
+  bridgeTimeNow,
+  dataCursorEpochMs,
+  firstRunLeadMs,
   forgetClock,
+  initialClock,
   reboot,
   recordFrames,
-  takeWindow,
+  FLASH_SECTOR_FRAMES,
   MAX_BACKLOG_FRAMES,
-  MAX_FRAMES_PER_REQUEST,
+  WARMUP_MS,
   type ClockRegistry,
+  type DeviceRuntime,
   type DeviceStorage,
+  type PendingFrame,
 } from './deviceClock'
 import { makeVestConfig } from './defaults'
-import { BOOTID_MODULO, FRAME_BYTES } from './codec/frame'
 
-/** Una corrida de `n` lotes de 1800 tramas, como las manda el hook. */
-function runBatches(registry: ClockRegistry, id: string, batches: number) {
-  const config = { ...makeVestConfig(), id, batchMinutes: 30 }
-  const { clock } = acquireDevice(registry, id, config)
-  const seqs: number[] = []
-  for (let i = 0; i < batches; i++) {
-    seqs.push(clock.nextSeq)
-    advanceClock(clock, { lastSeq: clock.nextSeq + 1799, sampleCount: 900_000 }, 30)
-  }
-  return seqs
+const NOW = Date.UTC(2026, 9, 3, 18)
+
+/** Graba un lote de `seconds` de señal real, como lo hace el hook. */
+function record(device: DeviceRuntime, seconds = 20): PendingFrame[] {
+  const { clock } = device
+  const firstSeq = clock.nextSeq
+  const built = buildBatch(
+    batchRequest({
+      durationSec: seconds,
+      firstSeq,
+      bootId: clock.bootId,
+      t0Ms: clock.t0Ms,
+      wallStartEpochMs: dataCursorEpochMs(clock),
+      ...(clock.genState ? { genState: clock.genState } : {}),
+    }),
+  )
+  clock.genState = built.genState
+  recordFrames(device.sd, splitFrames(built.body), firstSeq)
+  advanceClock(clock, built)
+  return device.sd.pending.slice(-built.framesGenerated)
 }
 
 function emptySd(): DeviceStorage {
@@ -40,100 +58,186 @@ function fakeFrames(n: number): Uint8Array[] {
   return Array.from({ length: n }, () => new Uint8Array(FRAME_BYTES))
 }
 
-describe('reloj del equipo simulado', () => {
+function freshDevice(now = NOW): DeviceRuntime {
+  return { clock: initialClock(now), sd: emptySd() }
+}
+
+describe('cursor del equipo simulado', () => {
   it('la segunda corrida sigue el cursor de la primera', () => {
     const registry: ClockRegistry = new Map()
+    const device = acquireDevice(registry, 'vest-1')
+    record(device)
+    const after = device.clock.nextSeq
 
-    const first = runBatches(registry, 'vest-1', 1)
-    const second = runBatches(registry, 'vest-1', 1)
-
-    // Rebobinar a 0 con el mismo bootId es lo que el backend lee como
-    // retransmisión: confirma el lote sin guardarlo y el estudio no crece.
-    expect(first[0]).toBe(0)
-    expect(second[0]).toBe(1800)
-    expect(registry.get('vest-1')!.clock.bootId).toBe(0)
+    // Mismo equipo: rebobinar a 0 con el mismo bootId es lo que el backend lee
+    // como retransmisión.
+    expect(acquireDevice(registry, 'vest-1')).toBe(device)
+    record(device)
+    expect(device.sd.pending[0].seq).toBe(0)
+    expect(device.clock.nextSeq).toBeGreaterThan(after)
   })
 
-  it('cada chaleco lleva su propio cursor', () => {
+  it('cada chaleco lleva su propio cursor y quitarlo lo olvida', () => {
     const registry: ClockRegistry = new Map()
+    record(acquireDevice(registry, 'vest-1'))
 
-    runBatches(registry, 'vest-1', 3)
-    const other = runBatches(registry, 'vest-2', 1)
-
-    expect(other[0]).toBe(0)
-    expect(registry.get('vest-1')!.clock.nextSeq).toBe(5400)
-  })
-
-  it('quitar el chaleco olvida su reloj', () => {
-    const registry: ClockRegistry = new Map()
-
-    runBatches(registry, 'vest-1', 2)
+    expect(acquireDevice(registry, 'vest-2').clock.nextSeq).toBe(0)
     forgetClock(registry, 'vest-1')
-
-    expect(runBatches(registry, 'vest-1', 1)[0]).toBe(0)
+    expect(acquireDevice(registry, 'vest-1').clock.nextSeq).toBe(0)
   })
 
   it('retoma un reloj restaurado de una sesión anterior', () => {
-    // Sin esto, un F5 devolvía el equipo a `seq 0 / bootId 0`: un estado que el
-    // hardware no puede producir y que el backend solo puede leer como una
-    // retransmisión completa del estudio.
     const registry: ClockRegistry = new Map()
-    const restored = {
-      bootId: 2,
-      nextSeq: 90_000,
-      t0Ms: 500,
-      uptimeMs: 7_200_000,
-      bootEpochMs: 1_757_000_000_000,
-      batteryPct: 61,
-    }
+    const restored = { ...initialClock(NOW), bootId: 2, nextSeq: 90_000, fresh: false }
 
-    const { clock } = acquireDevice(registry, 'vest-1', makeVestConfig(), restored)
+    const { clock } = acquireDevice(registry, 'vest-1', restored)
 
     expect(clock.nextSeq).toBe(90_000)
     expect(clock.bootId).toBe(2)
   })
 
-  it('el uptime acumula entre corridas para que el ancla temporal no retroceda', () => {
-    const registry: ClockRegistry = new Map()
+  it('la batería baja ~0,42 %/h de señal, con piso', () => {
+    const clock = initialClock(NOW)
+    advanceClock(clock, { lastSeq: 0, sampleCount: 500 * 3600 })
 
-    runBatches(registry, 'vest-1', 1)
-    const afterFirst = registry.get('vest-1')!.clock.uptimeMs
-    runBatches(registry, 'vest-1', 1)
-
-    expect(afterFirst).toBe(2 * 30 * 60_000)
-    expect(registry.get('vest-1')!.clock.uptimeMs).toBe(3 * 30 * 60_000)
-  })
-
-  it('el reinicio cambia el bootId y pone el reloj en cero, pero no rebobina el seq', () => {
-    const registry: ClockRegistry = new Map()
-    runBatches(registry, 'vest-1', 2)
-    const device = registry.get('vest-1')!
-    const cursor = device.clock.nextSeq
-    recordFrames(device.sd, fakeFrames(5), cursor)
-
-    const lost = reboot(device)
-
-    expect(device.clock.bootId).toBe(1 % BOOTID_MODULO)
-    expect(device.clock.t0Ms).toBe(0)
-    expect(device.clock.uptimeMs).toBe(0)
-    // Los segmentos del estudio se nombran en S3 con el `first_seq` del lote y
-    // sin el `bootId`: volver a 0 pisaría los del boot anterior.
-    expect(device.clock.nextSeq).toBe(cursor)
-    // Las tramas del boot anterior ya tienen su bootId escrito en la cabecera:
-    // reenviarlas mezclaría dos boots bajo una sola ancla temporal.
-    expect(lost).toBe(5)
-    expect(device.sd.pending).toHaveLength(0)
-  })
-
-  it('la batería baja por lote con piso en 5 %', () => {
-    const registry: ClockRegistry = new Map()
-    runBatches(registry, 'vest-1', 400)
-
-    expect(registry.get('vest-1')!.clock.batteryPct).toBe(5)
+    expect(clock.batteryPct).toBeCloseTo(96 - 100 / 240, 3)
+    advanceClock(clock, { lastSeq: 0, sampleCount: 500 * 3600 * 1000 })
+    expect(clock.batteryPct).toBe(3)
   })
 })
 
-describe('SD del equipo', () => {
+describe('primera corrida: la señal termina ahora', () => {
+  const base = { batchMinutes: 10, batchCount: 3 }
+
+  it('en modo instantáneo la corrida entera queda en el pasado', () => {
+    expect(firstRunLeadMs({ ...base, cadence: { kind: 'instant' } })).toBe(30 * 60_000)
+  })
+
+  it('en tiempo real alcanza con un lote: los demás se graban mientras pasa el tiempo', () => {
+    expect(firstRunLeadMs({ ...base, cadence: { kind: 'realtime' } })).toBe(10 * 60_000)
+  })
+
+  it('en modo acelerado el último lote termina justo cuando se manda', () => {
+    const lead = firstRunLeadMs({ ...base, cadence: { kind: 'accelerated', factor: 60 } })
+    const batchMs = 10 * 60_000
+    // El lote k sale k·B/f después de arrancar y termina (k+1)·B después del
+    // inicio de la señal.
+    const lastEnd = NOW - lead + 3 * batchMs
+    const lastSentAt = NOW + (2 * batchMs) / 60
+
+    expect(lastEnd).toBeCloseTo(lastSentAt, 6)
+  })
+
+  it('ancla el reloj una sola vez', () => {
+    const clock = initialClock(NOW - 5 * 3_600_000)
+    const config = { ...makeVestConfig(), ...base }
+
+    expect(anchorFirstRun(clock, config, NOW)).toBe(true)
+    expect(dataCursorEpochMs(clock)).toBe(NOW - 30 * 60_000)
+    expect(clock.t0Ms).toBe(WARMUP_MS)
+    expect(clock.bootAnchors[0]).toBe(clock.bootEpochMs)
+
+    expect(anchorFirstRun(clock, config, NOW + 3_600_000)).toBe(false)
+    expect(dataCursorEpochMs(clock)).toBe(NOW - 30 * 60_000)
+  })
+})
+
+describe('hora del puente', () => {
+  it('después de horas sin usar el chaleco manda la hora real y la señal sigue donde quedó', () => {
+    // El caso del 422: el chaleco grabó por última vez hace 12 h. Antes el
+    // epoch salía de `arranque + uptime simulado` y quedaba 12 h atrás.
+    const device = freshDevice(NOW - 12 * 3_600_000)
+    anchorFirstRun(
+      device.clock,
+      { batchMinutes: 10, batchCount: 1, cadence: { kind: 'instant' } },
+      NOW - 12 * 3_600_000,
+    )
+    const frames = record(device)
+    const firstHeader = readHeader(frames[0].bytes)
+
+    const time = bridgeTimeForPost(device.clock, frames, NOW)
+
+    expect(time.epochMs).toBe(NOW)
+    expect(time.aheadMs).toBe(0)
+    expect(time.bootId).toBe(0)
+    // Lo que calcula el backend: arranque = epoch − uptime; muestra = arranque + t0.
+    const bootEpoch = time.epochMs - time.uptimeMs
+    expect(bootEpoch).toBe(device.clock.bootEpochMs)
+    const firstSampleUtc = bootEpoch + firstHeader.t0Ms
+    expect(firstSampleUtc).toBe(NOW - 12 * 3_600_000 - 10 * 60_000)
+  })
+
+  it('si la señal va adelante de la hora real, adelanta el epoch lo justo', () => {
+    const device = freshDevice(NOW)
+    device.clock.fresh = false
+    const frames = record(device, 20)
+    const last = readHeader(frames[frames.length - 1].bytes)
+
+    const time = bridgeTimeForPost(device.clock, frames, NOW)
+
+    const lastSampleUtc = device.clock.bootEpochMs + last.t0Ms + last.durationMs
+    expect(time.epochMs).toBeGreaterThan(lastSampleUtc)
+    expect(time.aheadMs).toBe(time.epochMs - NOW)
+    expect(time.epochMs - time.uptimeMs).toBe(device.clock.bootEpochMs)
+  })
+
+  it('el backlog de un arranque anterior viaja con la hora de su arranque', () => {
+    const device = freshDevice(NOW - 3_600_000)
+    device.clock.fresh = false
+    const oldFrames = record(device)
+    const oldBootEpoch = device.clock.bootEpochMs
+
+    reboot(device)
+    record(device)
+
+    const time = bridgeTimeForPost(device.clock, oldFrames, NOW)
+    expect(time.bootId).toBe(0)
+    expect(time.epochMs - time.uptimeMs).toBe(oldBootEpoch)
+
+    // Sin la tabla de arranques, el puente manda el par del arranque actual.
+    const lost = bridgeTimeForPost(device.clock, oldFrames, NOW, {
+      noSntp: false,
+      lostBootTable: true,
+    })
+    expect(lost.bootId).toBe(1)
+    expect(lost.epochMs - lost.uptimeMs).toBe(device.clock.bootEpochMs)
+  })
+
+  it('sin SNTP la fuente es none y la incertidumbre de un Date por HTTP', () => {
+    const device = freshDevice()
+    const ntp = bridgeTimeNow(device.clock, NOW)
+    const none = bridgeTimeNow(device.clock, NOW, { noSntp: true, lostBootTable: false })
+
+    expect(ntp).toMatchObject({ source: 'ntp', uncertaintyMs: 200 })
+    expect(none.source).toBe('none')
+    expect(none.uncertaintyMs).toBeGreaterThanOrEqual(1000)
+  })
+})
+
+describe('reinicio', () => {
+  it('cambia el bootId y vuelve el reloj a cero, sin rebobinar la seq ni vaciar la flash', () => {
+    const device = freshDevice()
+    device.clock.fresh = false
+    record(device)
+    const cursor = device.clock.nextSeq
+    const pending = device.sd.pending.length
+    const dataEnd = dataCursorEpochMs(device.clock)
+
+    reboot(device)
+
+    expect(device.clock.bootId).toBe(1 % BOOTID_MODULO)
+    expect(device.clock.t0Ms).toBe(0)
+    // Los segmentos del estudio se nombran en S3 con el `first_seq` del lote.
+    expect(device.clock.nextSeq).toBe(cursor)
+    // La flash sobrevive al corte de energía.
+    expect(device.sd.pending).toHaveLength(pending)
+    // El arranque nuevo empieza después del último dato, y queda en la tabla.
+    expect(device.clock.bootEpochMs).toBeGreaterThan(dataEnd)
+    expect(device.clock.bootAnchors[1]).toBe(device.clock.bootEpochMs)
+  })
+})
+
+describe('flash del equipo', () => {
   it('graba las tramas con su seq y sin intentos', () => {
     const sd = emptySd()
 
@@ -145,88 +249,24 @@ describe('SD del equipo', () => {
   })
 
   it('el ACK libera solo hasta la seq confirmada', () => {
-    // El resto queda para el ciclo siguiente. Liberar de más sería exactamente
-    // el bug que dejaba el estudio congelado: el equipo borraba de su SD señal
-    // que el backend nunca guardó.
     const sd = emptySd()
     recordFrames(sd, fakeFrames(10), 100)
 
-    const freed = ackUpTo(sd, 103)
-
-    expect(freed).toBe(4)
+    expect(ackUpTo(sd, 103)).toBe(4)
     expect(sd.pending.map((f) => f.seq)).toEqual([104, 105, 106, 107, 108, 109])
-  })
-
-  it('un ACK sin seq confirmada no libera nada', () => {
-    const sd = emptySd()
-    recordFrames(sd, fakeFrames(4), 0)
-
     expect(ackUpTo(sd, null)).toBe(0)
-    expect(sd.pending).toHaveLength(4)
+    expect(ackUpTo(sd, 103)).toBe(0)
   })
 
-  it('un ACK viejo no libera tramas posteriores al hueco', () => {
-    const sd = emptySd()
-    recordFrames(sd, fakeFrames(6), 200)
-    ackUpTo(sd, 201)
-
-    expect(ackUpTo(sd, 201)).toBe(0)
-    expect(sd.pending[0].seq).toBe(202)
-  })
-
-  it('desbordar el backlog descarta lo más viejo y lo cuenta como pérdida', () => {
+  it('desbordar expulsa lo más viejo por sector de 16 tramas y lo cuenta como pérdida', () => {
     const sd = emptySd()
     recordFrames(sd, fakeFrames(MAX_BACKLOG_FRAMES), 0)
 
     const lost = recordFrames(sd, fakeFrames(10), MAX_BACKLOG_FRAMES)
 
-    expect(lost).toBe(10)
-    expect(sd.overflowed).toBe(10)
-    expect(sd.pending).toHaveLength(MAX_BACKLOG_FRAMES)
-    expect(sd.pending[0].seq).toBe(10)
-  })
-
-  it('la ventana arranca en la trama más vieja sin confirmar y entra en un request', () => {
-    const sd = emptySd()
-    recordFrames(sd, fakeFrames(MAX_FRAMES_PER_REQUEST + 500), 0)
-    ackUpTo(sd, 9)
-
-    const window = takeWindow(sd)
-
-    expect(window).toHaveLength(MAX_FRAMES_PER_REQUEST)
-    expect(window[0].seq).toBe(10)
-  })
-})
-
-describe('ancla de hora del puente simulado', () => {
-  it('el arranque queda fijo mientras el reloj simulado avanza', () => {
-    // El reloj del chaleco simulado corre acelerado: `uptimeMs` avanza
-    // `batchMinutes` por lote, o sea media hora por cada segundo real. Mandar
-    // `Date.now()` como epoch del puente hacía que el backend calculara
-    // `arranque = epoch − uptime` y viera ese arranque irse media hora hacia
-    // atrás en cada envío: la línea de tiempo salía partida en un tramo por lote,
-    // con cada tramo empezando antes de que terminara el anterior.
-    const config = { ...makeVestConfig(), batchMinutes: 30 }
-    const clock = initialClock(config)
-
-    const anchors = [bridgeEpochMs(clock) - clock.uptimeMs]
-    for (let i = 0; i < 5; i++) {
-      advanceClock(clock, { lastSeq: i, sampleCount: 900_000 }, config.batchMinutes)
-      anchors.push(bridgeEpochMs(clock) - clock.uptimeMs)
-    }
-
-    expect(new Set(anchors).size).toBe(1)
-    // Y el epoch acompaña al reloj simulado en vez de quedarse en la hora real.
-    expect(bridgeEpochMs(clock)).toBe(anchors[0] + clock.uptimeMs)
-  })
-
-  it('un reinicio estrena ancla, que es lo que abre un tramo nuevo', () => {
-    const device = { clock: initialClock(makeVestConfig()), sd: { pending: [], overflowed: 0 } }
-    const before = device.clock.bootEpochMs
-
-    reboot(device)
-
-    expect(device.clock.uptimeMs).toBe(0)
-    expect(device.clock.bootEpochMs).toBeGreaterThan(before)
+    expect(lost).toBe(FLASH_SECTOR_FRAMES)
+    expect(sd.overflowed).toBe(FLASH_SECTOR_FRAMES)
+    expect(sd.pending).toHaveLength(MAX_BACKLOG_FRAMES + 10 - FLASH_SECTOR_FRAMES)
+    expect(sd.pending[0].seq).toBe(FLASH_SECTOR_FRAMES)
   })
 })

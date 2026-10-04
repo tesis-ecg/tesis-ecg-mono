@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
-import type { SimulateAnomalyBody } from '../api/simulatorApi'
+import type { SimulateAnomalyBody, SimulatedAnomalyType } from '../api/simulatorApi'
 import { estimateBatch, formatBytes } from '../defaults'
+import { BRIDGE_POST_FRAMES, MAX_BACKLOG_FRAMES } from '../deviceClock'
 import { compressionRatio, type VestPhase, type VestState } from '../types'
 import { VestTestPanel } from './VestTestPanel'
 
@@ -38,6 +39,22 @@ interface VestCardProps {
   onReboot: () => void
   onSetPlacement: (ok: boolean) => void
   onSimulateAnomaly: (body: SimulateAnomalyBody) => void
+  onInjectAnomaly: (type: SimulatedAnomalyType) => void
+}
+
+function formatClock(epochMs: number): string {
+  return new Date(epochMs).toLocaleString('es-AR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatDuration(ms: number): string {
+  if (ms >= 86_400_000) return `${(ms / 86_400_000).toFixed(1)} d`
+  if (ms >= 3_600_000) return `${(ms / 3_600_000).toFixed(1)} h`
+  return `${Math.round(ms / 60_000)} min`
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -58,6 +75,7 @@ export function VestCard({
   onReboot,
   onSetPlacement,
   onSimulateAnomaly,
+  onInjectAnomaly,
 }: VestCardProps) {
   const [showLog, setShowLog] = useState(false)
   const { config, stats, phase } = vest
@@ -105,15 +123,38 @@ export function VestCard({
             hay huecos y tiene que volver a bajar: si se queda arriba, el estudio
             dejó de crecer. */}
         <Metric
-          label="SD sin confirmar"
+          label="Flash sin confirmar"
           value={
-            stats.framesLost > 0
-              ? `${stats.framesPending.toLocaleString('es-AR')} · ${stats.framesLost} perdidas`
-              : stats.framesPending.toLocaleString('es-AR')
+            `${stats.framesPending.toLocaleString('es-AR')} ` +
+            `(${((stats.framesPending / MAX_BACKLOG_FRAMES) * 100).toFixed(1)} %)` +
+            (stats.framesLost > 0 ? ` · ${stats.framesLost} perdidas` : '')
           }
         />
-        <Metric label="Uptime simulado" value={`${(stats.uptimeMs / 3_600_000).toFixed(1)} h`} />
+        <Metric label="POSTs" value={stats.postsSent.toLocaleString('es-AR')} />
+        <Metric
+          label="Hora de la señal"
+          value={stats.dataCursorEpochMs ? formatClock(stats.dataCursorEpochMs) : 'sin grabar'}
+        />
+        <Metric label="Uptime" value={formatDuration(stats.uptimeMs)} />
+        <Metric
+          label="Batería"
+          value={stats.batteryPct === null ? '—' : `${Math.round(stats.batteryPct)} %`}
+        />
       </div>
+
+      {stats.clockAheadMs > 60_000 && (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-body3 text-amber-800">
+          La señal va {formatDuration(stats.clockAheadMs)} adelantada a la hora real: el puente
+          adelanta su reloj para cubrirla y el backend la fecha como hora no verificada. El tope es
+          la tolerancia del backend (6 h).
+        </p>
+      )}
+      {stats.backoffWindows > 0 && (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-body3 text-amber-800">
+          Backoff: las próximas {stats.backoffWindows} ventana(s) no transmiten; la señal se sigue
+          grabando en la flash.
+        </p>
+      )}
 
       {stats.studyId && (
         <a
@@ -147,16 +188,16 @@ export function VestCard({
         <Button size="sm" variant="ghost" onClick={onEdit}>
           Configurar
         </Button>
-        {/* Ciclo de energía. Es la salida cuando quedaron tramas sin confirmar
-            que ya no existen (típicamente después de un F5): con el bootId
-            nuevo el backend acepta desde el próximo lote en vez de esperar para
-            siempre las que faltan. */}
+        {/* Ciclo de energía. También es la salida si quedaron tramas sin
+            confirmar que ya no existen (se borró el almacenamiento del
+            navegador): con el bootId nuevo el backend acepta desde el próximo
+            lote en vez de esperar para siempre las que faltan. */}
         <Button
           size="sm"
           variant="ghost"
           onClick={onReboot}
           disabled={running}
-          title="Avanza el bootId y vacía la SD, como un corte de energía"
+          title="Avanza el bootId y vuelve t0Ms a 0, como un corte de energía; la flash conserva lo pendiente"
         >
           <Power className="mr-1 size-4" aria-hidden />
           Reiniciar equipo
@@ -183,6 +224,10 @@ export function VestCard({
         config.network.invalidApiKey ||
         config.network.unknownSerial ||
         config.network.omitUptime ||
+        config.network.noSntp ||
+        config.network.lostBootTable ||
+        config.network.postFrames !== BRIDGE_POST_FRAMES ||
+        config.episodes.length > 0 ||
         config.network.truncateBodyPct > 0) && (
         <div className="flex flex-wrap gap-1">
           {config.frames.corruptCrcPct > 0 && (
@@ -201,6 +246,14 @@ export function VestCard({
           {config.network.invalidApiKey && <Badge variant="outline">API key inválida</Badge>}
           {config.network.unknownSerial && <Badge variant="outline">Serial inexistente</Badge>}
           {config.network.omitUptime && <Badge variant="outline">Sin uptime</Badge>}
+          {config.network.noSntp && <Badge variant="outline">Sin SNTP</Badge>}
+          {config.network.lostBootTable && <Badge variant="outline">Sin tabla de arranques</Badge>}
+          {config.network.postFrames !== BRIDGE_POST_FRAMES && (
+            <Badge variant="outline">{config.network.postFrames} tramas/POST</Badge>
+          )}
+          {config.episodes.length > 0 && (
+            <Badge variant="outline">{config.episodes.length} episodio(s)</Badge>
+          )}
           {config.network.truncateBodyPct > 0 && (
             <Badge variant="outline">Corte {config.network.truncateBodyPct}%</Badge>
           )}
@@ -211,6 +264,7 @@ export function VestCard({
         vest={vest}
         onSetPlacement={onSetPlacement}
         onSimulateAnomaly={onSimulateAnomaly}
+        onInjectAnomaly={onInjectAnomaly}
       />
 
       {showLog && (

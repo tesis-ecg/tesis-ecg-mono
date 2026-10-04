@@ -9,24 +9,26 @@
  * segundo de señal.
  *
  * El entorno de test es `node` y no hay DOM, así que el ciclo del hook
- * —grabar, transmitir, confirmar— se reproduce acá sobre los mismos módulos que
- * usa `useVestFleet`.
+ * —grabar, transmitir de a POSTs de 48, confirmar— se reproduce acá sobre los
+ * mismos módulos que usa `useVestFleet`.
  */
 
 import { describe, expect, it } from 'vitest'
 
 import {
-  ackUpTo,
+  BRIDGE_POST_FRAMES,
   advanceClock,
+  dataCursorEpochMs,
+  initialClock,
   reboot,
   recordFrames,
-  takeWindow,
   type DeviceRuntime,
 } from './deviceClock'
 import { applyChannel, makeRng } from './codec/channel'
 import { buildBatch, splitFrames } from './codec/batchBuilder'
 import { FRAME_BYTES, FRAME_MAGIC, frameCrc, readHeader } from './codec/frame'
-import { DEFAULT_SIGNAL_CONFIG } from './codec/signal'
+import { batchRequest } from './codec/testSignals'
+import { applyAck, nextPostFrames } from './transmission'
 import type { FrameAnomalies } from './types'
 
 const CLEAN: FrameAnomalies = {
@@ -109,63 +111,69 @@ class FakeIngest {
 
 function freshDevice(): DeviceRuntime {
   return {
-    clock: {
-      bootId: 0,
-      nextSeq: 0,
-      t0Ms: 0,
-      uptimeMs: 3_600_000,
-      bootEpochMs: 1_757_000_000_000,
-      batteryPct: 96,
-    },
+    clock: { ...initialClock(Date.UTC(2026, 9, 3, 12)), fresh: false },
     sd: { pending: [], overflowed: 0 },
   }
 }
 
 const DURATION_SEC = 20
 
-/** Graba un lote en la SD y avanza el reloj, como hace el hook. */
+/** Graba un lote en la flash y avanza el reloj, como hace el hook. */
 function record(device: DeviceRuntime): number {
-  const firstSeq = device.clock.nextSeq
-  const built = buildBatch({
-    requestId: 0,
-    signal: { ...DEFAULT_SIGNAL_CONFIG, durationSec: DURATION_SEC, seed: 7 },
-    firstSeq,
-    bootId: device.clock.bootId,
-    t0Ms: device.clock.t0Ms,
-    simulated: true,
-  })
+  const { clock } = device
+  const firstSeq = clock.nextSeq
+  const built = buildBatch(
+    batchRequest({
+      durationSec: DURATION_SEC,
+      firstSeq,
+      bootId: clock.bootId,
+      t0Ms: clock.t0Ms,
+      wallStartEpochMs: dataCursorEpochMs(clock),
+      ...(clock.genState ? { genState: clock.genState } : {}),
+    }),
+  )
+  clock.genState = built.genState
   recordFrames(device.sd, splitFrames(built.body), firstSeq)
-  advanceClock(device.clock, built, 1)
+  advanceClock(clock, built)
   return built.framesGenerated
 }
 
-/** Un intento de transmisión: ventana → canal → POST → ACK → liberar la SD. */
+/**
+ * Una ventana del puente: POSTs de 48 desde la más vieja sin confirmar, mientras
+ * haya avance. Devuelve las seq que salieron al aire y cuántas se liberaron.
+ */
 function transmit(
   device: DeviceRuntime,
   backend: FakeIngest,
   anomalies: Partial<FrameAnomalies>,
   cycle: number,
 ): { sentSeqs: number[]; freed: number } {
-  const window = takeWindow(device.sd)
-  if (window.length === 0) return { sentSeqs: [], freed: 0 }
+  const sentSeqs: number[] = []
+  let freed = 0
+  let noProgress = 0
+  let post = 0
+  while (device.sd.pending.length > 0 && noProgress < 2) {
+    const frames = nextPostFrames(device.sd.pending, BRIDGE_POST_FRAMES)
+    const channel = applyChannel(
+      frames,
+      { ...CLEAN, ...anomalies },
+      makeRng(1234 + (cycle * 1000 + post++) * 7919 + frames[0].seq),
+    )
+    sentSeqs.push(
+      ...frames.map((frame) => frame.seq).filter((seq) => !channel.droppedSeqs.includes(seq)),
+    )
+    if (channel.body.length === 0) continue
 
-  const sentSeqs = window.map((frame) => frame.seq)
-  const channel = applyChannel(
-    window,
-    { ...CLEAN, ...anomalies },
-    makeRng(1234 + cycle * 7919 + window[0].seq),
-  )
-  if (channel.body.length === 0) return { sentSeqs: [], freed: 0 }
-
-  const ack = backend.post(channel.body)
-  return {
-    sentSeqs: sentSeqs.filter((seq) => !channel.droppedSeqs.includes(seq)),
-    freed: ackUpTo(device.sd, ack.lastAcceptedSeq),
+    const ack = backend.post(channel.body)
+    const outcome = applyAck(device.sd, frames, ack.lastAcceptedSeq)
+    freed += outcome.freed
+    noProgress = outcome.freed > 0 ? 0 : noProgress + 1
   }
+  return { sentSeqs, freed }
 }
 
 /**
- * Lo que tiene que valer al terminar una corrida: la SD vacía y el estudio
+ * Lo que tiene que valer al terminar una corrida: la flash vacía y el estudio
  * contiguo hasta la última trama grabada.
  *
  * No se exige que el estudio arranque en la seq 0. En el primer envío de un
@@ -202,7 +210,7 @@ function runVest(batches: number, anomalies: Partial<FrameAnomalies> = {}) {
 }
 
 describe('go-back-N contra el backend', () => {
-  it('un canal limpio archiva todo lo grabado y deja la SD vacía', () => {
+  it('un canal limpio archiva todo lo grabado y deja la flash vacía', () => {
     const { backend, device, generated } = runVest(3)
 
     expect(backend.stored.size).toBe(generated)
@@ -218,22 +226,29 @@ describe('go-back-N contra el backend', () => {
     expectCompleteStudy(backend, device, generated)
   })
 
-  it('la trama perdida en un lote vuelve a salir en el siguiente', () => {
+  it('la trama perdida en el aire vuelve a salir en el POST siguiente', () => {
     const device = freshDevice()
     const backend = new FakeIngest()
 
-    record(device)
-    const first = transmit(device, backend, { dropPct: 40 }, 0)
-    const pendingAfterFirst = device.sd.pending.map((frame) => frame.seq)
+    const generated = record(device)
+    const window = transmit(device, backend, { dropPct: 40 }, 0)
 
-    record(device)
-    const second = transmit(device, backend, { dropPct: 40 }, 1)
+    // La ventana sigue mientras hay avance: lo que se perdió en un POST sale
+    // intacto en el siguiente, sin esperar al próximo lote.
+    expect(window.freed).toBe(generated)
+    expect(device.sd.pending).toHaveLength(0)
+  })
 
-    expect(pendingAfterFirst.length).toBeGreaterThan(0)
-    // Todo lo que quedó sin confirmar del primer lote viaja en el segundo POST.
-    for (const seq of pendingAfterFirst) expect(second.sentSeqs).toContain(seq)
-    expect(first.freed).toBeGreaterThan(0)
-    expect(second.freed).toBeGreaterThan(first.freed)
+  it('el reinicio no pierde el backlog: sale después, separado por arranque', () => {
+    const device = freshDevice()
+    const backend = new FakeIngest()
+
+    let generated = record(device)
+    reboot(device)
+    generated += record(device)
+    transmit(device, backend, {}, 0)
+
+    expectCompleteStudy(backend, device, generated)
   })
 
   it('el CRC roto tampoco pierde señal: la trama se retransmite intacta', () => {
@@ -249,13 +264,16 @@ describe('go-back-N contra el backend', () => {
   })
 })
 
-describe('recuperación después de perder la SD', () => {
-  /** Un F5: el reloj se restaura desde `localStorage`, la SD no. */
+describe('recuperación después de perder la flash', () => {
+  /** Se borró el almacenamiento del navegador: el reloj vuelve, la flash no. */
   function reloadedVest() {
     const device = freshDevice()
     const backend = new FakeIngest()
     record(device)
-    transmit(device, backend, { dropPct: 40 }, 0)
+    // Un solo POST, con pérdidas: el backend confirma hasta el primer hueco.
+    const frames = nextPostFrames(device.sd.pending, BRIDGE_POST_FRAMES)
+    const channel = applyChannel(frames, { ...CLEAN, dropPct: 40 }, makeRng(77))
+    applyAck(device.sd, frames, backend.post(channel.body).lastAcceptedSeq)
     expect(device.sd.pending.length).toBeGreaterThan(0)
 
     // El equipo vuelve con el cursor donde estaba, pero sin las tramas.
