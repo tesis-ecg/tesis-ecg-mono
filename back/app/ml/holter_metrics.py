@@ -10,7 +10,15 @@ Reglas que atraviesan todo el módulo:
   la línea de tiempo, un hueco interno o una exclusión entre dos latidos lo
   invalida. Por eso un hueco de registro nunca se cuenta como pausa.
 - **Exclusiones:** los tramos `lead_off`, `sqi_unanalyzable` y `adc_saturated`
-  (reglas de `INTEGRACION.md` §4.5). Sus latidos no se cuentan.
+  (reglas de `INTEGRACION.md` §4.5), y desde la versión 2 del algoritmo las
+  ventanas que el motor de detección marcó como ruido
+  (`QUALITY_EXCLUSION_REASONS`). Sus latidos no se cuentan.
+- **Las pausas no miran el ruido del motor.** Una asistolia es señal sin QRS, y
+  el gate de calidad la marca `bad` por pSQI o basSQI igual que al ruido: sus
+  índices son cocientes de potencia y no ven la amplitud. Medido de punta a
+  punta: con el ruido excluido, una asistolia de 12-26 s desaparecía del
+  informe. Las pausas se buscan entonces con las exclusiones del hardware
+  solamente —como en la versión 1— y el médico las verifica en su tira.
 - **Sin clasificación de latidos.** Todavía no hay motor que distinga latidos
   normales, supraventriculares y ventriculares (req. 3). Las métricas S y V y los
   latidos anormales quedan en `None`. La VFC usa como NN los RR que pasan el
@@ -36,9 +44,26 @@ from app.ml import hrv
 from app.ml.holter_contracts import BREAK_KINDS as BREAK_KINDS
 from app.ml.holter_contracts import ECTOPY_UNAVAILABLE as ECTOPY_UNAVAILABLE
 from app.ml.holter_contracts import EXCLUSION_KINDS as EXCLUSION_KINDS
+from app.ml.holter_contracts import QUALITY_EXCLUSION_REASONS as QUALITY_EXCLUSION_REASONS
 from app.ml.holter_contracts import TimelineRun as TimelineRun
 
-ALGORITHM_VERSION = 1
+#: Viaja en `analysis.algorithmVersion` y queda congelado en el snapshot del
+#: informe final. Cambia cuando cambia qué señal entra a las métricas, no solo
+#: cómo se calculan: el PDF elige con él la nota de método, así que un informe
+#: ya emitido sigue describiendo el algoritmo que lo produjo.
+#:
+#: - 1: Pan-Tompkins con las exclusiones de la Capa A.
+#: - 2: además, sin las ventanas que el motor marcó como ruido
+#:   (`QUALITY_EXCLUSION_REASONS`) salvo para las pausas, y sin RR que crucen
+#:   un `frame_gap`.
+#:
+#: Es la versión vigente. Un cálculo concreto informa la 1 si no recibió el
+#: veredicto del motor (`noise=None`: apagado, o una señal que no evaluó
+#: entera), porque entonces es exactamente el algoritmo 1 y la nota de método
+#: no puede afirmar una exclusión que no se aplicó.
+ALGORITHM_VERSION = 2
+#: Versión que se informa cuando el motor no cubrió la señal.
+ALGORITHM_VERSION_WITHOUT_ENGINE = 1
 
 PAUSE_MS = 2000
 MIN_RR_S = 0.2
@@ -264,6 +289,43 @@ def _round_frequency(result: dict[str, Any] | None) -> dict[str, Any] | None:
     return rounded
 
 
+def _clip_spans(spans: Sequence[tuple[int, int]], analyzed_until: int) -> list[tuple[int, int]]:
+    return _merge_spans(
+        [(max(0, s), min(e, analyzed_until)) for s, e in spans if s < analyzed_until]
+    )
+
+
+def _outside(samples: np.ndarray, spans: list[tuple[int, int]]) -> np.ndarray:
+    """Máscara de los latidos que no caen dentro de ningún tramo (ya fundidos)."""
+    if not spans:
+        return np.ones(samples.size, dtype=bool)
+    starts = np.array([s for s, _ in spans], dtype=np.int64)
+    ends = np.array([e for _, e in spans], dtype=np.int64)
+    position = np.searchsorted(starts, samples, side="right") - 1
+    inside = (position >= 0) & (samples < ends[np.maximum(position, 0)])
+    return np.asarray(~inside)
+
+
+def _valid_rr(
+    samples: np.ndarray,
+    runs: Sequence[TimelineRun],
+    excluded: list[tuple[int, int]],
+    breaks: Sequence[int],
+    rate: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """`(rr_ms, válido)`: un RR vale si sus dos latidos caen en el mismo tramo continuo."""
+    cuts = np.unique(
+        np.array(
+            [run.start_sample for run in runs]
+            + [edge for span in excluded for edge in span]
+            + list(breaks),
+            dtype=np.int64,
+        )
+    )
+    segment = np.searchsorted(cuts, samples, side="right")
+    return np.diff(samples) * 1000 / rate, segment[1:] == segment[:-1]
+
+
 def compute_holter_metrics(
     beats: np.ndarray,
     runs: Sequence[TimelineRun],
@@ -271,14 +333,26 @@ def compute_holter_metrics(
     breaks: Sequence[int],
     rate: int,
     analyzed_until: int,
+    *,
+    noise: Sequence[tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
-    """Métricas del informe en el formato de `HolterMetricsOut` (camelCase)."""
+    """Métricas del informe en el formato de `HolterMetricsOut` (camelCase).
+
+    `exclusions` son los tramos del hardware (`EXCLUSION_KINDS`) y `noise` las
+    ventanas que el motor marcó como ruido. `None` en `noise` quiere decir que
+    el motor no evaluó la señal: el resultado es el del algoritmo 1 y lo
+    declara. Con una lista —aunque esté vacía— es el 2.
+
+    El ruido sale de todo salvo de las pausas (ver el docstring del módulo):
+    sus latidos no se cuentan para la FC, la VFC ni los extremos, y un RR que
+    lo cruza no es NN, pero una pausa se busca solo contra el hardware, los
+    cortes y los huecos.
+    """
     if not runs:
         raise ValueError("compute_holter_metrics necesita al menos un tramo")
     to_epoch = _epoch_mapper(runs)
-    excluded = _merge_spans(
-        [(max(0, s), min(e, analyzed_until)) for s, e in exclusions if s < analyzed_until]
-    )
+    hardware = _clip_spans(exclusions, analyzed_until)
+    excluded = _clip_spans([*hardware, *(noise or ())], analyzed_until)
 
     analyzable_samples = 0
     for run in runs:
@@ -298,17 +372,17 @@ def compute_holter_metrics(
         distinct = np.concatenate(([True], np.diff(samples) >= int(MIN_RR_S * rate)))
         samples, st_levels = samples[distinct], st_levels[distinct]
     in_range = samples < analyzed_until
-    if excluded:
-        ex_starts = np.array([s for s, _ in excluded], dtype=np.int64)
-        ex_ends = np.array([e for _, e in excluded], dtype=np.int64)
-        position = np.searchsorted(ex_starts, samples, side="right") - 1
-        inside = (position >= 0) & (samples < ex_ends[np.maximum(position, 0)])
-        in_range &= ~inside
     samples, st_levels = samples[in_range], st_levels[in_range]
+    # Los latidos para las pausas: fuera del hardware, aunque caigan en ruido.
+    pause_samples = samples[_outside(samples, hardware)]
+    kept = _outside(samples, excluded)
+    samples, st_levels = samples[kept], st_levels[kept]
     epochs = to_epoch(samples)
 
     analysis = {
-        "algorithmVersion": ALGORITHM_VERSION,
+        "algorithmVersion": (
+            ALGORITHM_VERSION_WITHOUT_ENGINE if noise is None else ALGORITHM_VERSION
+        ),
         "analyzedUntilSample": int(analyzed_until),
         "analyzedMs": analyzed_ms,
         "excludedMs": int(sum(e - s for s, e in excluded) * 1000 / rate),
@@ -340,23 +414,21 @@ def compute_holter_metrics(
         return result
 
     # --- RR válidos ------------------------------------------------------- #
-    cuts = np.unique(
-        np.array(
-            [run.start_sample for run in runs]
-            + [edge for span in excluded for edge in span]
-            + list(breaks),
-            dtype=np.int64,
-        )
-    )
-    segment = np.searchsorted(cuts, samples, side="right")
-    rr_ms = np.diff(samples) * 1000 / rate
-    rr_valid = segment[1:] == segment[:-1]
+    rr_ms, rr_valid = _valid_rr(samples, runs, excluded, breaks, rate)
     analysis["rrIntervals"] = int(rr_valid.sum())
 
     # --- Pausas ------------------------------------------------------------ #
-    pause_index = np.flatnonzero(rr_valid & (rr_ms > PAUSE_MS))
+    # Contra el hardware solo: el ruido del motor no distingue una asistolia.
+    pause_rr, pause_valid = _valid_rr(pause_samples, runs, hardware, breaks, rate)
+    pause_epochs = to_epoch(pause_samples)
+    pause_index = np.flatnonzero(pause_valid & (pause_rr > PAUSE_MS))
     pause_items = [
-        _evidence(rr_ms[k], samples[k], epochs[k], duration_ms=int(round(rr_ms[k])))
+        _evidence(
+            pause_rr[k],
+            pause_samples[k],
+            pause_epochs[k],
+            duration_ms=int(round(pause_rr[k])),
+        )
         for k in pause_index
     ]
     pause_items.sort(key=lambda item: (-item["durationMs"], item["sampleIndex"]))

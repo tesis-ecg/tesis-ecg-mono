@@ -64,6 +64,14 @@ describe('annotationLabel', () => {
     expect(annotationLabel('patient_report')).toBe('Registro del paciente')
     expect(annotationLabel('symptom_marker')).toBe('Síntoma marcado por el paciente')
   })
+
+  it('nombra la pausa del motor con su umbral de alerta y no como la cuenta del informe', () => {
+    // El informe cuenta pausas > 2,0 s (`pause_longest`, métricas Holter); la del
+    // motor es una alerta desde 2,5 s. Con el umbral en la etiqueta, las dos cifras
+    // juntas no parecen contradecirse, y no se afirma un origen ventricular.
+    expect(annotationLabel('pause')).toBe('Pausa ≥ 2,5 s (alerta)')
+    expect(annotationLabel('pause_longest')).toBe('Pausa más larga')
+  })
 })
 
 describe('vínculo entre una respuesta y el hallazgo que contesta', () => {

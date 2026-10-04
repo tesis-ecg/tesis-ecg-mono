@@ -280,12 +280,10 @@ async def test_una_linea_de_tiempo_que_no_arranca_en_cero_no_frena_la_ingesta(
     imposible y levantaba un error en cada lote: sin Capa A, sin visor, sin
     vista filtrada para el resto del estudio.
 
-    El análisis de latidos de las métricas Holter, en cambio, no la saltea: un
-    tramo contado como analizado y sin latidos bajaría `averageBpm`. Se queda
-    antes del hueco —el informe sigue `pending`— hasta que `backfill_timeline`
-    reescribe los tramos desde cero, y ahí analiza todo."""
-    from app.scripts.backfill_timeline import _batches, _segments_for
-
+    El análisis de latidos de las métricas Holter la saltea igual: antes se
+    quedaba antes del hueco y el informe en `BEAT_ANALYSIS_PENDING` para
+    siempre. No baja `averageBpm`, porque el tiempo analizado se suma solo
+    sobre las corridas (`test_ingest_beat_guard`)."""
     chaleco, study = await _mundo(client, db, make_patient, make_device, make_study)
     study_id = study.id
     señal, flags = _sinusal(45.0)
@@ -302,18 +300,8 @@ async def test_una_linea_de_tiempo_que_no_arranca_en_cero_no_frena_la_ingesta(
     study = await _estudio(db, study_id)
     assert study.ml_analyzed_samples == study.samples_count
     assert [fila.start_sample_index for fila in await _calidad(db, study_id)] == [15 * SR]
-    assert study.beats_analyzed_samples < 15 * SR
-
-    await db.execute(delete(StudyTimelineSegment).where(StudyTimelineSegment.study_id == study_id))
-    for tramo in _segments_for(study, await _batches(db, study_id)):
-        db.add(tramo)
-    # `process_study_task` arranca con un rollback: el backfill commitea, como el script.
-    await db.commit()
-    await process_study_task(study_id)
-
-    study = await _estudio(db, study_id)
     assert study.beats_analyzed_samples == study.samples_count
-    assert int(processing.load_beats(study)["sample_index"][0]) < 15 * SR
+    assert int(processing.load_beats(study)["sample_index"][0]) >= 15 * SR
 
 
 async def test_una_falla_del_motor_no_frena_la_ingesta_ni_el_cierre(
@@ -356,6 +344,52 @@ async def test_una_falla_del_motor_no_frena_la_ingesta_ni_el_cierre(
     study = await _estudio(db, study_id)
     assert study.ml_analyzed_samples == study.samples_count
     assert await _calidad(db, study_id)
+
+
+async def test_una_falla_de_los_latidos_no_frena_la_ingesta_ni_el_cierre_del_motor(
+    client, s3, db, monkeypatch, make_patient, make_device, make_study
+) -> None:
+    """El análisis de latidos de las métricas Holter corre en su propio
+    SAVEPOINT, como el motor (`processing._guarded`). Sin eso, una falla de
+    Pan-Tompkins dejaba `FAILED` cada lote —sin Capa A ni motor— y, al cerrar,
+    deshacía la cola que el motor analiza recién ahí. Con la guarda los lotes
+    quedan `DONE` con su Capa A, el cierre lleva el cursor del motor hasta el
+    final, y el de latidos queda donde estaba para la próxima pasada."""
+    real = processing.analyze_window
+
+    def _roto(*args, **kwargs):
+        raise RuntimeError("Pan-Tompkins no soporta este caso")
+
+    monkeypatch.setattr(processing, "analyze_window", _roto)
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    study = await make_study(patient, device, filter_view_enabled=True)
+    study_id = study.id
+    chaleco = _Chaleco(client, db, device, api_key)
+    señal, flags = _sinusal(75.0)
+    flags[5 * SR : 6 * SR] |= FLAG_LEAD_OFF
+
+    await _enviar_en_lotes(chaleco, señal, flags, (0, 15, 30, 45, 60, 75))
+    await finalizar(db, monkeypatch, study_id)
+
+    study = await _estudio(db, study_id)
+    assert study.status is StudyStatus.COMPLETED
+    assert set(await _estados_de_lotes(db, study_id)) == {ProcessingStatus.DONE}
+    capa_a = (await db.scalars(select(ECGEvent).where(ECGEvent.study_id == study_id))).all()
+    assert "lead_off" in {evento.event_metadata["kind"] for evento in capa_a}
+    assert study.ml_analyzed_samples == study.samples_count == 75 * SR
+    assert await _calidad(db, study_id)
+    assert study.filtered_samples_count == study.samples_count
+    assert study.beats_analyzed_samples == 0
+    assert study.ecg_beat_chunks == []
+
+    # Arreglado, la recuperación (el manifest agenda la misma tarea) analiza
+    # los latidos que faltan y los compacta.
+    monkeypatch.setattr(processing, "analyze_window", real)
+    await process_study_task(study_id)
+    study = await _estudio(db, study_id)
+    assert study.beats_analyzed_samples == study.samples_count
+    assert len(study.ecg_beat_chunks) == 1
 
 
 # --------------------------------------------------------------------------- #

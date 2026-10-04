@@ -41,7 +41,11 @@ const KIND_LABEL: Record<string, string> = {
   bradycardia: 'Bradicardia',
   afib: 'Fibrilación auricular',
   pvc: 'Extrasístole ventricular',
-  pause: 'Pausa ventricular',
+  // La pausa del motor es una alerta (≥ `ml_pause_seconds`, 2,5 s) y no la cuenta
+  // del informe, que sigue la convención Holter de > 2,0 s (`pause_longest` y las
+  // métricas). Con el umbral en la etiqueta, "Pausas > 2000 ms: 3" junto a una
+  // alerta de pausa ×1 no se lee como una contradicción.
+  pause: 'Pausa ≥ 2,5 s (alerta)',
   noise: 'Ruido / artefacto',
   lead_off: 'Electrodo desconectado',
   sqi_unanalyzable: 'Señal inanalizable',

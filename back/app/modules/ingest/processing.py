@@ -25,7 +25,7 @@ import hashlib
 import math
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1006,7 +1006,8 @@ async def append_beat_analysis(
 
     Mismo esquema que `append_filtered_view`: el cursor avanza solo sobre señal
     que ya tiene contexto a los dos lados, y la cola del tramo activo espera al
-    lote siguiente. Nada cruza un corte de la línea de tiempo.
+    lote siguiente. Nada cruza un corte de la línea de tiempo, y la señal que
+    ninguna corrida cubre se saltea. Los que la llaman la corren en `_guarded`.
     """
     runs = _analysis_runs(study, await repo.list_timeline_segments(db, study.id))
     if not runs:
@@ -1021,20 +1022,28 @@ async def append_beat_analysis(
         if cursor >= run_end:
             continue
         if cursor < run_start:
-            # Señal que ninguna corrida cubre: un estudio previo a la línea de
-            # tiempo sin `backfill_timeline`. El cursor no la pasa de largo
-            # —contaría como analizado un tramo sin latidos y bajaría
-            # `averageBpm`—: el análisis se detiene acá y `BEAT_ANALYSIS_PENDING`
-            # sigue frenando el informe hasta que `backfill_timeline` reescriba
-            # los tramos desde la muestra 0. Tampoco levanta: un error dejaba
-            # `FAILED` cada lote siguiente del estudio, con su Capa A y el motor.
+            # Señal que ninguna corrida cubre: un estudio que ya tenía muestras
+            # antes de la línea de tiempo y al que no se le corrió
+            # `backfill_timeline` (su primera corrida arranca en el
+            # `samples_count` que tenía). No se sabe dónde están sus huecos, así
+            # que no se puede analizar por corrida: se saltea hasta el inicio de
+            # la corrida, igual que el motor (`_pending_blocks`). Antes era un
+            # `RuntimeError` que dejaba `FAILED` cada lote siguiente del estudio;
+            # después, un cursor clavado que dejaba el informe en
+            # `BEAT_ANALYSIS_PENDING` para siempre. Saltearla no baja
+            # `averageBpm`: el tiempo analizado de `compute_holter_metrics` se
+            # suma solo sobre las corridas, y esta señal no está en ninguna.
+            # Si después se le corre `backfill_timeline`, esa señal pasa a
+            # tener corrida y el cursor ya la dejó atrás: el script vuelve los
+            # latidos del estudio a cero (`beats_analyzed_samples`,
+            # `ecg_beat_chunks`) para que se analice.
             logger.warning(
-                "beat_analysis_gap_before_run",
+                "beat_signal_without_run_skipped",
                 study_id=str(study.id),
-                cursor=cursor,
-                run_start=run_start,
+                start_sample=cursor,
+                end_sample=run_start,
             )
-            break
+            cursor = run_start
         is_active_run = index == len(runs) - 1 and study.status is StudyStatus.IN_PROGRESS
         safe_end = max(run_start, run_end - context) if is_active_run else run_end
         if budget is not None:
@@ -1437,40 +1446,90 @@ def _finish_ml_pass(
     return MlPass(written=written, pushable=pushable, pending=pending)
 
 
-async def _guarded_ml_pass(
-    db: AsyncSession, study: Study, batch: ECGBatch | None, *, flush_tail: bool | None = None
-) -> MlPass:
-    """`append_ml_analysis` en un SAVEPOINT: si el motor falla, falla solo el motor.
+async def _guarded[T](
+    db: AsyncSession,
+    study: Study,
+    run: Callable[[], Awaitable[T]],
+    *,
+    fallback: T,
+    failure_event: str,
+    cursor: int,
+) -> T:
+    """Corre una pasada de análisis en un SAVEPOINT: si falla, falla solo ella.
 
-    Comparte la transacción con lo que el lote o el cierre ya escribieron —el
-    segmento, la Capa A, la línea de tiempo, la vista filtrada, la
-    compactación—, y un error del motor (un objeto que no está en S3, un caso
-    que NeuroKit no soporta) no puede llevárselos puestos: el lote quedaba
-    `FAILED`, y como el cursor no avanzaba, cada lote siguiente del estudio
-    fallaba en el mismo bloque. Con el SAVEPOINT se deshace solo lo del motor,
-    el cursor queda donde estaba y el próximo lote o la próxima finalización lo
-    vuelve a intentar.
+    Las pasadas que van detrás de un cursor —el motor (`append_ml_analysis`) y
+    los latidos de las métricas Holter (`append_beat_analysis`)— comparten la
+    transacción con lo que el lote o el cierre ya escribieron: el segmento, la
+    Capa A, la línea de tiempo, la vista filtrada, la compactación, y la otra
+    pasada. Un error de una (un objeto que no está en S3, un caso que el
+    detector no soporta) no puede llevárselos puestos: el lote quedaba `FAILED`,
+    y como el cursor no avanzaba, cada lote siguiente del estudio fallaba en el
+    mismo punto. Con el SAVEPOINT se deshace solo lo de esa pasada, su cursor
+    queda donde estaba y el próximo lote o la próxima finalización lo vuelve a
+    intentar; mientras tanto el informe lo frena (`BEAT_ANALYSIS_PENDING`,
+    `ML_ANALYSIS_PENDING`).
 
-    Deshacer el SAVEPOINT expira lo que se modificó adentro (el estudio:
-    `ml_state`, el cursor), y en una sesión async un atributo expirado no se
-    puede recargar solo; por eso el `refresh` explícito y los ids leídos antes.
+    La contención de locks **no** se traga: no es una falla de la pasada sino
+    de la transacción entera, y quien la maneja (`process_batch`, que deja el
+    lote pendiente en vez de fallido) tiene que verla.
+
+    `begin_nested` hace flush de lo pendiente antes de abrir el SAVEPOINT, así
+    que lo anterior a la pasada queda a salvo en la transacción de afuera.
+    Deshacerlo expira lo que se modificó adentro (el estudio: los cursores, los
+    chunks), y en una sesión async un atributo expirado no se puede recargar
+    solo; por eso el `refresh` explícito, y el id y el `cursor` del log se leen
+    antes.
     """
-    study_id, cursor = study.id, study.ml_analyzed_samples
+    study_id = study.id
     try:
         async with db.begin_nested():
-            return await append_ml_analysis(db, study, batch, flush_tail=flush_tail)
+            return await run()
     except DBAPIError as error:
         if is_lock_contention(error):
             raise
-        await _log_ml_failure(study_id, cursor)
-    except Exception:  # noqa: BLE001 — el motor no puede frenar la ingesta
-        await _log_ml_failure(study_id, cursor)
+        await _log_pass_failure(failure_event, study_id, cursor)
+    except Exception:  # noqa: BLE001 — una pasada de análisis no puede frenar la ingesta
+        await _log_pass_failure(failure_event, study_id, cursor)
     await db.refresh(study)
-    return MlPass()
+    return fallback
 
 
-async def _log_ml_failure(study_id: uuid.UUID, cursor: int) -> None:
-    await logger.aexception("ml_analysis_failed", study_id=str(study_id), cursor=cursor)
+async def _log_pass_failure(event: str, study_id: uuid.UUID, cursor: int) -> None:
+    await logger.aexception(event, study_id=str(study_id), cursor=cursor)
+
+
+async def _guarded_ml_pass(
+    db: AsyncSession, study: Study, batch: ECGBatch | None, *, flush_tail: bool | None = None
+) -> MlPass:
+    """`append_ml_analysis` en `_guarded`: si el motor falla, falla solo el motor."""
+    return await _guarded(
+        db,
+        study,
+        lambda: append_ml_analysis(db, study, batch, flush_tail=flush_tail),
+        fallback=MlPass(),
+        failure_event="ml_analysis_failed",
+        cursor=study.ml_analyzed_samples,
+    )
+
+
+async def _guarded_beat_pass(
+    db: AsyncSession, study: Study, *, max_samples: int | None = BEAT_SAMPLES_PER_PASS
+) -> None:
+    """`append_beat_analysis` en `_guarded`: un error de los latidos de las
+    métricas no tira abajo el lote, su Capa A ni el motor."""
+    await _guarded(
+        db,
+        study,
+        lambda: append_beat_analysis(db, study, max_samples=max_samples),
+        fallback=None,
+        failure_event="beat_analysis_failed",
+        cursor=study.beats_analyzed_samples,
+    )
+
+
+async def _compact_closed_beats(study: Study) -> None:
+    """La compactación final de los latidos, una vez que su cursor llegó al final."""
+    study.ecg_beat_chunks = await asyncio.to_thread(compact_beat_chunks, study, force=True)
 
 
 async def _process_one_batch(
@@ -1542,7 +1601,9 @@ async def _process_one_batch(
         # perdida **con `seq` contiguo**, igual que adentro de un lote.
         previous_end_t0_ms = None
     await append_filtered_view(db, study)
-    await append_beat_analysis(db, study)
+    # En `_guarded`, como el motor: si los latidos de las métricas fallan, el
+    # lote igual queda `DONE` con su segmento, su Capa A y la vista filtrada.
+    await _guarded_beat_pass(db, study)
 
     # La duración administrativa conserva reloj de pared, pero una tarea que
     # perdió la carrera contra complete/cancel no puede reabrir ni reescribir el
@@ -1748,12 +1809,13 @@ async def process_study_task(study_id: uuid.UUID, *, flush_open_tail: bool = Fal
     minutos detrás de esto. La fusión de morfologías y la compactación van
     recién cuando el motor terminó: fundir antes vería un banco incompleto.
 
-    El motor corre en un SAVEPOINT (`_guarded_ml_pass`): si falla, la cola de la
-    vista filtrada y la compactación del cierre se commitean igual.
+    El motor y el análisis de latidos de las métricas Holter corren cada uno en
+    su SAVEPOINT (`_guarded`): si uno falla, la cola de la vista filtrada, la
+    otra pasada y la compactación del cierre se commitean igual.
 
-    El análisis de latidos de las métricas Holter (`append_beat_analysis`) avanza
-    en cada vuelta, acotado a `BEAT_SAMPLES_PER_PASS`, y su compactación final
-    va con la del cierre (`_finalize_closed_study`).
+    El análisis de latidos (`append_beat_analysis`) avanza en cada vuelta,
+    acotado a `BEAT_SAMPLES_PER_PASS`, y su compactación final va con la del
+    cierre (`_finalize_closed_study`).
     """
     from app.db.session import async_session_factory
 
@@ -1771,7 +1833,7 @@ async def process_study_task(study_id: uuid.UUID, *, flush_open_tail: bool = Fal
                 # También al cerrar hay que acotar la pasada: un estudio anterior a
                 # este análisis puede tener días de señal pendiente. El backfill o
                 # una visita posterior al manifest retoman desde el cursor guardado.
-                await append_beat_analysis(session, study, max_samples=BEAT_SAMPLES_PER_PASS)
+                await _guarded_beat_pass(session, study, max_samples=BEAT_SAMPLES_PER_PASS)
                 ml_pass = await _guarded_ml_pass(
                     session,
                     study,
@@ -1864,7 +1926,17 @@ async def _finalize_closed_study(study: Study, session: AsyncSession) -> None:
         await ml_persistence.consolidate_morphologies(session, study)
     if study.status is not StudyStatus.IN_PROGRESS:
         if study.beats_analyzed_samples >= study.samples_count:
-            study.ecg_beat_chunks = await asyncio.to_thread(compact_beat_chunks, study, force=True)
+            # Guardada como la pasada: una compactación de latidos que falla
+            # (un chunk que no está en S3) no puede deshacer la cola del motor
+            # ni la fusión de morfologías que van en esta misma transacción.
+            await _guarded(
+                session,
+                study,
+                lambda: _compact_closed_beats(study),
+                fallback=None,
+                failure_event="beat_compaction_failed",
+                cursor=study.beats_analyzed_samples,
+            )
         study.ecg_pyramid_levels = await asyncio.to_thread(compact_pyramid, study, force=True)
         if study.filter_view_enabled:
             study.ecg_filtered_pyramid_levels = await asyncio.to_thread(

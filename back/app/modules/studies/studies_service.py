@@ -25,6 +25,7 @@ from app.db.models.device import Device
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.patient_report import PatientReport
+from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.study import Study, StudyStatus
 from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment
@@ -33,6 +34,7 @@ from app.ml.holter_contracts import (
     BREAK_KINDS,
     ECTOPY_UNAVAILABLE,
     EXCLUSION_KINDS,
+    QUALITY_EXCLUSION_REASONS,
     TimelineRun,
 )
 from app.modules._alert_kind import resolve_alert_kind
@@ -1457,10 +1459,58 @@ def _metric_runs(study: Study, timeline: list[StudyTimelineSegment]) -> list[Tim
     ]
 
 
-def _metric_quality_marks(
-    events: list[ECGEvent],
-) -> tuple[list[tuple[int, int]], list[int]]:
-    """Tramos excluidos y cortes puntuales, desde los eventos de calidad."""
+def _metric_noise(
+    study: Study,
+    runs: list[TimelineRun],
+    quality: list[SignalQualityInterval],
+) -> list[tuple[int, int]] | None:
+    """Las ventanas que el motor marcó como ruido, o `None` si no evaluó la señal.
+
+    Solo excluyen los `bad` por ruido (`QUALITY_EXCLUSION_REASONS`), con su
+    tramo exacto: el motor los escribe troceados por bloque y
+    `compute_holter_metrics` funde los contiguos.
+
+    Pero solo si el motor evaluó **toda** la señal que tenía que evaluar —cada
+    corrida desde su inicio, hasta donde llegó su cursor, o hasta el de los
+    latidos con el motor apagado—: escribe una fila por tramo de cualquier
+    nivel, así que un hueco en la unión de las filas es señal que no miró. Pasa
+    con un estudio que estaba en curso cuando se desplegó el motor (la
+    migración le pone el cursor en `samples_count`), con uno grabado con el
+    motor apagado, o con un prefijo al que `backfill_timeline` le dio corrida
+    después. Ahí las métricas son las del algoritmo 1 enteras y lo dicen
+    (`None`): excluir el ruido solo donde hay filas dejaría una nota de método
+    que afirma una exclusión que no se aplicó a toda la señal.
+    """
+    if not quality:
+        return None
+    limit = study.beats_analyzed_samples
+    if settings.ml_enabled:
+        # En curso, el motor espera bloques enteros y va detrás de los latidos:
+        # lo que todavía no evaluó entra sin filtrar, y el informe final no
+        # puede emitirse hasta que lo alcance (`ML_ANALYSIS_PENDING`).
+        limit = min(limit, study.ml_analyzed_samples)
+    covered = sorted(
+        (row.start_sample_index, row.start_sample_index + row.sample_count) for row in quality
+    )
+    index = 0
+    for run in sorted(runs, key=lambda item: item.start_sample):
+        position = run.start_sample
+        end = min(run.start_sample + run.sample_count, limit)
+        while position < end:
+            while index < len(covered) and covered[index][1] <= position:
+                index += 1
+            if index == len(covered) or covered[index][0] > position:
+                return None
+            position = covered[index][1]
+    return [
+        (row.start_sample_index, row.start_sample_index + row.sample_count)
+        for row in quality
+        if row.level is SignalQualityLevel.BAD and row.reason in QUALITY_EXCLUSION_REASONS
+    ]
+
+
+def _metric_quality_marks(events: list[ECGEvent]) -> tuple[list[tuple[int, int]], list[int]]:
+    """Tramos excluidos por el hardware y cortes puntuales, desde los eventos."""
     exclusions: list[tuple[int, int]] = []
     breaks: list[int] = []
     for event in events:
@@ -1496,12 +1546,18 @@ def _metrics_unavailable(status: str, reason: str) -> HolterMetricsOut:
 
 
 async def _holter_metrics(
-    study: Study, events: list[ECGEvent], timeline: list[StudyTimelineSegment]
+    study: Study,
+    events: list[ECGEvent],
+    timeline: list[StudyTimelineSegment],
+    quality: list[SignalQualityInterval],
 ) -> HolterMetricsOut:
     """Métricas recalculadas desde los latidos persistidos.
 
     No se cachean: el cálculo es determinista y lineal en la cantidad de
-    latidos, y el informe final congela el resultado en su snapshot.
+    latidos, y el informe final congela el resultado en su snapshot. Desde que
+    el motor de detección excluye ruido (`quality`), dependen también de su
+    cursor: por eso `ML_ANALYSIS_PENDING` frena el informe final hasta que el
+    motor cubre toda la señal, y el hash del preview coincide con el del final.
     """
     # Adentro y no arriba: los dos cargan numpy, y este módulo se importa al
     # arrancar la API (`test_starting_the_api_does_not_import_numpy`).
@@ -1512,16 +1568,18 @@ async def _holter_metrics(
         return _metrics_unavailable("unavailable", "SIGNAL_NOT_SEGMENTED")
     if study.beats_analyzed_samples <= 0:
         return _metrics_unavailable("pending", "ANALYSIS_PENDING")
+    runs = _metric_runs(study, timeline)
     exclusions, breaks = _metric_quality_marks(events)
     beats = await asyncio.to_thread(load_beats, study)
     raw = await asyncio.to_thread(
         compute_holter_metrics,
         beats,
-        _metric_runs(study, timeline),
+        runs,
         exclusions,
         breaks,
         study.sample_rate or 500,
         study.beats_analyzed_samples,
+        noise=_metric_noise(study, runs, quality),
     )
     return HolterMetricsOut.model_validate(raw)
 
@@ -1535,6 +1593,7 @@ async def get_holter_metrics(input_data: StudyIdInput, db: AsyncSession) -> Holt
         study,
         await repo.list_ecg_events(db, study.id),
         await repo.list_timeline_segments(db, study.id),
+        await repo.list_quality_intervals(db, study.id),
     )
 
 
@@ -1589,7 +1648,9 @@ async def _clinical_report_snapshot(
         wall_clock_resolver(study, timeline),
         timeline,
     )
-    metrics = await _holter_metrics(study, events, timeline)
+    metrics = await _holter_metrics(
+        study, events, timeline, await repo.list_quality_intervals(db, study.id)
+    )
     windows = _metric_window_plans(metrics) + _report_window_plans(annotations)
     doctor_info = await repo.get_responsible_doctor(db, patient.doctor_id)
     doctor, doctor_user = doctor_info if doctor_info is not None else (None, None)
@@ -1733,6 +1794,26 @@ async def _clinical_report_snapshot(
                 message=(
                     "El análisis de latidos todavía no cubre toda la señal. "
                     "Esperá a que termine o ejecutá el backfill antes de emitir el informe final."
+                ),
+                severity="blocking",
+            )
+        )
+    # Las métricas excluyen el ruido que marca el motor: con su cursor atrás,
+    # un preview mostraría métricas que el informe final no va a congelar. Al
+    # cerrar el estudio los dos cursores llegan a `samples_count`. Con el motor
+    # apagado no hay nada que esperar, y apagarlo es la salida si el motor se
+    # traba en un bloque.
+    if (
+        settings.ml_enabled
+        and study.ecg_segments
+        and study.ml_analyzed_samples < study.samples_count
+    ):
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="ML_ANALYSIS_PENDING",
+                message=(
+                    "El análisis automático de la señal todavía no la cubre completa. "
+                    "Esperá a que termine antes de emitir el informe final."
                 ),
                 severity="blocking",
             )
