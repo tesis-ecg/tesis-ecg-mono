@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.core.config import settings  # noqa: E402
 from app.ml import morphology, pipeline  # noqa: E402
-from app.ml.hrv import build_rr, prematurity  # noqa: E402
+from app.ml.episodes import group_beats  # noqa: E402
+from app.ml.hrv import build_rr, expected_rr, prematurity  # noqa: E402
 from app.ml.rpeak_detection import clean_signal, detect_rpeaks  # noqa: E402
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -185,15 +186,29 @@ def evaluate(record: Record, config: pipeline.PipelineConfig) -> dict[str, float
             end = interval.start_sample + interval.length_samples
             quality_mask[interval.start_sample : end] = True
     beats = morphology.extract_beats(cleaned, peaks, quality_mask, TARGET_RATE)
+    rr = build_rr(peaks, quality_mask, TARGET_RATE)
+    beat_expected_rr = expected_rr(rr)[beats.beat_index]
+    beat_prematurity = prematurity(rr)[beats.beat_index]
+    # Como `analyze_batch`: el R-R esperado va al banco (la frecuencia a la que
+    # se aprende cada forma) y al score (`morphology.BeatRate`).
     bank, assignment = morphology.assign_and_update(
         pipeline.empty_bank(config),
         beats,
         match_threshold=config.match_threshold,
         max_templates=config.max_templates,
+        expected_rr=beat_expected_rr,
     )
     scores = morphology.anomaly_score(
-        morphology.dissimilarity_to_dominant(bank, beats),
-        prematurity(build_rr(peaks, quality_mask, TARGET_RATE))[beats.beat_index],
+        morphology.dissimilarity_to_dominant(
+            bank,
+            beats,
+            morphology.BeatRate(
+                expected_rr=beat_expected_rr,
+                prematurity=beat_prematurity,
+                sample_rate=TARGET_RATE,
+            ),
+        ),
+        beat_prematurity,
         match_threshold=config.match_threshold,
     )
 
@@ -224,6 +239,25 @@ def evaluate(record: Record, config: pipeline.PipelineConfig) -> dict[str, float
     purity = float(truth[non_dominant].mean()) if non_dominant.any() else float("nan")
     recall = float(truth[flagged].sum() / abnormal_total) if abnormal_total else float("nan")
     precision = float(truth[flagged].mean()) if flagged.any() else float("nan")
+    # Puntuar no alcanza: un latido que puntuó llega al médico solo si queda en
+    # un episodio (`group_beats`, antes del presupuesto). Uno suelto pasa solo
+    # si su plantilla tiene `recurrent_min_beats` miembros, y ahí es donde se
+    # perdían los supraventriculares que caen en una variante de la normal.
+    grouped = np.zeros(beats.n_beats, dtype=bool)
+    position = {int(peak): index for index, peak in enumerate(beats.rpeaks.tolist())}
+    for episode in group_beats(
+        beats.rpeaks,
+        flagged,
+        scores,
+        assignment.cluster_ids,
+        bank.recurrent_ids(config.recurrent_min_beats),
+        sample_rate=TARGET_RATE,
+        budget=config.budget,
+    ):
+        grouped[[position[int(peak)] for peak in episode.beat_samples or ()]] = True
+    recall_grouped = (
+        float(truth[grouped].sum() / abnormal_total) if abnormal_total else float("nan")
+    )
 
     episodes = sum(1 for f in result.findings if f.kind == "morphology_anomaly")
     return {
@@ -231,6 +265,7 @@ def evaluate(record: Record, config: pipeline.PipelineConfig) -> dict[str, float
         "no_normales": float(abnormal_total),
         "carga_%": 100.0 * abnormal_total / max(beats.n_beats, 1),
         "recall": recall,
+        "recall_episodios": recall_grouped,
         "precision": precision,
         "pureza_clusters": purity,
         "clusters": float(len(bank.templates)),
@@ -545,6 +580,7 @@ def main() -> int:
         "no_normales",
         "carga_%",
         "recall",
+        "recall_episodios",
         "precision",
         "pureza_clusters",
         "clusters",

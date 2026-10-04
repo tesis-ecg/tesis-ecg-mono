@@ -39,6 +39,51 @@ Ventana de ±250 ms alrededor del R, menos su mediana, normalizada a norma 1. La
 distancia es `1 − producto punto`, es decir la distancia de correlación. **No hay
 PCA**: una base aprendida rotaría entre lotes y obligaría a reproyectar todos los
 centroides guardados. Sin base aprendida no rota nada.
+
+## La frecuencia cardíaca
+
+Un latido sinusal normal de una escalera no tiene la forma de uno en reposo, y
+compararlo así lo hacía un hallazgo. Dos efectos: a más de ~110 lpm los ±250 ms
+traen la T del latido anterior (a 155 lpm cae a −190 ms del R) y la P del
+siguiente, y a cualquier frecuencia la propia T llega antes porque el QT se
+acorta. Medido: una taquicardia de 60 s a 155 lpm dejaba 13 episodios de
+"morfología atípica" y un foco recurrente de latidos normales con 9 % de carga;
+en esfuerzo real (QT Database, `sel30x`), 77 episodios en 9 canales.
+
+Lo corrigen tres cosas, ninguna en la representación guardada ni en cómo el
+banco asigna (los `cluster_id` no se mueven):
+
+- **El score mira el latido y no a sus vecinos** (`scoring_window`): la parte de
+  la ventana que se compara se recorta con el R-R **esperado** —la mediana
+  local de la prematuridad— y no con el del propio latido. Un prematuro
+  conserva la T del anterior en su ventana, que es lo que lo delata. Si la
+  dominante se aprendió más rápido que eso, se recorta con el de ella.
+- **Y lo compara con la dominante a su frecuencia** (`BeatRate`,
+  `_rate_aware_correlation`): si llegó a tiempo y su frecuencia se aparta de la
+  que aprendió la dominante (`Template.mean_expected_rr`), la repolarización de
+  la dominante se comprime o se estira dentro de lo que el QT puede moverse. El
+  QRS no se toca.
+- **Un foco recurrente tiene que haber puntuado** (`is_recurrent`): la
+  taquicardia sigue abriendo su plantilla, pero una cuyos latidos casi nunca
+  pasan el umbral es una variante de la normal y no un foco. Cuenta solo para
+  el encabezado del foco, se mide sobre los miembros que pudieron puntuar —los
+  que llegaron mientras la plantilla no era la dominante— y una vez que una
+  plantilla calificó no se deshace (`mark_reported`). Un latido suelto que
+  puntuó se sigue informando en cualquier plantilla con 30 miembros
+  (`TemplateBank.recurrent_ids`), que es como se ven los supraventriculares.
+
+Lo que queda sin resolver: a ~200 lpm el detector de R pierde un latido de cada
+dos (no acepta R-R menores de 300 ms). El R-R esperado queda en el doble del
+real, los latidos que sí se detectan llegan con prematuridad ~0,5 y se comparan
+sin adaptar, como prematuros: una taquicardia así sale en episodios MEDIUM
+partidos. Es un problema del detector, no de la forma. Y el arranque
+instantáneo de una taquicardia marca sus dos primeros latidos, que llegan antes
+de que la mediana se adapte: así arranca una supraventricular.
+
+Sobre MIT-BIH (48 registros) cuesta 7 de 7.712 latidos anormales detectados
+—5 supraventriculares del 202, que no llegan prematuros— y saca 67 falsos. Por
+bloques, como en producción, los anormales que llegan a un episodio quedan como
+estaban (6.384 de 6.386) y los encabezados de foco bajan de 112 a 82.
 """
 
 from __future__ import annotations
@@ -48,8 +93,10 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from app.ml.contracts import Floats, Indices, Mask, Signal
+from app.ml.hrv import ECTOPIC_PREMATURITY
 
 #: Ventana del latido, en milisegundos alrededor del pico R. 250 ms hacia atrás
 #: entran la P y el arranque del QRS; 250 ms hacia adelante, el final del QRS y
@@ -57,6 +104,44 @@ from app.ml.contracts import Floats, Indices, Mask, Signal
 #: opuesta) de un latido normal.
 BEAT_PRE_MS = 250
 BEAT_POST_MS = 250
+
+#: Lo que se recorta de la ventana a frecuencia alta (`scoring_window`). El
+#: score deja de mirar los primeros 300 ms después del R anterior —su QRS, su ST
+#: y el grueso de su T— y los últimos 200 ms antes del R siguiente —su P—. Con
+#: un R-R esperado de 550 ms o más (≤ 109 lpm) no se recorta nada: el score es
+#: exactamente el de la ventana entera.
+SCORE_PREVIOUS_BEAT_CLEARANCE_MS = 300
+SCORE_NEXT_BEAT_CLEARANCE_MS = 200
+#: Lo que nunca se recorta: el arranque del QRS antes del R y el QRS con el ST
+#: después. Un ectópico ventricular se sigue viendo entero a cualquier frecuencia.
+SCORE_MIN_PRE_MS = 60
+SCORE_MIN_POST_MS = 120
+
+#: El QRS, en ms alrededor del R: lo único que no se adapta nunca a la
+#: frecuencia (`dissimilarity_to_dominant`). Después de `QRS_END_MS` está la
+#: repolarización —ST y T—; antes de `QRS_START_MS`, la P.
+QRS_START_MS = 60
+QRS_END_MS = 60
+#: Hasta dónde se adapta la repolarización de la dominante a la frecuencia de un
+#: latido: factores de tiempo entre 1 y `(RR_latido / RR_dominante) ** esto`.
+#: 1 es el extremo —la T se adelanta en proporción al R-R—; el QT real se acorta
+#: menos (Bazett ~0,5, Fridericia ~0,33), y la búsqueda cubre todo el medio,
+#: incluida la histéresis del QT, que tarda un minuto en alcanzar a la
+#: frecuencia. La P se acerca al QRS con la raíz de ese factor: el PR también
+#: se acorta con la frecuencia, pero bastante menos que el QT.
+RATE_ADAPT_EXPONENT = 1.0
+#: Paso de la grilla de factores, en logaritmo natural (~10 %). Es también la
+#: zona muerta: un latido a menos de un paso de la frecuencia de la dominante se
+#: compara sin adaptar.
+RATE_ADAPT_LOG_STEP = 0.1
+#: Cuánto tarda la repolarización en alcanzar un cambio de frecuencia. Después
+#: de un esfuerzo, la T de un latido ya lento puede seguir siendo la de la
+#: frecuencia de hace un minuto, así que se la deja comprimir hasta la del R-R
+#: esperado más corto de este tramo. Es también el contexto izquierdo de cada
+#: bloque en producción (`ml_analysis_context_seconds`), así que lo que mira
+#: hacia atrás un latido nuevo está en la señal; con menos contexto, los
+#: primeros de cada bloque miran lo que haya.
+QT_HYSTERESIS_S = 60.0
 
 #: Formato del estado serializado. Sube cuando cambia la representación del
 #: latido: un banco viejo deja de ser comparable y hay que empezar uno nuevo.
@@ -98,6 +183,64 @@ class Template:
     sum_correlation: float
     first_sample: int
     last_sample: int
+    #: Miembros que se plegaron mientras la plantilla **no** era la dominante, y
+    #: cuántos de ellos puntuaron por encima del umbral de anomalía
+    #: (`count_anomalous`). Su cociente es lo que separa un foco de una variante
+    #: de la forma normal: los latidos de una taquicardia sinusal abren
+    #: plantilla propia —a 155 lpm la ventana ya no es la del reposo— pero casi
+    #: ninguno puntúa. Sobre los que **pudieron** puntuar y no sobre todos: el
+    #: score se mide contra la dominante, así que mientras una plantilla lo es
+    #: sus miembros dan ~0 por construcción. Un foco que arrancó dominante —un
+    #: bigeminismo con duplas al principio del estudio— se diluía con esos ceros
+    #: y dejaba de informarse cuando la forma normal recuperaba el lugar.
+    scored_count: int = 0
+    anomalous_count: int = 0
+    #: Si la plantilla ya calificó como foco (`is_recurrent`) alguna vez. Una
+    #: vez que sí, su encabezado se sigue emitiendo con el conteo al día
+    #: (`mark_reported`): la persistencia solo hace upsert de lo que se emite,
+    #: y un encabezado que dejara de emitirse quedaba en la base congelado con
+    #: un conteo viejo. `None` en un banco de antes de los contadores, hasta que
+    #: el pipeline lo resuelve con la regla de entonces.
+    reported: bool | None = False
+    #: Suma del R-R esperado (`hrv.expected_rr`, en segundos) de los miembros
+    #: que lo tenían, y cuántos eran. Su cociente es la frecuencia a la que se
+    #: aprendió la forma (`mean_expected_rr`), que es contra lo que se adapta la
+    #: repolarización de la dominante (`dissimilarity_to_dominant`). Sumas y no
+    #: un promedio: el banco es un acumulador y un promedio no se pliega.
+    expected_rr_sum: float = 0.0
+    expected_rr_beats: int = 0
+
+    @property
+    def mean_expected_rr(self) -> float | None:
+        """R-R medio al que se aprendió la plantilla, o None si no se sabe."""
+        if self.expected_rr_beats <= 0 or self.expected_rr_sum <= 0:
+            return None
+        return self.expected_rr_sum / self.expected_rr_beats
+
+
+def is_recurrent(template: Template, *, min_beats: int, min_anomalous_fraction: float) -> bool:
+    """Si una plantilla que **no** es la dominante califica hoy como foco recurrente.
+
+    Dos condiciones: miembros suficientes para no ser ruido disperso, y que de
+    los que pudieron puntuar —los que se plegaron sin que la plantilla fuera la
+    dominante, `Template.scored_count`— haya puntuado una fracción mínima. Sin
+    la segunda, cualquier variante de la forma normal con 30 latidos —una
+    taquicardia de esfuerzo— se informaba como foco con su carga. La fracción
+    se mide recién con `min_beats` de esos miembros: con menos es ruido, y la
+    decisión no se deshace (`mark_reported`). Con `min_anomalous_fraction` en 0
+    queda solo el conteo, la regla de antes.
+
+    Es solo el encabezado del foco: para agrupar episodios cuenta el conteo
+    solo (`TemplateBank.recurrent_ids`).
+    """
+    if template.count < min_beats:
+        return False
+    if min_anomalous_fraction <= 0:
+        return True
+    return (
+        template.scored_count >= min_beats
+        and template.anomalous_count >= min_anomalous_fraction * template.scored_count
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +271,17 @@ class TemplateBank:
         return np.stack([template.centroid for template in self.templates])
 
     def recurrent_ids(self, min_beats: int) -> frozenset[int]:
-        """Clusters con miembros suficientes para no ser ruido disperso."""
+        """Clusters con miembros suficientes para no ser ruido disperso.
+
+        Es lo que deja pasar un latido suelto como episodio
+        (`episodes.group_beats`), y va **por conteo solo**, sin la fracción de
+        `is_recurrent`. Un supraventricular prematuro tiene el QRS normal y cae
+        en cualquier variante de la forma normal, no solo en la dominante: en
+        esas plantillas casi ningún miembro puntúa, y con la fracción el
+        supraventricular suelto que sí puntuó se descartaba (en MIT-BIH 213, sus
+        10 supraventriculares informados pasaban a 0). Lo que la fracción tiene
+        que filtrar es el encabezado del foco, no los latidos que puntuaron.
+        """
         return frozenset(t.cluster_id for t in self.templates if t.count >= min_beats)
 
 
@@ -287,6 +440,7 @@ def assign_and_update(
     max_templates: int,
     fold_key: str | None = None,
     sample_offset: int = 0,
+    expected_rr: Floats | None = None,
 ) -> tuple[TemplateBank, BeatAssignment]:
     """Pliega un lote al banco: asigna, crea plantillas nuevas y acumula.
 
@@ -295,6 +449,10 @@ def assign_and_update(
     recorre en Python solo los que sobraron, que son los candidatos a morfología
     nueva. Congelar los centroides durante la primera pasada además hace el
     resultado **independiente del orden** de los latidos dentro del lote.
+
+    `expected_rr` es el R-R esperado de cada latido (`hrv.expected_rr`): se
+    acumula en la plantilla que lo recibe para saber a qué frecuencia se
+    aprendió (`Template.mean_expected_rr`). Sin él no se acumula nada.
     """
     if beats.n_beats == 0:
         return bank, BeatAssignment(
@@ -357,14 +515,22 @@ def assign_and_update(
         # Absolutas al estudio: el banco cruza lotes, así que un `first_sample`
         # relativo al lote apuntaría al lugar equivocado de la traza.
         samples = beats.rpeaks[members] + sample_offset
-        templates[position] = Template(
-            cluster_id=template.cluster_id,
+        rates = np.empty(0, dtype=np.float64)
+        if expected_rr is not None:
+            rates = np.asarray(expected_rr[members], dtype=np.float64)
+            rates = rates[np.isfinite(rates) & (rates > 0)]
+        # `replace` y no un `Template` nuevo: `anomalous_count` lo suma
+        # `count_anomalous` después de puntuar, y acá se conserva.
+        templates[position] = replace(
+            template,
             centroid=centroid,
             count=total,
             sum_correlation=template.sum_correlation
             + float(np.sum(np.clip(best_correlation[members], 0.0, 1.0))),
             first_sample=min(template.first_sample, int(samples.min())),
             last_sample=max(template.last_sample, int(samples.max())),
+            expected_rr_sum=template.expected_rr_sum + float(rates.sum()),
+            expected_rr_beats=template.expected_rr_beats + int(rates.size),
         )
 
     lookup = np.array([template.cluster_id for template in templates], dtype=np.int64)
@@ -384,6 +550,81 @@ def assign_and_update(
     return updated, BeatAssignment(cluster_ids=cluster_ids, dissimilarity=dissimilarity)
 
 
+def count_anomalous(bank: TemplateBank, cluster_ids: Indices, anomalous: Mask) -> TemplateBank:
+    """Suma a cada plantilla sus miembros puntuables y cuántos puntuaron.
+
+    `cluster_ids` es la asignación de los latidos que **se acaban de plegar**
+    (`assign_and_update`) y `anomalous` si cada uno pasó el umbral. Los de la
+    plantilla dominante de `bank` no suman a ninguno de los dos contadores
+    (`Template.scored_count`): se puntuaron contra ella misma. Va aparte del
+    pliegue porque el score se mide contra la dominante del banco ya
+    actualizado, que todavía no existe mientras se asigna. Tiene la misma regla
+    que el pliegue: un tramo que se vuelve a analizar con su `fold_key` ya
+    plegado no suma —el pipeline no llama a esto—, o contaría sus latidos dos
+    veces.
+    """
+    dominant = dominant_template(bank)
+    scored = cluster_ids >= 0
+    if dominant is not None:
+        scored &= cluster_ids != dominant.cluster_id
+    if not scored.any():
+        return bank
+    ids, counts = np.unique(cluster_ids[scored], return_counts=True)
+    added = dict(zip(ids.tolist(), counts.tolist(), strict=True))
+    hit_ids, hit_counts = np.unique(cluster_ids[scored & anomalous], return_counts=True)
+    hits = dict(zip(hit_ids.tolist(), hit_counts.tolist(), strict=True))
+    return replace(
+        bank,
+        templates=tuple(
+            replace(
+                template,
+                scored_count=template.scored_count + added[template.cluster_id],
+                anomalous_count=template.anomalous_count + hits.get(template.cluster_id, 0),
+            )
+            if template.cluster_id in added
+            else template
+            for template in bank.templates
+        ),
+    )
+
+
+def mark_reported(
+    bank: TemplateBank, *, min_beats: int, min_anomalous_fraction: float
+) -> TemplateBank:
+    """Marca las plantillas que **no** son la dominante y ya calificaron como foco.
+
+    La marca no se deshace (`Template.reported`). La fracción de `is_recurrent`
+    no es monótona —baja cuando la plantilla suma miembros que no puntúan—, y
+    la persistencia solo hace upsert de los encabezados que se emiten: uno que
+    dejara de emitirse quedaba en la base con el conteo de cuando calificó,
+    mientras la plantilla seguía creciendo. Con la marca, un foco informado se
+    sigue informando con su conteo al día.
+
+    Un banco de antes de los contadores trae la marca en `None`, y se resuelve
+    acá con la regla de entonces —no dominante con `min_beats` miembros—, que es
+    justo el encabezado que ese estudio ya tiene escrito. Desde ahí, una
+    plantilla que todavía no calificó se juzga por los miembros que se plieguen
+    de ahora en más. Pura y determinista: aplicarla dos veces no cambia nada.
+    """
+    dominant = dominant_template(bank)
+    changed = False
+    templates: list[Template] = []
+    for template in bank.templates:
+        is_dominant = dominant is not None and template.cluster_id == dominant.cluster_id
+        reported = template.reported
+        if reported is None:
+            reported = not is_dominant and template.count >= min_beats
+        elif not reported and not is_dominant:
+            reported = is_recurrent(
+                template, min_beats=min_beats, min_anomalous_fraction=min_anomalous_fraction
+            )
+        if reported != template.reported:
+            changed = True
+            template = replace(template, reported=reported)
+        templates.append(template)
+    return replace(bank, templates=tuple(templates)) if changed else bank
+
+
 def dominant_template(bank: TemplateBank) -> Template | None:
     """La plantilla del paciente: la que más miembros tiene.
 
@@ -396,7 +637,72 @@ def dominant_template(bank: TemplateBank) -> Template | None:
     return max(bank.templates, key=lambda template: template.count)
 
 
-def dissimilarity_to_dominant(bank: TemplateBank, beats: BeatMatrix) -> Floats:
+@dataclass(frozen=True, slots=True)
+class ScoringWindow:
+    """Por latido, el tramo `[start, stop)` de su ventana que el score compara.
+
+    En muestras de la ventana de `extract_beats` (0 a `beat_length`). Con
+    `start == 0` y `stop == beat_length` es la ventana entera.
+    """
+
+    start: Indices
+    stop: Indices
+
+
+def scoring_window(expected_rr_s: Floats, sample_rate: int) -> ScoringWindow:
+    """La parte de cada ventana que pertenece al latido, según su R-R **esperado**.
+
+    `expected_rr_s` es, por latido, el R-R con que se lo esperaba
+    (`hrv.expected_rr`, la referencia de la prematuridad). Antes del R se deja
+    afuera lo que cae en los primeros `SCORE_PREVIOUS_BEAT_CLEARANCE_MS` del
+    latido anterior y después, los últimos `SCORE_NEXT_BEAT_CLEARANCE_MS` antes
+    del siguiente; nunca menos de `SCORE_MIN_PRE_MS` / `SCORE_MIN_POST_MS`.
+
+    El esperado y no el propio, a propósito. Recortar con el R-R del latido
+    borraba la T del latido anterior justo de la ventana de un supraventricular
+    prematuro, que es lo que lo delata: medido sobre los 48 registros de
+    MIT-BIH, 59 latidos anormales detectados menos (en el 202, 10 de sus 68
+    supraventriculares). Con el esperado, un prematuro conserva la ventana del
+    ritmo en el que cayó —la de reposo, entera— y un latido de una taquicardia
+    sostenida, que llega cuando se lo esperaba, se mira sin sus vecinos. Sin
+    referencia (NaN, el primer latido de la serie) la ventana es la entera.
+    """
+    pre_full = int(round(BEAT_PRE_MS * sample_rate / 1000))
+    length = beat_length(sample_rate)
+    rr_ms = np.asarray(expected_rr_s, dtype=np.float64) * 1000.0
+    known = np.isfinite(rr_ms) & (rr_ms > 0)
+    pre_ms = np.clip(rr_ms - SCORE_PREVIOUS_BEAT_CLEARANCE_MS, SCORE_MIN_PRE_MS, BEAT_PRE_MS)
+    post_ms = np.clip(rr_ms - SCORE_NEXT_BEAT_CLEARANCE_MS, SCORE_MIN_POST_MS, BEAT_POST_MS)
+    full_pre = ~known | (pre_ms >= BEAT_PRE_MS)
+    full_post = ~known | (post_ms >= BEAT_POST_MS)
+    pre = np.round(np.where(full_pre, BEAT_PRE_MS, pre_ms) * sample_rate / 1000.0).astype(np.int64)
+    post = np.round(np.where(full_post, BEAT_POST_MS, post_ms) * sample_rate / 1000.0)
+    return ScoringWindow(
+        start=np.where(full_pre, 0, np.clip(pre_full - pre, 0, pre_full)).astype(np.int64),
+        stop=np.where(
+            full_post, length, np.clip(pre_full + post.astype(np.int64), pre_full + 1, length)
+        ).astype(np.int64),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class BeatRate:
+    """Por latido de una `BeatMatrix`, el ritmo en el que cayó.
+
+    `expected_rr` es el R-R con que se lo esperaba, en segundos
+    (`hrv.expected_rr`; NaN sin referencia), y `prematurity` cuánto se adelantó
+    (`hrv.prematurity`). Es lo que el score necesita para no confundir la
+    frecuencia con la forma (`dissimilarity_to_dominant`).
+    """
+
+    expected_rr: Floats
+    prematurity: Floats
+    sample_rate: int
+
+
+def dissimilarity_to_dominant(
+    bank: TemplateBank, beats: BeatMatrix, rate: BeatRate | None = None
+) -> Floats:
     """`1 − correlación` de cada latido contra la plantilla **dominante**.
 
     Es la disimilitud que importa y no la que hay contra la plantilla asignada.
@@ -407,13 +713,216 @@ def dissimilarity_to_dominant(bank: TemplateBank, beats: BeatMatrix) -> Floats:
     su propio cluster.
 
     Contra la dominante la pregunta vuelve a ser la del método: *¿cuánto se
-    parece este latido a los normales de este paciente?*
+    parece este latido a los normales de este paciente?* Con `rate`, a los
+    normales **a esta frecuencia** (`_rate_aware_correlation`). Sin él es la
+    comparación de la ventana entera, sin más.
     """
     dominant = dominant_template(bank)
     if dominant is None or beats.n_beats == 0:
         return np.ones(beats.n_beats, dtype=np.float32)
     correlation = beats.waveforms @ dominant.centroid
+    if rate is not None:
+        correlation = _rate_aware_correlation(beats, dominant, rate, correlation)
     return np.asarray(np.clip(1.0 - correlation, 0.0, 2.0), dtype=np.float32)
+
+
+def _rate_aware_correlation(
+    beats: BeatMatrix, dominant: Template, rate: BeatRate, full: Floats
+) -> Floats:
+    """La correlación con la dominante, sin lo que cambia la frecuencia y no la forma.
+
+    Dos efectos de la frecuencia que no son forma:
+
+    1. **Los vecinos.** A más de ~110 lpm los ±250 ms traen la T del latido
+       anterior y la P del siguiente: se compara solo el tramo del latido
+       (`scoring_window`), con la forma recentrada y renormalizada en él. El
+       tramo sale del R-R más corto entre el que se esperaba para el latido y
+       el que aprendió la dominante: en una dominante de esfuerzo los vecinos
+       están en el centroide.
+    2. **Su propia repolarización.** El QT se acorta con la frecuencia: a 120
+       lpm la T de un latido sinusal llega ~70 ms antes que en reposo, y con la
+       ventana limpia igual correlacionaba 0,85 con la dominante. Si el latido
+       llegó a tiempo (prematuridad ≥ `hrv.ECTOPIC_PREMATURITY`) y su
+       frecuencia se aparta de la que aprendió la dominante
+       (`Template.mean_expected_rr`) más que un paso de la grilla, se lo compara
+       además contra la dominante con el ST-T comprimido —o estirado— por
+       factores entre 1 y el cociente de los R-R (`_stretched`; la P, con su
+       raíz), y vale la mejor. Comprimido, hasta el R-R más corto de los últimos
+       `QT_HYSTERESIS_S`: el QT tarda del orden de un minuto en alcanzar a la
+       frecuencia, y al bajar de una escalera la T sigue llegando temprano un
+       rato. El QRS no se toca nunca: un ectópico ventricular sigue siendo un
+       QRS distinto a cualquier frecuencia, y un prematuro se compara como está,
+       que es como se lo reconoce. Lo que se relaja es solo **cuándo** llega la
+       repolarización de un latido que llegó cuando se lo esperaba.
+
+    Una dominante sin frecuencia conocida (un banco de antes de que se
+    acumulara) se compara sin adaptar.
+    """
+    waveforms = beats.waveforms
+    n_beats, length = waveforms.shape
+    if rate.expected_rr.shape != (n_beats,) or rate.prematurity.shape != (n_beats,):
+        raise ValueError("BeatRate tiene que tener un valor por latido")
+    learned = dominant.mean_expected_rr
+    expected = np.asarray(rate.expected_rr, dtype=np.float64)
+    # La ventana es la del más rápido de los dos: el latido o la dominante. Una
+    # dominante aprendida en esfuerzo —un estudio que arranca caminando rápido—
+    # trae en su centroide la T del latido anterior y la P del siguiente, y un
+    # latido de reposo comparado con eso en la ventana entera puntuaba (a 185
+    # lpm, los de la recuperación daban 0,37-0,46). Hasta ~109 lpm (R-R de 550
+    # ms) la dominante no recorta nada.
+    window = scoring_window(
+        rate.expected_rr
+        if learned is None
+        else np.fmin(rate.expected_rr, np.float32(learned)).astype(np.float32),
+        rate.sample_rate,
+    )
+    result = full.astype(np.float64)
+    clipped = (window.start > 0) | (window.stop < length)
+    if clipped.any():
+        result[clipped] = _correlations(
+            waveforms[clipped], dominant.centroid, window.start[clipped], window.stop[clipped]
+        )
+
+    if learned is None:
+        return np.asarray(result, dtype=np.float32)
+    fastest = np.fmin(
+        expected,
+        _trailing_min(expected, beats.rpeaks, int(QT_HYSTERESIS_S * rate.sample_rate)),
+    )
+    adapt = (
+        np.isfinite(expected)
+        & (expected > 0)
+        & np.isfinite(fastest)
+        & (fastest > 0)
+        & (rate.prematurity >= ECTOPIC_PREMATURITY)
+    )
+    # En logaritmo del factor: hasta dónde se puede estirar (latido más lento
+    # que la dominante) y hasta dónde comprimir (más rápido, ahora o hace
+    # menos de `QT_HYSTERESIS_S`). Cero donde no se adapta.
+    stretch = np.zeros(n_beats, dtype=np.float64)
+    compress = np.zeros(n_beats, dtype=np.float64)
+    stretch[adapt] = RATE_ADAPT_EXPONENT * np.log(expected[adapt] / learned)
+    compress[adapt] = -RATE_ADAPT_EXPONENT * np.log(fastest[adapt] / learned)
+    reach = float(max(np.max(stretch), np.max(compress), 0.0))
+    steps = int(np.floor(reach / RATE_ADAPT_LOG_STEP + 1e-9))
+    center = int(round(BEAT_PRE_MS * rate.sample_rate / 1000))
+    qrs = (
+        center - int(round(QRS_START_MS * rate.sample_rate / 1000)),
+        center + int(round(QRS_END_MS * rate.sample_rate / 1000)),
+    )
+    for step in range(1, steps + 1):
+        for sign, limit_log in ((-1.0, compress), (1.0, stretch)):
+            # Los factores entre 1 y el extremo de cada latido, en pasos de la
+            # grilla: con signo, porque un latido más lento que la dominante
+            # (la dominante se aprendió en una caminata) estira en vez de
+            # comprimir.
+            rows = np.flatnonzero(limit_log >= step * RATE_ADAPT_LOG_STEP - 1e-9)
+            if rows.size == 0:
+                continue
+            reference, (first, last) = _stretched(
+                dominant.centroid, float(np.exp(sign * step * RATE_ADAPT_LOG_STEP)), qrs
+            )
+            result[rows] = np.maximum(
+                result[rows],
+                _correlations(
+                    waveforms[rows],
+                    reference,
+                    np.maximum(window.start[rows], first),
+                    np.minimum(window.stop[rows], last),
+                ),
+            )
+    return np.asarray(result, dtype=np.float32)
+
+
+def _trailing_min(
+    values: NDArray[np.float64], positions: Indices, span: int
+) -> NDArray[np.float64]:
+    """Por elemento, el mínimo de `values` en `[posición − span, posición]` (sin NaN).
+
+    Con una tabla de mínimos por potencias de dos: O(n log n) sin recorrer en
+    Python. NaN donde no hay ningún valor conocido en el tramo.
+    """
+    count = values.size
+    if count == 0:
+        return values.copy()
+    order = np.argsort(positions, kind="stable")
+    ordered = values[order]
+    sorted_positions = positions[order]
+    first = np.searchsorted(sorted_positions, sorted_positions - span, side="left")
+    last = np.arange(count)
+    tables = [ordered]
+    while 2 ** len(tables) <= count:
+        width = 2 ** (len(tables) - 1)
+        tables.append(np.fmin(tables[-1][:-width], tables[-1][width:]))
+    level = np.floor(np.log2(last - first + 1)).astype(np.int64)
+    result = np.empty(count, dtype=np.float64)
+    for depth in np.unique(level).tolist():
+        rows = np.flatnonzero(level == depth)
+        table = tables[depth]
+        result[rows] = np.fmin(table[first[rows]], table[last[rows] - 2**depth + 1])
+    unsorted = np.empty(count, dtype=np.float64)
+    unsorted[order] = result
+    return unsorted
+
+
+def _stretched(
+    centroid: Floats, factor: float, qrs: tuple[int, int]
+) -> tuple[NDArray[np.float64], tuple[int, int]]:
+    """El centroide con la frecuencia cambiada por `factor`, fuera del QRS.
+
+    Lo posterior al QRS (`qrs[1]`) se escala en el tiempo por `factor` y lo
+    anterior (`qrs[0]`) por su raíz: con `factor` < 1, la T llega antes y más
+    angosta y la P se acerca un poco, como a más frecuencia. Devuelve también el
+    tramo `[desde, hasta)` donde vale: comprimido, los bordes de la ventana
+    saldrían de muestras que el centroide no tiene —se guardan ±250 ms—, y eso
+    no se compara.
+    """
+    length = centroid.size
+    start, end = qrs
+    atrial = float(np.sqrt(factor))
+    positions = np.arange(length, dtype=np.float64)
+    source = np.where(positions > end, end + (positions - end) / factor, positions)
+    source = np.where(positions < start, start - (start - positions) / atrial, source)
+    stretched = np.interp(source, positions, centroid.astype(np.float64))
+    if factor >= 1.0:
+        return stretched, (0, length)
+    first = max(0, int(np.ceil(start - start * atrial)))
+    last = min(length, int(np.floor(end + (length - 1 - end) * factor)) + 1)
+    return stretched, (first, last)
+
+
+def _correlations(
+    waveforms: Floats, reference: NDArray[Any], start: Indices, stop: Indices
+) -> NDArray[np.float64]:
+    """Correlación de cada fila con `reference` en su tramo `[start, stop)`.
+
+    En el tramo, la fila y la referencia se recentran por su mediana y se
+    renormalizan: la representación de `extract_beats` restringida a él, así
+    que con el tramo entero da el producto punto de siempre. Se agrupan las
+    filas por tramo: dentro de un bloque el R-R esperado se mueve poco y cada
+    tramo distinto es un solo matmul.
+    """
+    result = np.zeros(waveforms.shape[0], dtype=np.float64)
+    if waveforms.shape[0] == 0:
+        return result
+    length = waveforms.shape[1]
+    low_bounds = np.clip(start, 0, length - 1)
+    bounds = np.stack((low_bounds, np.clip(stop, low_bounds + 1, length)), axis=1)
+    unique, inverse = np.unique(bounds, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    for position, (low, high) in enumerate(unique.tolist()):
+        members = np.flatnonzero(inverse == position)
+        segments = waveforms[members, low:high].astype(np.float64)
+        segments -= np.median(segments, axis=1, keepdims=True)
+        target = np.asarray(reference[low:high], dtype=np.float64)
+        target = target - np.median(target)
+        scale = np.linalg.norm(segments, axis=1) * float(np.linalg.norm(target))
+        # Un tramo plano no se parece a nada: correlación 0, como el latido que
+        # no matcheó ninguna plantilla.
+        result[members] = np.where(
+            scale > 0, (segments @ target) / np.where(scale > 0, scale, 1.0), 0.0
+        )
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -503,6 +1012,11 @@ def consolidate(
                 sum_correlation=sum(template.sum_correlation for template in group),
                 first_sample=min(template.first_sample for template in group),
                 last_sample=max(template.last_sample for template in group),
+                scored_count=sum(template.scored_count for template in group),
+                anomalous_count=sum(template.anomalous_count for template in group),
+                expected_rr_sum=sum(template.expected_rr_sum for template in group),
+                expected_rr_beats=sum(template.expected_rr_beats for template in group),
+                reported=_merged_reported(group),
             )
         )
         for template in group:
@@ -511,6 +1025,19 @@ def consolidate(
 
     merged.sort(key=lambda template: template.cluster_id)
     return replace(bank, templates=tuple(merged)), mapping
+
+
+def _merged_reported(group: list[Template]) -> bool | None:
+    """La marca de foco de un grupo fundido: informado si alguno lo estaba.
+
+    Sin ninguno informado y alguno de un banco viejo (`None`), queda sin
+    resolver: `mark_reported` lo resuelve con el conteo fundido.
+    """
+    if any(template.reported for template in group):
+        return True
+    if any(template.reported is None for template in group):
+        return None
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -541,6 +1068,11 @@ def bank_to_state(bank: TemplateBank) -> tuple[dict[str, Any], bytes]:
                 "sumCorrelation": round(template.sum_correlation, 6),
                 "firstSample": template.first_sample,
                 "lastSample": template.last_sample,
+                "scoredCount": template.scored_count,
+                "anomalousCount": template.anomalous_count,
+                "reported": template.reported,
+                "expectedRrSum": round(template.expected_rr_sum, 6),
+                "expectedRrBeats": template.expected_rr_beats,
             }
             for template in bank.templates
         ],
@@ -572,6 +1104,16 @@ def bank_from_state(state: dict[str, Any], blob: bytes, *, model_version: str) -
     for position, item in enumerate(raw):
         if centroids is None or position >= centroids.shape[0]:
             break
+        # Un banco de antes de los contadores no sabe cuántos de sus miembros
+        # pudieron puntuar ni cuántos puntuaron: arrancan en cero y la marca de
+        # foco queda sin resolver (`None`) hasta que `mark_reported` le aplica
+        # la regla de entonces. Así un encabezado que ese estudio ya tiene
+        # escrito se sigue actualizando, y las demás plantillas se juzgan por
+        # lo que se pliegue de acá en más. Sin `scoredCount` también un
+        # `anomalousCount` suelto se ignora: contaba los miembros de la
+        # dominante, que no pueden puntuar.
+        legacy = "scoredCount" not in item
+        reported = item.get("reported")
         templates.append(
             Template(
                 cluster_id=int(item["clusterId"]),
@@ -580,6 +1122,13 @@ def bank_from_state(state: dict[str, Any], blob: bytes, *, model_version: str) -
                 sum_correlation=float(item.get("sumCorrelation", 0.0)),
                 first_sample=int(item.get("firstSample", 0)),
                 last_sample=int(item.get("lastSample", 0)),
+                scored_count=0 if legacy else int(item["scoredCount"]),
+                anomalous_count=0 if legacy else int(item.get("anomalousCount", 0)),
+                reported=None if legacy or reported is None else bool(reported),
+                # Sin frecuencia conocida la dominante no se adapta: el score es
+                # el de la ventana recortada sola hasta que se pliegue algo.
+                expected_rr_sum=float(item.get("expectedRrSum", 0.0)),
+                expected_rr_beats=int(item.get("expectedRrBeats", 0)),
             )
         )
     return TemplateBank(

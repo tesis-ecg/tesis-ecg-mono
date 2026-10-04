@@ -47,7 +47,7 @@ from app.ml.contracts import (
     Signal,
 )
 from app.ml.episodes import RECURRENT_KIND, apply_refractory, enforce_budget, group_beats
-from app.ml.hrv import build_rr, prematurity
+from app.ml.hrv import build_rr, expected_rr, prematurity
 from app.ml.intervals import IntervalMeasurement, IntervalThresholds, measure_intervals
 from app.ml.morphology import BeatAssignment, BeatMatrix, TemplateBank
 from app.ml.quality import (
@@ -97,6 +97,10 @@ class PipelineConfig:
     merge_threshold: float
     max_templates: int
     recurrent_min_beats: int
+    #: Fracción mínima de los miembros que pudieron puntuar que tiene que haber
+    #: puntuado para que una plantilla que no es la dominante tenga encabezado
+    #: de foco recurrente (`morphology.is_recurrent`). No filtra episodios.
+    recurrent_min_anomalous_fraction: float
     anomaly_score_min: float
     budget: EpisodeBudget
     #: Umbrales de la medición de intervalos. `None` la apaga: no se filtra ni
@@ -166,6 +170,7 @@ def build_config(
         merge_threshold=settings.ml_template_merge_threshold,
         max_templates=settings.ml_template_max,
         recurrent_min_beats=settings.ml_recurrent_cluster_min_beats,
+        recurrent_min_anomalous_fraction=settings.ml_recurrent_cluster_min_anomalous_fraction,
         anomaly_score_min=settings.ml_anomaly_score_min,
         budget=EpisodeBudget(
             refractory_seconds=settings.ml_episode_refractory_seconds,
@@ -229,7 +234,10 @@ def analyze_batch(
       latido. Los del contexto aportan su R-R, que es contra lo que se mide la
       prematuridad de los primeros nuevos, y se puntúan contra el banco para
       agrupar episodios a través del borde: se informa el grupo que tiene al
-      menos un latido nuevo, aunque arranque en el contexto.
+      menos un latido nuevo, aunque arranque en el contexto. Con los nuevos el
+      banco acumula también la frecuencia de cada forma, cuántos pudieron
+      puntuar y cuántos puntuaron (`morphology.count_anomalous`), y solo cuando
+      pliega.
     - Totales: ver `totals.block_totals`.
     - Intervalos (si `config.intervals`): se delinea el bloque entero, pero se
       miden solo los latidos con el R en la parte nueva; ver
@@ -374,7 +382,15 @@ def analyze_batch(
     in_context = ~morphology.windows_ending_after(extracted, context, sample_rate)
     owned = ~in_context & ~morphology.windows_ending_after(extracted, end, sample_rate)
     beats = morphology.select_beats(extracted, owned)
-    if fold_key != bank.last_fold_key:
+    # El R-R con que se esperaba cada latido —la referencia de la prematuridad,
+    # de la misma serie con los contextos— viaja con él al banco (la frecuencia
+    # a la que se aprende cada forma) y al score.
+    beat_expected_rr = expected_rr(rr)
+    # Un banco de antes de los contadores resuelve acá, antes de plegar, qué
+    # plantillas ya eran un foco informado (`morphology.mark_reported`).
+    bank = _mark_reported(bank, config)
+    folds = fold_key != bank.last_fold_key
+    if folds:
         updated_bank, assignment = morphology.assign_and_update(
             bank,
             beats,
@@ -382,6 +398,7 @@ def analyze_batch(
             max_templates=config.max_templates,
             fold_key=fold_key,
             sample_offset=start_sample_index,
+            expected_rr=beat_expected_rr[beats.beat_index],
         )
     else:
         updated_bank = bank
@@ -403,12 +420,36 @@ def analyze_batch(
             updated_bank, previous, match_threshold=config.match_threshold
         ).cluster_ids
         # Contra la plantilla DOMINANTE, no contra la asignada: ver
-        # `morphology.dissimilarity_to_dominant`.
+        # `morphology.dissimilarity_to_dominant`. Y a la frecuencia de cada
+        # latido: sin eso, a 155 lpm los ±250 ms traían la T del latido anterior
+        # y la propia llegaba antes, y la taquicardia sinusal de una escalera
+        # salía entera como morfología atípica.
+        grouped_prematurity = beat_prematurity[grouped.beat_index]
         scores = morphology.anomaly_score(
-            morphology.dissimilarity_to_dominant(updated_bank, grouped),
-            beat_prematurity[grouped.beat_index],
+            morphology.dissimilarity_to_dominant(
+                updated_bank,
+                grouped,
+                morphology.BeatRate(
+                    expected_rr=beat_expected_rr[grouped.beat_index],
+                    prematurity=grouped_prematurity,
+                    sample_rate=sample_rate,
+                ),
+            ),
+            grouped_prematurity,
             match_threshold=config.match_threshold,
         )
+        positive = scores >= config.anomaly_score_min
+        if folds:
+            # Cuántos de los latidos que se acaban de plegar pudieron puntuar y
+            # cuántos puntuaron, por plantilla: es lo que separa un foco de una
+            # variante de la forma normal (`morphology.is_recurrent`). Con la
+            # misma regla del pliegue: un tramo ya plegado no vuelve a sumar.
+            updated_bank = _mark_reported(
+                morphology.count_anomalous(
+                    updated_bank, assignment.cluster_ids, positive[previous.n_beats :]
+                ),
+                config,
+            )
         # Solo los grupos con al menos un latido nuevo: los que quedan enteros
         # en el contexto ya los informó el bloque anterior. Uno que arranca en
         # el contexto conserva su inicio ahí, y la persistencia lo empalma con
@@ -416,9 +457,11 @@ def analyze_batch(
         findings.extend(
             group_beats(
                 grouped.rpeaks,
-                scores >= config.anomaly_score_min,
+                positive,
                 scores,
                 np.concatenate((previous_ids, assignment.cluster_ids)),
+                # Por conteo solo: un supraventricular suelto cae en cualquier
+                # variante de la forma normal (`TemplateBank.recurrent_ids`).
                 updated_bank.recurrent_ids(config.recurrent_min_beats),
                 sample_rate=sample_rate,
                 budget=config.budget,
@@ -718,6 +761,14 @@ def _quality_findings(windows: tuple[QualityWindow, ...], sample_rate: int) -> l
     return findings
 
 
+def _mark_reported(bank: TemplateBank, config: PipelineConfig) -> TemplateBank:
+    return morphology.mark_reported(
+        bank,
+        min_beats=config.recurrent_min_beats,
+        min_anomalous_fraction=config.recurrent_min_anomalous_fraction,
+    )
+
+
 def _recurrent_findings(bank: TemplateBank, config: PipelineConfig) -> list[Finding]:
     """Un hallazgo por morfología recurrente, con el conteo acumulado del estudio.
 
@@ -728,6 +779,14 @@ def _recurrent_findings(bank: TemplateBank, config: PipelineConfig) -> list[Find
     La plantilla **dominante no cuenta**: es el latido normal del paciente. Se
     identifica como la de más miembros, que es lo que es por definición — un
     Holter normal tiene más del 90 % de sus latidos en una sola morfología.
+
+    Tampoco cuenta una variante de la normal: una plantilla cuyos miembros casi
+    nunca puntuaron (`morphology.is_recurrent`). Es la que abre una taquicardia
+    sinusal de esfuerzo, y sin esa condición se informaba como un foco con la
+    carga de toda la taquicardia. Lo que se lee es la marca
+    (`Template.reported`, `_mark_reported`) y no la condición de hoy: un foco
+    que ya se informó se sigue informando, porque la persistencia solo hace
+    upsert y un encabezado que dejara de emitirse quedaría congelado.
     """
     if len(bank.templates) < 2 or bank.beats_seen == 0:
         return []
@@ -736,7 +795,7 @@ def _recurrent_findings(bank: TemplateBank, config: PipelineConfig) -> list[Find
     for template in bank.templates:
         if template.cluster_id == dominant.cluster_id:
             continue
-        if template.count < config.recurrent_min_beats:
+        if not template.reported or template.count < config.recurrent_min_beats:
             continue
         compactness = template.sum_correlation / template.count if template.count else 0.0
         findings.append(

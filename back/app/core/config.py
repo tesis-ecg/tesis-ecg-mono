@@ -242,6 +242,14 @@ class Settings(BaseSettings):
     #: Miembros a partir de los cuales una plantilla deja de ser ruido disperso y
     #: pasa a ser un foco recurrente. Es el discriminador central del método.
     ml_recurrent_cluster_min_beats: int = Field(default=30, ge=2, le=10_000)
+    #: Fracción de esos miembros que tiene que haber pasado `ml_anomaly_score_min`
+    #: para que la plantilla tenga encabezado de foco y no sea una variante de la
+    #: forma normal (`morphology.is_recurrent`). Se mide sobre los que pudieron
+    #: puntuar —los que llegaron mientras la plantilla no era la dominante— y no
+    #: filtra episodios. Una taquicardia sinusal de esfuerzo abre su propia
+    #: plantilla y casi ninguno de sus latidos puntúa (3 % en la del e2e); los
+    #: focos ectópicos de MIT-BIH puntúan casi enteros. 0 apaga la condición.
+    ml_recurrent_cluster_min_anomalous_fraction: float = Field(default=0.20, ge=0.0, le=1.0)
     ml_anomaly_score_min: float = Field(default=0.35, ge=0.0, le=1.0)
 
     #: El hueco entre latidos anómalos se mide en LATIDOS y no en segundos: un

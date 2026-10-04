@@ -336,15 +336,13 @@ async def test_el_mismo_registro_en_un_lote_o_en_cuarenta_deja_lo_mismo_en_la_ba
         (par[1], "pause", AlertSeverity.CRITICAL.value),
     ]
 
-    # El foco recurrente tiene su encabezado de estudio y sus episodios. Hay un
-    # segundo encabezado, el de los latidos de la taquicardia: a 130 lpm la T
-    # del latido anterior entra en la ventana del siguiente y la forma es otra.
-    focos = [
-        item
-        for item in _de_tipo(un_lote, "recurrent_morphology")
-        if item[4] == pytest.approx(n_ectopicos, rel=0.1)
-    ]
-    assert len(focos) == 1, un_lote["eventos"]
+    # El foco recurrente tiene su encabezado de estudio y sus episodios, y es el
+    # único encabezado. Los latidos de la taquicardia abren su propia
+    # plantilla —a 130 lpm la T del latido anterior entra en la ventana—, pero
+    # el score los mira a su frecuencia y casi ninguno puntúa: no son un foco
+    # (`morphology.is_recurrent`). Antes salían como un segundo encabezado.
+    (foco,) = _de_tipo(un_lote, "recurrent_morphology")
+    assert foco[4] == pytest.approx(n_ectopicos, rel=0.1), un_lote["eventos"]
     assert _de_tipo(un_lote, "morphology_anomaly")
 
     # El tercer brazo: el registro entero en un solo bloque, que analiza el

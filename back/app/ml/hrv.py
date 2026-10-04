@@ -130,8 +130,24 @@ def local_median_rr(rr_seconds: Floats, window_beats: int = LOCAL_WINDOW_BEATS) 
     return np.asarray(np.median(windows, axis=-1), dtype=np.float32)
 
 
+def expected_rr(rr: RRSeries, window_beats: int = LOCAL_WINDOW_BEATS) -> Floats:
+    """Por latido: el R-R con que se lo esperaba, en segundos. NaN el primero.
+
+    Es la mediana local del intervalo que lo trae (`local_median_rr`): la
+    referencia contra la que `prematurity` mide si llegó antes de tiempo. La
+    morfología la usa además para saber cuánto de la ventana del latido es suyo
+    a esa frecuencia (`morphology.scoring_window`). El primer latido no tiene
+    intervalo precedente, así que tampoco tiene un R-R esperado.
+    """
+    result = np.full(rr.n_beats, np.nan, dtype=np.float32)
+    if rr.rr_seconds.size == 0:
+        return result
+    result[1:] = local_median_rr(rr.rr_seconds, window_beats)
+    return result
+
+
 def prematurity(rr: RRSeries, window_beats: int = LOCAL_WINDOW_BEATS) -> Floats:
-    """Por latido: `RR_precedente / RR_medio_local`. Menor que 1 = prematuro.
+    """Por latido: `RR_precedente / RR_esperado` (`expected_rr`). Menor que 1 = prematuro.
 
     El primer latido no tiene intervalo precedente y queda en 1,0 (neutro): no
     hay evidencia de que sea prematuro, y asumir lo contrario lo marcaría por el
@@ -140,7 +156,7 @@ def prematurity(rr: RRSeries, window_beats: int = LOCAL_WINDOW_BEATS) -> Floats:
     result = np.ones(rr.n_beats, dtype=np.float32)
     if rr.rr_seconds.size == 0:
         return result
-    reference = local_median_rr(rr.rr_seconds, window_beats)
+    reference = expected_rr(rr, window_beats)[1:]
     safe = np.where(reference > 0, reference, np.float32(1.0))
     result[1:] = rr.rr_seconds / safe
     return result
