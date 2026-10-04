@@ -66,7 +66,47 @@ Dos consecuencias concretas que el script ya aplica:
 - **El bSQI no se aplica.** Necesita los R-peaks del firmware, que estos
   registros obviamente no traen. El motor lo detecta solo
   (`firmware_peaks_available` en falso) y no degrada el registro por una ausencia
-  que no dice nada sobre la señal.
+  que no dice nada sobre la señal. Solo `--pauses --firmware-peaks` se los da
+  (más abajo).
+
+## Morfología a la frecuencia del latido (Etapa 2)
+
+```bash
+cd back
+uv run --with wfdb python -m tools.physionet.evaluate   # 208, 119, 233, 221 (carga alta) y 100, 101, 103 (control, con *)
+```
+
+Cada latido se puntúa contra la plantilla **dominante** del banco con la misma
+entrada que `pipeline.analyze_batch`: el R-R esperado (`hrv.expected_rr`) va al
+banco —la frecuencia a la que se aprendió cada forma, `Template.mean_expected_rr`— y
+al score (`morphology.BeatRate`). El score recorta la ventana al latido
+(`scoring_window`: sin la T del anterior ni la P del siguiente, con el R-R
+esperado y no el del propio latido, y sin recortar a la izquierda un prematuro) y,
+si el latido llegó a tiempo y su frecuencia se aparta de la de la dominante, la
+compara también con la repolarización de la dominante comprimida o estirada
+(`_rate_aware_correlation`; el QRS no se adapta). Sin eso, un latido normal de
+una taquicardia sinusal de esfuerzo salía como `ANOMALY`. Columnas:
+
+| Columna | Qué cuenta |
+|---|---|
+| `no_normales`, `carga_%` | latidos detectados con anotación no normal (`VASFaJE/fQ`), y su fracción de los detectados |
+| `recall`, `precision` | de los no normales, los que puntúan sobre `anomaly_score_min`; y de los que puntúan, los que son no normales |
+| `recall_episodios` | de los no normales, los que además llegan al médico: quedan en un episodio de `episodes.group_beats` (un latido suelto pasa solo si su plantilla tiene `recurrent_min_beats` miembros) |
+| `pureza_clusters` | fracción de no normales entre los latidos de las plantillas que no son la dominante |
+| `clusters`, `hallazgos/h` | plantillas del banco y episodios `morphology_anomaly` por hora: en los controles de carga baja (`*`) lo que importa es este último |
+| `analizable_%` | fracción de la señal en ventanas `good` |
+
+Hoy, en los cuatro registros de carga alta: `recall` 0,92-1,00, `recall_episodios`
+0,90-1,00 y `precision` 0,95-1,00; los tres controles dan 0 `hallazgos/h`. Medido al
+introducir la adaptación a la frecuencia (docstring de `morphology.py`), sobre los 48
+registros de MIT-BIH cuesta 7 de 7.712 latidos anormales detectados y saca 67 falsos.
+
+**Lo que esta evaluación no ejercita:** un registro entero en un solo lote parte de
+un banco vacío, así que la dominante nunca cambia. El traspaso de la dominante
+(`morphology.hand_over_dominance`: la que la pierde juzga por su centroide los miembros
+que no pudieron puntuar, y la que la gana vuelve a cero y **retira su encabezado**
+`recurrent_morphology`, `PipelineResult.retracted_headers`) y el encabezado que no se
+deshace (`Template.reported`) los cubre `tests/test_ml_morphology_rate.py`.
 
 ## Pausas del motor (`--pauses`, `--wander`, `--firmware-peaks`)
 
@@ -102,15 +142,18 @@ quieto) y 0 falsas; `nstdb`, 0 pausas.
 
 Sin más, los flags van en cero: en producción el equipo **siempre** manda
 `FLAG_R_PEAK`, y con flags en cero la mitad del árbol de decisión de la regla
-—cotas confirmadas, veto del firmware, ventanas `marginal`, el censo de la
-referencia— no se ejercita. `--firmware-peaks DIR` lee `DIR/<registro>.npy`: las
-muestras (a 500 Hz) donde el detector del MCU confirma cada R, ~250 ms después del
-pico, que es donde el equipo pone la marca. Se exportan con el arnés del repo hermano
-(`EcgValidationHarness.h`: `EcgDetector` compilado en nativo, la señal de
-`load_record` en µV como entrada). Con ellos: 85 anotadas, 82 cubiertas, 84 pausas
-(14 por hueco quieto) y 0 falsas; `nstdb`, 0. Antes de exigirle forma y contraste a
-una cota confirmada chica (`quiet_gap.ATTENUATED_SHAPE`), daban 3 falsas: los colapsos
-de amplitud del 116 y el 208, que el firmware confirma al recuperarse.
+—cotas confirmadas, veto del firmware, ventanas `marginal`, la referencia que el
+firmware también confirma— no se ejercita. `--firmware-peaks DIR` lee
+`DIR/<registro>.npy`, también el de cada registro de `nstdb` (el que falte sale como
+`no se pudo leer`): las muestras (a 500 Hz) donde el detector del MCU confirma cada
+R, ~250 ms después del pico, que es donde el equipo pone la marca. Se exportan con el
+arnés del repo hermano (`EcgValidationHarness.h`: `EcgDetector` compilado en nativo,
+la señal de `load_record` en µV como entrada). Con ellos: 85 anotadas, 82 cubiertas,
+84 pausas (14 por hueco quieto) y 0 falsas; `nstdb`, 0. Antes de exigirle a una cota
+chica (confirmada o de un tren de escape) que sobresalga de lo quieto que cierra
+(`QUIET_MAX_UNDER_WEAK_BOUND`) y, si es de transición, que no tenga la forma de los
+latidos del paciente (`ATTENUATED_SHAPE`), daban 3 falsas: los colapsos de amplitud
+del 116 y el 208, que el firmware confirma al recuperarse.
 
 `--wander <mV>` (solo con `--pauses`) le suma a `mitdb` una deriva respiratoria de
 0,25 Hz y esa amplitud, en minutos alternados de 60 s, como un paciente que cambia de
@@ -118,6 +161,103 @@ postura (`nstdb` ya trae la suya). Es el adversario de la regla: sobre un QRS ch
 deriva deja ventanas `bad` por kSQI o pSQI y la regla tiene que seguir viendo los
 latidos. Lo que no puede aparecer son `falsas`: con 0,5 mV dan 0, pero las `cubiertas`
 bajan a 39 de 85.
+
+### Cómo decide la regla
+
+Resumen de `app/ml/quiet_gap.py` (su docstring tiene los umbrales medidos). Una pausa
+sale entre dos R consecutivos que cortan el hueco, medida contra los latidos **del
+propio paciente**: la amplitud absoluta no separa una asistolia del ruido, la
+relativa sí (el interior de una asistolia mide ≤ 0,22 del QRS en MIT-BIH; el ruido del
+chaleco, ≥ 0,40, y el de NSTDB, ≥ 0,91).
+
+- **Referencia.** Los latidos a ±60 s del hueco —nunca su centro, que en una
+  asistolia larga es el hueco—: R de NeuroKit en ventanas `good`, más los que el
+  firmware también confirmó en ventanas `marginal` o `bad` solo por basSQI. Su
+  población dominante (sin los de menos de `REFERENCE_FLOOR` = 0,4 de la mediana), al
+  menos `MIN_REFERENCE_BEATS` = 5 y, con firmware, 5 confirmados por él. **Censo:**
+  tienen que ser el ritmo del paciente, al menos `CENSUS_MIN` = 0,5 de los R legibles
+  de NeuroKit que miden ≥ `CENSUS_FLOOR` = 0,2 de ella; los demás se aceptan solo si
+  no son QRS, o sea si no tienen T (la mediana de 0,12-0,45 s después de su R mide
+  menos de `CENSUS_T_MIN` = 0,15 de su amplitud: son las P de un bloqueo AV completo).
+- **Cotas.** Un R acota si mide entre `BOUND_MIN` = 0,6 y `BOUND_MAX` = 3 de la
+  referencia; si el firmware lo confirmó y mide ≥ `GOOD_BEAT_MIN` = 0,15, sin tope; o
+  si abre o cierra un **tren de escape** (`_train`: 3 R parejos a 50 lpm o menos, ≥ 0,25
+  de la referencia y más grandes que 1,3× la P del paciente, que sobresalen de lo que
+  hay entre ellos; el detector del MCU no confirma un escape ancho y chico). Una cota
+  por debajo de 0,6 tiene que sobresalir de lo quieto que cierra
+  (`QUIET_MAX_UNDER_WEAK_BOUND`) y, si es **de transición** —del lado de afuera la
+  siguen (o la preceden) latidos en ritmo, el más cercano a menos de una pausa y a un
+  R-R de los demás, que en `RECOVERY_S` = 8 s llegan a 1,5× ella—, no tener la forma de
+  los latidos del paciente (correlación ≥ `ATTENUATED_SHAPE` = 0,9): es el colapso de
+  amplitud que se recupera, el del 116 y el 208. Un pop suelto o un nivel nuevo
+  sostenido no son de transición.
+- **Interior quieto.** `[R1 + 0,5 s, R2 − 0,3 s]` con el pico a pico local de 120 ms
+  por debajo de `QUIET_MAX` = 0,30 de la referencia, y de `QUIET_BAND_MAX` en la banda
+  del QRS (5-20 Hz). **Las P del paciente no cuentan** hasta `P_WAVE_MARGIN` = 1,3 × la P
+  que precede a sus latidos de referencia (mediana de 320 a 80 ms antes de cada R,
+  acortada hasta ~115 lpm; una P de más de `P_REFERENCE_MAX` = 0,4 del QRS no se cree: es
+  ruido alineado con los R). Hasta `MAX_EVENTS` = 2 transitorios cortos (≤ 1 s) que
+  sobresalen de lo quieto (`EVENT_CONTRAST`) no anulan el hueco: si tienen la pendiente
+  de un latido (`EVENT_BEAT_QRS`) y no son la T del R que abre (`own_t_wave`) lo parten
+  y se informa cada tramo quieto; si no, quedan adentro del tramo, fuera de lo que se
+  mide. Una **extrasístole temprana** (`early_beat`: un R del firmware, o un tramo con
+  pendiente de latido que no es la T ni la P del paciente, entre 0,25 y 0,5 s después
+  del R que abre) es el latido desde el que corre la pausa, y si no es una cota
+  creíble, es una chica.
+- **Contacto, firmware y señal que falta.** Red y deriva del interior ≤ 2,5× las de las
+  ventanas vecinas (separa una asistolia de latidos atenuados por pérdida de contacto);
+  ningún `FLAG_R_PEAK` adentro; y nada de señal que no existe: `LEAD_OFF`,
+  `ADC_SATURATED` o muestras no finitas, ventanas `lead_off`/`saturated`/`flatline`,
+  empalmes, `SQ_BAD` del firmware en una ventana `firmware_sqi` y un **riel**
+  (`rail_mask`: un segundo de señal cruda con p5-p95 por debajo de 0,6 ×
+  `ml_flatline_uv`, 12 µV con los 20 por omisión, que no hace falta que llene una
+  ventana de 10 s).
+- **Tramos abiertos.** Sin R de un lado se informa lo que se sabe, que hasta ahí o
+  desde ahí no hubo latidos: `openStart` (una asistolia de más de ~90 s no cabe en la
+  lectura de un bloque: la informa el que lee el R que la cierra, desde el principio de
+  su lectura), `openEnd` (quieto hasta el final de la lectura, desde `OPEN_END_MIN_S` =
+  10 s: la asistolia en curso) y los **bordes de una ráfaga de ruido** (desde 3 s: a los
+  8-10 s el paciente se desmaya o convulsiona, y el artefacto anulaba la pausa entera).
+  Un tramo abierto no tiene la cota que delata la recuperación de un colapso, por eso
+  pide más duración. La persistencia empalma lo que dos bloques informan de la misma
+  asistolia (`episodes.open_edges` resuelve qué lado quedó abierto).
+- **Pausas del motor** (`refine_pauses`). Un R-R válido con algo del tamaño de un
+  latido adentro (`ENGINE_VETO` = 0,6) y con la pendiente de un QRS (`ENGINE_VETO_QRS` =
+  0,4 en la banda del QRS) no es una pausa sino un latido que NeuroKit no vio: en
+  MIT-BIH eran 46 falsas, 41 en el 207. Un R-R que cruza un riel también se descarta, y
+  uno con una extrasístole temprana corre desde ella (o deja de ser pausa).
+
+### Lo que esta evaluación no ve, y lo que la regla no resuelve
+
+- **El riel no se ejercita acá.** `public_data_config` apaga `flatline`
+  (`flatline_mv = 0`) y con él `rail_mask`: el veto por riel lo cubre
+  `tests/test_ml_asystole.py`. Tampoco hay basSQI (`bassqi_min = 0`), así que las
+  ventanas `bad` por deriva solo salen por kSQI o pSQI.
+- **Un colapso de amplitud a ≤ 0,2× sin cambio de contacto**, sin que el firmware vea
+  esos latidos y con cotas creíbles, o una caída de señal del AFE, no se distinguen de
+  una asistolia con ningún rasgo medido (en MIT-BIH, la correlación con la plantilla da
+  0,76 para unos y 0,77 para otras). La regla elige avisar la asistolia real.
+- **QRS normales de ≤ 0,2× de las extrasístoles**, si el firmware confirma solo estas,
+  miden como una P y el censo los deja afuera: los intervalos V-V pueden salir como
+  pausas. Una extrasístole de ≤ 0,2× que nadie confirma, o una muy ancha (QRS de ~200 ms)
+  de 0,35×, deja con su pausa compensadora una pausa N-N con ella adentro.
+- **Las P.** Una P de más de 0,4× el QRS no se cree; por encima de ~115 lpm, o con la T
+  anterior encima de la P, no hay P que medir; en un bloqueo AV completo no están
+  alineadas con los R y tampoco se miden (un paro largo con muchas, 45 s con P a 90 lpm,
+  queda ruidoso). Con P grandes, un latido ancho de su tamaño que nadie confirmó se toma
+  por P.
+- **Casos de borde.** Un pop que el firmware confirma a un R-R justo (±`RHYTHM_TOLERANCE`
+  = 0,25) de un R vecino se toma por la transición de un colapso, y si además cae a menos
+  de una pausa de él, la asistolia no sale; una extrasístole con una T angosta propia
+  puede acotar desde su T (la pausa sale hasta 0,5 s más corta); con el firmware, un
+  artefacto puede traer una detección en su arranque que cae adentro y un `SQ_BAD` que
+  sigue unos segundos después de la ráfaga, y de un síncope convulsivo a veces sale solo
+  un lado, o nada.
+- **Pisos de ruido.** Una línea de base de σ ≤ 6 µV llena ventanas `flatline` y no se
+  infiere nada (los pisos reales miden ≥ 32,8 µV en MIT-BIH y ≥ 79,8 µV en el chaleco).
+  Sin flags del firmware, una P de ventana `good` de más de `GOOD_BEAT_MIN` sigue cortando
+  el hueco, y con un QRS tan chico que el firmware no confirma casi ninguno todas las
+  ventanas quedan `marginal` sin latidos de referencia.
 
 ## Benchmark de detectores de R (`--detectors`)
 
