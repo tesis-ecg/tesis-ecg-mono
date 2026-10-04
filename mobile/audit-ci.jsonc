@@ -1,0 +1,19 @@
+// Gate de `npm audit` del CI (`audit-ci`): falla con advisories high o critical,
+// salvo los de la lista. Cada entrada tiene que decir por qué no se puede
+// arreglar todavía; se borra cuando salga la versión parcheada.
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "high": true,
+  "allowlist": [
+    // braces <= 3.0.3: DoS con patrones anidados. 3.0.3 es la última versión
+    // publicada. Llega solo por @expo/cli -> @expo/metro-file-map ->
+    // micromatch; los patrones son los de la config de Metro, no entrada de
+    // usuario, y nada de eso entra al bundle de la app.
+    "GHSA-vfj7-8cjw-p6xm",
+    // node-forge <= 1.4.0: verificación de firmas RSA PKCS#1 v1.5. 1.4.0 es
+    // la última versión publicada. Llega solo por @expo/cli (y su
+    // @expo/code-signing-certificates), herramienta de desarrollo que no entra
+    // al bundle de la app.
+    "GHSA-86w9-cpqp-85rv"
+  ]
+}

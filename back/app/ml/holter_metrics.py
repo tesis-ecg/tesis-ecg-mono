@@ -42,13 +42,10 @@ from scipy.ndimage import median_filter
 
 from app.ml import hrv
 
-# Viven en un módulo sin numpy porque `studies_service` los importa al arrancar
-# la API; se reexportan para que este siga siendo el lugar donde buscarlos.
-from app.ml.holter_contracts import BREAK_KINDS as BREAK_KINDS
-from app.ml.holter_contracts import ECTOPY_UNAVAILABLE as ECTOPY_UNAVAILABLE
-from app.ml.holter_contracts import EXCLUSION_KINDS as EXCLUSION_KINDS
-from app.ml.holter_contracts import HARDWARE_QUALITY_REASONS as HARDWARE_QUALITY_REASONS
-from app.ml.holter_contracts import QUALITY_EXCLUSION_REASONS as QUALITY_EXCLUSION_REASONS
+# Los contratos (`EXCLUSION_KINDS`, `BREAK_KINDS`, `QUALITY_EXCLUSION_REASONS`,
+# `HARDWARE_QUALITY_REASONS`, `TimelineRun`) viven en un módulo sin numpy
+# porque `studies_service` los importa al arrancar la API.
+from app.ml.holter_contracts import ECTOPY_UNAVAILABLE
 from app.ml.holter_contracts import TimelineRun as TimelineRun
 
 #: Viaja en `analysis.algorithmVersion` y queda congelado en el snapshot del

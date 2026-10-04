@@ -50,7 +50,10 @@ jobs:
       # type-check ni el lint ven.
       - run: npx expo export --platform android --output-dir /tmp/expo-export
       - run: npx expo-doctor
-      - run: npm audit --audit-level=high
+      # Igual que `npm audit --audit-level=high`, pero con una lista de
+      # advisories sin versión parcheada; cada uno explica en `audit-ci.jsonc`
+      # por qué está y cuándo sale.
+      - run: npx --yes audit-ci@7.1.0 --config audit-ci.jsonc
 
   backend:
     runs-on: ubuntu-latest
