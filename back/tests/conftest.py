@@ -8,14 +8,31 @@ local: el compose expone Postgres en 5435, CI lo expone en 5432). Se usa una
 variable aparte a propósito — si el override fuera `DATABASE_URL` directo, un
 `DATABASE_URL` exportado en la terminal apuntando a la base de desarrollo haría
 que la suite la migre y la escriba.
+
+Con `pytest -n` (pytest-xdist) cada worker usa **su propia base**: la de
+`TEST_DATABASE_URL` con el id del worker de sufijo (`holter_test_gw0`, …). La
+crea y la migra `migrated_database` al arrancar el worker. Compartir una base
+no alcanza: `committed_world` commitea de verdad, y los tests de concurrencia
+de la ingesta se bloquearían con filas de otro worker.
 """
 
 import os
 
-TEST_ENV = {
-    "DATABASE_URL": os.environ.get(
+
+def _test_database_url() -> str:
+    url = os.environ.get(
         "TEST_DATABASE_URL", "postgresql+asyncpg://holter:holter@localhost:5432/holter_test"
-    ),
+    )
+    # xdist fija la variable en el worker antes de cargar este archivo.
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker is None:
+        return url
+    base, separator, query = url.partition("?")
+    return f"{base}_{worker}{separator}{query}"
+
+
+TEST_ENV = {
+    "DATABASE_URL": _test_database_url(),
     "S3_BUCKET_NAME": "holter-test",
     "S3_ENDPOINT_URL": "",
     "S3_PUBLIC_ENDPOINT_URL": "",

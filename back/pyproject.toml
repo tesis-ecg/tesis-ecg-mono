@@ -36,6 +36,7 @@ dev = [
     # Solo para `tools/physionet/evaluate.py`: baja y lee los registros de
     # MIT-BIH con los que se calibró el motor. No entra en la imagen.
     "wfdb>=4.1",
+    "pytest-xdist>=3.8.0",
 ]
 
 [tool.ruff]
