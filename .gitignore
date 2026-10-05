@@ -23,6 +23,12 @@ yarn-error.log*
 .idea/
 *.swp
 
+# Playwright (front/e2e)
+front/test-results/
+front/playwright-report/
+front/e2e/.auth/
+playwright/.cache/
+
 # Cache
 .cache/
 .turbo/

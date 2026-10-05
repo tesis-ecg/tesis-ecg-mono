@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Levanta el stack local en el orden correcto: db+minio en Docker, migraciones,
+# Levanta el stack local en el orden correcto: db+s3 en Docker, migraciones,
 # backend (uvicorn) y frontend (vite), ambos nativos en la Mac.
 #
 #   .claude/skills/run-holter/stack.sh up       # arranca todo y espera a que responda
@@ -30,9 +30,9 @@ die() { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 
 up_db() {
-  log "Docker: db + minio"
+  log "Docker: db + s3"
   docker info >/dev/null 2>&1 || die "Docker no está corriendo. Abrí Docker Desktop."
-  (cd "$ROOT" && docker compose up -d db minio >/dev/null)
+  (cd "$ROOT" && docker compose up -d db s3 >/dev/null)
 
   log "Esperando a que Postgres esté healthy…"
   for _ in $(seq 1 60); do
@@ -97,7 +97,7 @@ cmd_up() {
   log "Listo:"
   echo "   Dashboard  $(front_url)"
   echo "   API        http://localhost:8000   (docs en /docs)"
-  echo "   MinIO      http://localhost:9001   (minioadmin/minioadmin)"
+  echo "   S3 console http://localhost:9001/rustfs/console/   (minioadmin/minioadmin)"
   echo "   Postgres   localhost:5435          (holter/holter)"
   echo "   Logs       $BACK_LOG · $FRONT_LOG"
 }
@@ -122,7 +122,7 @@ cmd_down() {
   done
   log "back y front detenidos"
   if [ "${1:-}" = "--db" ]; then
-    (cd "$ROOT" && docker compose stop db minio >/dev/null)
+    (cd "$ROOT" && docker compose stop db s3 >/dev/null)
     log "containers detenidos"
   fi
 }

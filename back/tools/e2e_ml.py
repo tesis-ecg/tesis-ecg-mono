@@ -43,7 +43,7 @@ corrida contra una base compartida no pasa por un estudio clínico. El puente re
 manda tramas sin ese bit; `--no-simulated` las manda así. El análisis no cambia:
 el bit solo marca el estudio.
 
-No es un test de CI: necesita la base, MinIO y la API levantados (salvo con
+No es un test de CI: necesita la base, el S3 local y la API levantados (salvo con
 `--dry-run`). Vive en `tools/` y no en `app/` justamente por eso. Deja en la base
 el médico, el paciente, el equipo y el estudio que crea (`e2e-…@holter.test`).
 """

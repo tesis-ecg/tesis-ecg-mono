@@ -43,14 +43,14 @@ docker compose up --build
 |---|---|
 | API | http://localhost:8000 |
 | Swagger UI | http://localhost:8000/docs |
-| MinIO console (S3 local) | http://localhost:9001 — `minioadmin` / `minioadmin` |
+| Consola del S3 local (RustFS) | http://localhost:9001/rustfs/console/ — `minioadmin` / `minioadmin` |
 | PostgreSQL | `localhost:5432` — `holter` / `holter` |
 
-### Levantar solo la base de datos y MinIO (dev sin Docker para la API)
+### Levantar solo la base de datos y el S3 local (dev sin Docker para la API)
 
 ```bash
 cd back/
-docker compose up db minio
+docker compose up db s3
 uv run uvicorn app.main:app --reload
 ```
 

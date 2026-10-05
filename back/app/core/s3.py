@@ -9,7 +9,7 @@ Hay **dos** clientes y la diferencia importa:
   reescribir el host de una URL ya firmada la invalida: hay que firmarla
   directamente contra el endpoint público.
 
-En Docker Compose son distintos (`http://minio:9000` vs `http://localhost:9000`);
+En Docker Compose son distintos (`http://s3:9000` vs `http://localhost:9000`);
 en AWS real ambos quedan vacíos y boto3 resuelve el endpoint por región.
 
 Los clientes se cachean porque construirlos no es gratis y son thread-safe para
@@ -36,7 +36,7 @@ def _build_client(endpoint: str) -> Any:
     # del bucket. Un cliente boto3 sigue ese redirect solo, pero una URL
     # prefirmada no puede: SigV4 firma el header `Host`, así que el browser
     # recibe un 307 sin headers CORS y, si lo siguiera, la firma ya no valida.
-    # Con MinIO hace falta "path": `<bucket>.minio` no resuelve por DNS.
+    # Con el S3 local hace falta "path": `<bucket>.s3` no resuelve por DNS.
     addressing_style = "path" if endpoint else "virtual"
     client_kwargs: dict[str, object] = {
         "aws_access_key_id": settings.aws_access_key_id,

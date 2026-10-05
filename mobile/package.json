@@ -54,7 +54,8 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "doctor": "npx expo-doctor",
-    "test": "vitest run"
+    "test": "vitest run",
+    "audit:high": "node scripts/audit.mjs"
   },
   "private": true,
   "overrides": {

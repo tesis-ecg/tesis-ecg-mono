@@ -1,4 +1,4 @@
-"""Opt-in load reproduction against PostgreSQL and local MinIO.
+"""Opt-in load reproduction against PostgreSQL and the local S3 server (docker compose `s3`).
 
 RUN_LOCAL_LOAD=1 TEST_DATABASE_URL=postgresql+asyncpg://holter:holter@127.0.0.1:5435/holter_test \
   .venv/bin/python -m pytest -s tests/test_ingest_local_load.py
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_LOCAL_LOAD") != "1", reason="opt-
 
 
 @pytest.fixture
-def real_minio(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def real_s3(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     bucket = f"holter-load-{uuid.uuid4().hex[:16]}"
     monkeypatch.setattr(settings, "s3_endpoint_url", "http://127.0.0.1:9000")
     monkeypatch.setattr(settings, "s3_public_endpoint_url", "http://127.0.0.1:9000")
@@ -43,7 +43,7 @@ def real_minio(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 async def test_batch_sizes_and_sustained_uploads_against_local_services(
-    client, real_minio, db, make_patient, make_device, monkeypatch
+    client, real_s3, db, make_patient, make_device, monkeypatch
 ) -> None:
     patient = await make_patient()
     device, key = await make_device(patient=patient)

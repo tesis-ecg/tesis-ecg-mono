@@ -1,12 +1,12 @@
 ---
 name: run-holter
-description: Levanta la app localmente (dashboard + API) — container de Postgres/MinIO, migraciones de Alembic, backend FastAPI y frontend Vite. Usar cuando pidan correr, arrancar, levantar o parar el proyecto en local, ver el dashboard en el navegador, o cuando algo del stack local no arranca.
+description: Levanta la app localmente (dashboard + API) — container de Postgres y del S3 local, migraciones de Alembic, backend FastAPI y frontend Vite. Usar cuando pidan correr, arrancar, levantar o parar el proyecto en local, ver el dashboard en el navegador, o cuando algo del stack local no arranca.
 ---
 
 # Levantar el stack local
 
 Dos procesos nativos en la Mac (backend FastAPI + frontend Vite) contra
-Postgres y MinIO en Docker. **El orden importa**: uvicorn abre una conexión a
+Postgres y el S3 local (RustFS) en Docker. **El orden importa**: uvicorn abre una conexión a
 Postgres en su `lifespan` y muere al arrancar si la db no está lista, así que
 el container va siempre primero.
 
@@ -18,7 +18,7 @@ Todas las rutas de este documento son relativas a la raíz del repo.
 .claude/skills/run-holter/stack.sh up
 ```
 
-Hace, en orden: `docker compose up -d db minio` → espera a que Postgres esté
+Hace, en orden: `docker compose up -d db s3` → espera a que Postgres esté
 `healthy` → `uv sync` + `alembic upgrade head` → arranca Vite → lee el puerto
 real que consiguió Vite → arranca uvicorn con ese puerto en `FRONTEND_URL`
 (si no, CORS bloquea todo — ver Gotchas) → espera `/health`.
@@ -30,7 +30,7 @@ servidores quedan corriendo desacoplados, con los logs en
 Salida verificada:
 
 ```
-▸ Docker: db + minio
+▸ Docker: db + s3
 ▸ Esperando a que Postgres esté healthy…
 ▸ Migraciones (alembic upgrade head)
 ▸ Frontend: vite
@@ -39,7 +39,7 @@ Salida verificada:
 ▸ Listo:
    Dashboard  http://localhost:5173
    API        http://localhost:8000   (docs en /docs)
-   MinIO      http://localhost:9001   (minioadmin/minioadmin)
+   S3 console http://localhost:9001/rustfs/console/   (minioadmin/minioadmin)
    Postgres   localhost:5435          (holter/holter)
 ```
 
@@ -59,7 +59,7 @@ vivo o levantar solo una parte.
 **1. Base de datos y S3 local** — siempre primero:
 
 ```bash
-docker compose up -d db minio
+docker compose up -d db s3
 ```
 
 **2. Migraciones** (desde `back/`):
@@ -121,8 +121,8 @@ lo correcto, no un error del arranque.
   Para entrar por psql (no está en el PATH del host):
   `docker exec tesis-ecg-mono-db-1 psql -U holter -d holter -c '\dt'`
 
-- **`S3_ENDPOINT_URL=http://minio:9000` solo resuelve dentro de Docker.**
-  Corriendo el backend nativo, `minio` no es un hostname válido en la Mac. El
+- **`S3_ENDPOINT_URL=http://s3:9000` solo resuelve dentro de Docker.**
+  Corriendo el backend nativo, `s3` no es un hostname válido en la Mac. El
   arranque y todo lo que no toque S3 anda igual; si vas a probar subida o
   descarga de batches de ECG, cambiá esa línea de `back/.env` a
   `http://localhost:9000`.
@@ -130,12 +130,7 @@ lo correcto, no un error del arranque.
 - **`docker compose up` (sin argumentos) levanta un stack paralelo.** El compose
   de la raíz también define servicios `back` y `front` en contenedor, que pelean
   por los puertos 8000 y 5173 con los procesos nativos. Para el flujo de esta
-  skill levantá **solo** `db` y `minio`.
-
-- **Hay dos compose files.** `docker-compose.yml` en la raíz (db, minio, back,
-  front) y `back/docker-compose.yml` (db, minio, api). Definen los mismos
-  puertos, así que no se pueden usar los dos a la vez. Esta skill usa siempre
-  el de la raíz.
+  skill levantá **solo** `db` y `s3`.
 
 - **El login pasa por Auth0 real** (tenant `holter-ecg-dev`, flujo ROPG). No hay
   usuario de prueba semilla: para entrar al dashboard hace falta una cuenta que

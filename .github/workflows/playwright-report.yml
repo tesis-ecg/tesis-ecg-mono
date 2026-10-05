@@ -1,0 +1,75 @@
+name: Playwright report
+
+# Runs after every "Playwright" run on a PR, with the workflow and scripts from
+# main, never the PR's. That split is the point: the Playwright job runs the
+# PR's own code, so it gets a read-only token, and only this job can write. What
+# it reads from that run's artifacts is treated as untrusted data by both scripts.
+#
+#   - one sticky PR comment with the failed specs and their errors, flipped to
+#     "passed" by a later green run;
+#   - on a green run, the prScreenshot() images from specs the PR changed, in a
+#     "Screenshots" section of the PR description.
+#
+# A workflow_run workflow only fires once this file is on main.
+on:
+  workflow_run:
+    workflows: ["Playwright"]
+    types: [completed]
+
+# One report at a time per PR, in arrival order. Runs can still finish out of
+# order, so both scripts also skip a run whose commit is no longer the PR head.
+concurrency:
+  group: playwright-report-${{ github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push images to the pr-screenshots branch
+  pull-requests: write # the comment and the PR description
+  actions: read # download the Playwright run's artifacts
+
+jobs:
+  report:
+    name: Report on the PR
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.pull_requests[0] != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # Missing artifacts are expected (a run that stopped early, no screenshots).
+      - name: Download the run's results
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: artifacts
+
+      - name: Comment on the PR
+        run: node .github/scripts/playwright-pr-comment.mjs
+        env:
+          RESULTS_FILE: artifacts/playwright-results/results.json
+          JOB_STATUS: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          # Only to redact them from the comment.
+          E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_AUTH0_SUB: ${{ secrets.E2E_AUTH0_SUB }}
+
+      - name: Screenshots in the PR description
+        if: always() && github.event.workflow_run.conclusion == 'success'
+        run: node .github/scripts/playwright-pr-screenshots.mjs
+        env:
+          SCREENSHOT_DIR: artifacts/pr-screenshots
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}

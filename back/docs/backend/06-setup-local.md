@@ -10,13 +10,13 @@
 ```bash
 cd back/
 cp .env.example .env       # completar variables
-docker compose up --build  # FastAPI + PostgreSQL + MinIO
+docker compose up --build  # FastAPI + PostgreSQL + S3 (RustFS)
 ```
 
 Servicios disponibles:
 - API: http://localhost:8000
 - Swagger UI: http://localhost:8000/docs
-- MinIO console: http://localhost:9001 (usuario: minioadmin / pass: minioadmin)
+- Consola del S3 local: http://localhost:9001/rustfs/console/ (usuario: minioadmin / pass: minioadmin)
 
 ## Docker Compose — servicios
 
@@ -38,28 +38,24 @@ db:
     retries: 5
 ```
 
-### `minio` (S3 local)
+### `s3` (S3 local)
 ```yaml
-minio:
-  image: minio/minio:latest
-  command: server /data --console-address ":9001"
+s3:
+  image: rustfs/rustfs:1.0.1
   environment:
-    MINIO_ROOT_USER: minioadmin
-    MINIO_ROOT_PASSWORD: minioadmin
+    RUSTFS_ACCESS_KEY: minioadmin
+    RUSTFS_SECRET_KEY: minioadmin
+    RUSTFS_CORS_ALLOWED_ORIGINS: "*"   # el navegador descarga el ECG con una URL prefirmada
   ports:
-    - "9000:9000"
-    - "9001:9001"
+    - "127.0.0.1:9000:9000"
+    - "127.0.0.1:9001:9001"
   volumes:
-    - minio_data:/data
+    - s3_data:/data
 ```
 
-El bucket `ecg-batches` se crea automáticamente en el startup via script de init o con:
-```bash
-# Una sola vez, después de que MinIO esté corriendo:
-docker run --rm --network host minio/mc \
-  alias set local http://localhost:9000 minioadmin minioadmin && \
-  mc mb local/ecg-batches
-```
+Es RustFS, un servidor compatible con S3. Reemplazó a MinIO, que dejó de publicar imágenes.
+El bucket (`S3_BUCKET_NAME`) no hace falta crearlo a mano: el backend y `seed_demo` lo crean
+si no existe (`ensure_bucket()` en `app/core/s3.py`).
 
 ### `api` (FastAPI)
 ```yaml
@@ -74,8 +70,8 @@ api:
   depends_on:
     db:
       condition: service_healthy
-    minio:
-      condition: service_started
+    s3:
+      condition: service_healthy
 ```
 
 ## Variables de entorno (`.env.example`)
@@ -84,9 +80,9 @@ api:
 # Database
 DATABASE_URL=postgresql+asyncpg://holter:holter@db:5432/holter
 
-# S3 / MinIO
+# S3
 S3_BUCKET_NAME=ecg-batches
-S3_ENDPOINT_URL=http://minio:9000      # vacío en producción
+S3_ENDPOINT_URL=http://s3:9000         # vacío en producción
 AWS_ACCESS_KEY_ID=minioadmin
 AWS_SECRET_ACCESS_KEY=minioadmin
 AWS_REGION=us-east-1
@@ -127,7 +123,7 @@ Convención de nombres: `001_initial`, `002_add_alert_seen_at`, `003_...` — un
 `app/scripts/seed_demo.py` carga un dataset de demo completo: 8 pacientes con distintos
 sexos, edades y estados de estudio, 13 Holters (asignados, disponibles, en mantenimiento,
 retirado), 9 estudios (en curso, completados, agendado, cancelado) con su señal de ECG
-sintética subida a S3/MinIO, más los `ecg_batch`, `ecg_event` y `alert` correspondientes.
+sintética subida a S3, más los `ecg_batch`, `ecg_event` y `alert` correspondientes.
 
 ```bash
 # Desde la raíz del repo, con el stack levantado
@@ -169,8 +165,8 @@ antes de volver a escribirlos. Solo corre en development/test.
 
 > **Nota sobre el ECG en el navegador**: `GET /studies/{id}/ecg` devuelve una URL
 > prefirmada que descarga el navegador, no el backend. Por eso se firma contra
-> `S3_PUBLIC_ENDPOINT_URL` (`http://localhost:9000`, el puerto publicado de MinIO) y no
-> contra `S3_ENDPOINT_URL` (`http://minio:9000`, que solo resuelve dentro de la red de
+> `S3_PUBLIC_ENDPOINT_URL` (`http://localhost:9000`, el puerto publicado del S3 local) y no
+> contra `S3_ENDPOINT_URL` (`http://s3:9000`, que solo resuelve dentro de la red de
 > compose). La firma SigV4 incluye el header `Host`, así que la URL no se puede reescribir
 > después de firmada — hay que firmarla con el host correcto desde el principio. Si la
 > variable queda vacía, se cae a `S3_ENDPOINT_URL`.
@@ -214,7 +210,7 @@ uv run pytest tests/test_device_upload.py -v   # test específico
 uv run pytest --cov=app                # con coverage
 ```
 
-Los tests usan una base de datos de test separada y un contenedor MinIO efímero (ver `tests/conftest.py`).
+Los tests usan una base de datos de test separada y un S3 simulado con `moto` (ver `tests/conftest.py`).
 
 ## Comandos útiles de desarrollo
 

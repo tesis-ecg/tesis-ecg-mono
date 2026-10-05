@@ -50,7 +50,9 @@ jobs:
       # type-check ni el lint ven.
       - run: npx expo export --platform android --output-dir /tmp/expo-export
       - run: npx expo-doctor
-      - run: npm audit --audit-level=high
+      # `npm audit --audit-level=high` con las excepciones de `scripts/audit.mjs`: braces y
+      # node-forge no tienen versión parcheada y solo entran por el tooling de Expo/Metro.
+      - run: npm run audit:high
 
   backend:
     runs-on: ubuntu-latest

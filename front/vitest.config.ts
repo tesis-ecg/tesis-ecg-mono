@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   resolve: {
@@ -8,6 +8,9 @@ export default defineConfig({
     },
   },
   test: {
+    // Los `*.spec.ts` de e2e/ son de Playwright: Vitest los recogería por el patrón
+    // por defecto y fallarían al importar `@playwright/test`.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
     environment: 'node',
     coverage: {
       provider: 'v8',
