@@ -55,8 +55,8 @@ export default defineConfig({
       env: { BACKEND_ORIGIN: API_URL },
       reuseExistingServer: !process.env.CI,
     },
-    // Signed-in flows call the real API, which needs Postgres (and MinIO for the
-    // ECG signal) up: `docker compose up -d db minio` locally, service containers in CI.
+    // Signed-in flows call the real API, which needs Postgres and an S3 for the ECG
+    // signal up: `docker compose up -d db minio` locally, see playwright-ci.yml in CI.
     {
       command: `uv run uvicorn app.main:app --port ${API_PORT}`,
       cwd: '../back',

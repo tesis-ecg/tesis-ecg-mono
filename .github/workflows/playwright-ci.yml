@@ -1,7 +1,7 @@
 name: Playwright
 
 # The front/e2e suite against both real apps (Vite + FastAPI), a migrated and
-# seeded Postgres, MinIO for the ECG signal, and the real Auth0 login of a
+# seeded Postgres, an S3 server for the ECG signal, and the real Auth0 login of a
 # dedicated test user. It is how a PR that changes the UI proves the change
 # works: lint and build cannot.
 #
@@ -52,8 +52,13 @@ jobs:
           --health-retries 10
 
     env:
+      # Every `uv run` below (migrations, seeds, and the API that Playwright starts)
+      # would otherwise re-sync the default `dev` group on top of `uv sync --no-dev`,
+      # installing pytest and friends mid-job and eating into the API's start timeout.
+      UV_NO_DEV: "1"
+      UV_FROZEN: "1"
       # Backend. There is no .env on the runner: every required variable is set
-      # here. MinIO (started below) is the S3 the demo seed writes the ECG to.
+      # here. The S3 server (started below) is where the demo seed writes the ECG.
       DATABASE_URL: postgresql+asyncpg://holter:holter@localhost:5432/holter_e2e
       S3_BUCKET_NAME: ecg-batches
       S3_ENDPOINT_URL: http://localhost:9000
@@ -111,19 +116,20 @@ jobs:
         run: uv sync --frozen --no-dev
         working-directory: back
 
-      # The compose image, run by hand: a service container cannot pass `server /data`.
-      - name: Start MinIO
-        working-directory: .
+      # Not MinIO: it no longer publishes community images (the minio/minio repository
+      # on Docker Hub is gone and quay.io/minio/minio has no tags), so a pull is denied.
+      # moto is already a dev dependency (the backend tests mock S3 with it); this runs
+      # its S3 server, pinned to the version in back/uv.lock.
+      - name: Start an S3 server
+        working-directory: back
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
-          for _ in $(seq 1 30); do
-            curl -sf http://localhost:9000/minio/health/live && exit 0
+          nohup uvx --from 'moto[server]==5.2.2' moto_server -H 127.0.0.1 -p 9000 > "$RUNNER_TEMP/moto.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:9000/moto-api/ > /dev/null && exit 0
             sleep 1
           done
-          echo "::error::MinIO did not come up"
-          docker logs minio
+          echo "::error::The S3 server did not come up"
+          cat "$RUNNER_TEMP/moto.log"
           exit 1
 
       - name: Migrate and seed the database
