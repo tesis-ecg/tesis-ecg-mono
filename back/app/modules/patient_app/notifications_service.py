@@ -65,7 +65,10 @@ def anomaly_title(kind: str | None) -> str:
 
 
 def anomaly_message(
-    alert_id: uuid.UUID, occurred_at_iso: str, kind: str | None = None
+    alert_id: uuid.UUID,
+    occurred_at_iso: str,
+    kind: str | None = None,
+    severity: str | None = None,
 ) -> PushMessage:
     """Aviso de anomalía detectada.
 
@@ -74,6 +77,10 @@ def anomaly_message(
     con el mismo propósito: el formulario lo usa para encabezar con **qué** se
     detectó, que es lo que le permite al paciente reconstruir qué estaba
     haciendo. Un push viejo sin `kind` sigue abriendo el formulario igual.
+
+    La `severity` va en minúsculas, igual que en el DTO de `/mobile/alerts`: la
+    app pinta el encabezado del formulario con el mismo color que el aviso tiene
+    en Inicio. Sin ella, la app lo pinta por el tipo.
     """
     data = {
         "type": "report_request",
@@ -82,6 +89,8 @@ def anomaly_message(
     }
     if kind:
         data["kind"] = kind
+    if severity:
+        data["severity"] = severity.lower()
     return PushMessage(title=anomaly_title(kind), body=_ANOMALY_BODY, data=data)
 
 

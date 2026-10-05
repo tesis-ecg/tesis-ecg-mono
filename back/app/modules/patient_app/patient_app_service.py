@@ -518,6 +518,7 @@ def schedule_alert_push(
     alert_id: uuid.UUID,
     occurred_at: datetime | None = None,
     kind: str | None = None,
+    severity: str | None = None,
 ) -> None:
     """Helper para los llamadores que ya tienen un `BackgroundTasks` a mano.
 
@@ -530,6 +531,8 @@ def schedule_alert_push(
     `kind` es el tipo de hallazgo. Nombra el aviso en el título del push y
     encabeza el formulario que abre; sin él el aviso sigue funcionando, pero
     dice "hay un momento para revisar" en vez de cuál.
+
+    `severity` pinta el encabezado del formulario con el color del aviso.
     """
     from app.modules.patient_app.notifications_service import (
         anomaly_message,
@@ -539,5 +542,5 @@ def schedule_alert_push(
     background_tasks.add_task(
         notify_patient_task,
         patient_id,
-        anomaly_message(alert_id, (occurred_at or datetime.now(UTC)).isoformat(), kind),
+        anomaly_message(alert_id, (occurred_at or datetime.now(UTC)).isoformat(), kind, severity),
     )

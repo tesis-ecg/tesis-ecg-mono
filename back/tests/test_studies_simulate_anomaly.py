@@ -107,6 +107,7 @@ async def test_la_anomalia_queda_anclada_dentro_de_lo_grabado(
     assert notificado == patient.id
     assert mensaje.data["type"] == "report_request"
     assert mensaje.data["alertId"] == body["alertId"]
+    assert mensaje.data["severity"] == "high"
     # Se comparan instantes y no strings: el JSON de la respuesta serializa el
     # UTC como `Z` y `isoformat()` como `+00:00`.
     assert datetime.fromisoformat(mensaje.data["occurredAt"]) == datetime.fromisoformat(

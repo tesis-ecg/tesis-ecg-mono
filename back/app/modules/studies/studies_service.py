@@ -1088,7 +1088,9 @@ async def simulate_anomaly(
     # Después del commit, como en la ingesta: un push con un `alertId` que la
     # transacción termina descartando deja al paciente tocando una notificación
     # que abre un formulario roto.
-    patient_app_service.schedule_alert_push(background, patient.id, alert_id, occurred_at, kind)
+    patient_app_service.schedule_alert_push(
+        background, patient.id, alert_id, occurred_at, kind, severity
+    )
     await logger.ainfo(
         "anomaly_simulated",
         study_id=str(study.id),

@@ -639,6 +639,25 @@ def test_el_titulo_del_aviso_nombra_el_hallazgo() -> None:
     assert afib.body.endswith("Tocá para responder, es un minuto.")
 
 
+def test_el_push_lleva_la_severidad_para_pintar_el_formulario() -> None:
+    """La app pinta el encabezado del formulario con el color del aviso.
+
+    Va en minúsculas, como en el DTO de `/mobile/alerts`: la app compara contra
+    el mismo vocabulario venga por donde venga. Sin severidad la clave no viaja.
+    """
+    from app.modules.ingest.pushable import Pushable
+    from app.modules.patient_app.notifications_service import anomaly_message
+
+    critica = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00", "afib", "CRITICAL")
+    sin_severidad = anomaly_message(uuid.uuid4(), "2026-09-04T10:00:00+00:00", "afib")
+
+    assert critica.data["severity"] == "critical"
+    assert "severity" not in sin_severidad.data
+    # El `rank` del pipeline es la severidad: no hay forma de que se contradigan.
+    assert Pushable(rank=1, alert_id=uuid.uuid4(), kind="pause").severity == "HIGH"
+    assert Pushable(rank=2, alert_id=uuid.uuid4(), kind="afib").severity == "CRITICAL"
+
+
 def test_un_tipo_desconocido_no_deja_el_aviso_mudo() -> None:
     """Un `kind` nuevo del pipeline no puede romper la notificación."""
     from app.modules.patient_app.notifications_service import anomaly_message

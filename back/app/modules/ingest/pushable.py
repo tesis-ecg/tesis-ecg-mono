@@ -20,6 +20,8 @@ from app.db.models.ecg_event import ECGEventSeverity
 #: igual en Inicio cuando el paciente la abre.
 PUSH_RANK = {ECGEventSeverity.HIGH: 1, ECGEventSeverity.CRITICAL: 2}
 
+_SEVERITY_BY_RANK = {rank: severity for severity, rank in PUSH_RANK.items()}
+
 
 @dataclass(frozen=True)
 class Pushable:
@@ -34,6 +36,16 @@ class Pushable:
     rank: int
     alert_id: uuid.UUID
     kind: str
+
+    @property
+    def severity(self) -> ECGEventSeverity:
+        """La severidad del hallazgo, que el `rank` ya codifica.
+
+        Viaja en el push para que el formulario que abre se pinte del color del
+        aviso. Se deduce del rango en vez de guardarse aparte para que las dos
+        cosas no puedan contradecirse.
+        """
+        return _SEVERITY_BY_RANK[self.rank]
 
 
 def most_severe(current: Pushable | None, candidate: Pushable | None) -> Pushable | None:
