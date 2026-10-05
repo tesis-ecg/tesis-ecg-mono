@@ -1,12 +1,13 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.alert import Alert
 from app.db.models.device import Device
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
+from app.db.models.ecg_event import ECGEvent
 from app.db.models.patient import Patient
 from app.db.models.study import Study, StudyStatus
 from app.db.models.study_timeline_segment import StudyTimelineSegment
@@ -115,7 +116,16 @@ async def get_batch(db: AsyncSession, batch_id: uuid.UUID) -> ECGBatch | None:
 
 
 async def get_study_for_update(db: AsyncSession, study_id: uuid.UUID) -> Study | None:
-    result = await db.execute(select(Study).where(Study.id == study_id).with_for_update())
+    # `populate_existing`: la sesión de las tareas de fondo no expira al
+    # commitear, y una pasada que vuelve a tomar la fila después de soltarla
+    # (`processing.process_study_task`) tiene que ver lo que la ingesta escribió
+    # en el medio, no la copia que ya tenía en memoria.
+    result = await db.execute(
+        select(Study)
+        .where(Study.id == study_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     return result.scalar_one_or_none()
 
 
@@ -249,3 +259,126 @@ async def archived_batches_overlapping(
         .order_by(ECGBatch.first_seq, ECGBatch.last_seq)
     )
     return list(result.scalars().all())
+
+
+#: Eventos que marcan adquisición perdida **adentro** de una corrida: el tramo de
+#: la línea de tiempo no se corta, pero falta señal y el buffer empaquetado pega
+#: los dos lados. El motor no puede medir un R-R a través de ellos.
+#:
+#: Los dos primeros salen de la cabecera de las tramas (`derive_events`). Los
+#: otros dos son `seq` que faltan (`signal_loss_events`): casi siempre abren una
+#: corrida nueva, porque el `t0Ms` salta más que la tolerancia, pero unas pocas
+#: tramas perdidas (< `ingest_timeline_gap_tolerance_ms`) quedan adentro de la
+#: misma corrida y ahí son un empalme como cualquier otro.
+SPLICE_KINDS = ("frame_gap", "internal_gap", "backlog_overflow", "missing_frames_inferred")
+#: Los que marcan el borde entre dos lotes: en el inicio de una corrida no
+#: empalman nada, el corte ya lo es.
+BOUNDARY_SPLICE_KINDS = frozenset({"backlog_overflow", "missing_frames_inferred"})
+
+
+async def list_splices(
+    db: AsyncSession, study_id: uuid.UUID, from_sample: int, sample_rate: int
+) -> list[tuple[int, int, str]]:
+    """`(startSampleIndex, sampleCount, kind)` de los empalmes desde `from_sample`.
+
+    El filtro grueso va por `timestamp_in_recording`, que tiene índice; el exacto,
+    en muestras enteras, sobre el `metadata`. Ordenados por inicio.
+    """
+    result = await db.scalars(
+        select(ECGEvent).where(
+            ECGEvent.study_id == study_id,
+            ECGEvent.deleted_at.is_(None),
+            ECGEvent.event_metadata["kind"].astext.in_(SPLICE_KINDS),
+            ECGEvent.timestamp_in_recording >= from_sample / sample_rate - 1.0,
+        )
+    )
+    splices: list[tuple[int, int, str]] = []
+    for event in result.all():
+        metadata = event.event_metadata or {}
+        start = int(metadata.get("startSampleIndex", -1))
+        if start >= from_sample:
+            splices.append((start, int(metadata.get("sampleCount", 0)), str(metadata["kind"])))
+    return sorted(splices)
+
+
+async def get_latest_batch_id(db: AsyncSession, study_id: uuid.UUID) -> uuid.UUID | None:
+    """El último lote del estudio por orden de señal, prefiriendo los `DONE`."""
+    batch_id: uuid.UUID | None = await db.scalar(
+        select(ECGBatch.id)
+        .where(ECGBatch.study_id == study_id)
+        .order_by(
+            (ECGBatch.processing_status == ProcessingStatus.DONE).desc(),
+            ECGBatch.first_seq.desc().nulls_last(),
+            ECGBatch.created_at.desc(),
+        )
+        .limit(1)
+    )
+    return batch_id
+
+
+async def get_batch_id_by_first_seq(
+    db: AsyncSession, study_id: uuid.UUID, first_seq: int
+) -> uuid.UUID | None:
+    """El lote del estudio que abrió en `first_seq`, prefiriendo los `DONE`.
+
+    Es el que archivó el segmento marcado con ese `firstSeq`
+    (`processing._attribution_batch`). Usa `ix_ecg_batch_study_first_seq`.
+    """
+    batch_id: uuid.UUID | None = await db.scalar(
+        select(ECGBatch.id)
+        .where(ECGBatch.study_id == study_id, ECGBatch.first_seq == first_seq)
+        .order_by(
+            (ECGBatch.processing_status == ProcessingStatus.DONE).desc(),
+            ECGBatch.created_at.desc(),
+        )
+        .limit(1)
+    )
+    return batch_id
+
+
+async def list_studies_with_stale_tail(
+    db: AsyncSession, received_before: datetime
+) -> list[uuid.UUID]:
+    """Estudios en curso con algo sin analizar y sin lotes desde `received_before`.
+
+    "Algo sin analizar" es la cola de la corrida abierta que el motor deja
+    esperando a que el lote siguiente complete el bloque, **o** un lote que
+    llegó y nunca se procesó: su `BackgroundTask` se perdió en un reinicio, o
+    `process_batch` no consiguió la fila y lo dejó pendiente para la próxima
+    pasada (`process_batch_contended`). Ese lote no está en `samples_count`, así
+    que con el cursor ya al día el estudio no parecía tener nada pendiente, y
+    una pausa crítica que ya había llegado esperaba a que el equipo volviera a
+    subir. `processing.flush_stale_tails` drena los lotes antes de analizar.
+    Los `FAILED` no: se reintentan con el lote siguiente, el manifest o el
+    cierre, como antes; uno que falla siempre llenaría el log cada minuto.
+
+    Corre cada minuto sobre cada estudio en curso, y un estudio de quince días
+    son ~86.000 lotes: las dos subconsultas van por índice
+    (`ix_ecg_batch_study_received`, `ix_ecg_batch_study_unprocessed`). Sin el
+    primero, encontrar el lote reciente recorría la historia entera del
+    estudio en cada pasada.
+    """
+    recent = (
+        select(ECGBatch.id)
+        .where(ECGBatch.study_id == Study.id, ECGBatch.received_at >= received_before)
+        .correlate(Study)
+    )
+    unprocessed = (
+        select(ECGBatch.id)
+        .where(
+            ECGBatch.study_id == Study.id,
+            # Las dos condiciones y no `== PENDING`: así el planificador ve que
+            # implican el predicado del índice parcial (`<> 'DONE'`).
+            ECGBatch.processing_status != ProcessingStatus.DONE,
+            ECGBatch.processing_status != ProcessingStatus.FAILED,
+        )
+        .correlate(Study)
+    )
+    result = await db.scalars(
+        select(Study.id).where(
+            Study.status == StudyStatus.IN_PROGRESS,
+            (Study.ml_analyzed_samples < Study.samples_count) | exists(unprocessed),
+            ~exists(recent),
+        )
+    )
+    return list(result.all())

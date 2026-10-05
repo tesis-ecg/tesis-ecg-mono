@@ -1,4 +1,12 @@
-import { Activity, ArrowLeft, FileSearch, FileText, HeartPulse, NotebookPen } from 'lucide-react'
+import {
+  Activity,
+  ArrowLeft,
+  FileSearch,
+  FileText,
+  HeartPulse,
+  NotebookPen,
+  ScanHeart,
+} from 'lucide-react'
 import { useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
@@ -20,6 +28,7 @@ import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
 import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 import { PatientReportsTable } from '@/features/studies/components/PatientReportsTable'
+import { StudyAnalysisTab } from '@/features/studies/components/StudyAnalysisTab'
 import { StudyBreadcrumb } from '@/features/studies/components/StudyBreadcrumb'
 import { StudyDeviceTab } from '@/features/studies/components/StudyDeviceTab'
 import { StudyHeader } from '@/features/studies/components/StudyHeader'
@@ -60,7 +69,9 @@ export function StudyDetail() {
   // La calibración vive acá y no adentro del visor: la comparten el gráfico de
   // la solapa, el de pantalla completa y el informe imprimible.
   const scale = usePaperScale({ paperSpeed: 25, amplitude: 20 })
-  const [tab, setTab] = useState<'senal' | 'registros' | 'informe' | 'dispositivo'>('senal')
+  const [tab, setTab] = useState<'senal' | 'analisis' | 'registros' | 'informe' | 'dispositivo'>(
+    'senal',
+  )
 
   // 404 → estado dedicado.
   if (studyQ.isError && isApiError(studyQ.error) && studyQ.error.code === 'NOT_FOUND') {
@@ -181,6 +192,22 @@ export function StudyDetail() {
     // El viewer de la solapa recién se monta en el próximo frame.
     window.requestAnimationFrame(() => focusViewerOnAnnotation(viewerRef.current, annotation))
   }
+  /**
+   * Desde la solapa de análisis: un hallazgo del motor o la evidencia de una
+   * métrica (FC mínima, pausa más larga). Si la banda ya viajó en la señal se
+   * usa esa —el panel y la traza la resaltan—; si no (la evidencia de una
+   * métrica no es una banda, o el lote llegó entre un fetch y el otro), alcanza
+   * con la hora de pared que trae el análisis para centrar el visor ahí.
+   */
+  const handleLocateAnalysis = (target: ECGAnnotation) => {
+    const annotation = ecgQ.data?.annotations.find((item) => item.id === target.id)
+    setTab('senal')
+    setSelectedAnnotationId(annotation?.id ?? null)
+    // El viewer de la solapa recién se monta en el próximo frame.
+    window.requestAnimationFrame(() =>
+      focusViewerOnAnnotation(viewerRef.current, annotation ?? target),
+    )
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -197,6 +224,10 @@ export function StudyDetail() {
           <TabsTrigger value="senal">
             <Activity className="size-4" aria-hidden />
             Señal ECG
+          </TabsTrigger>
+          <TabsTrigger value="analisis">
+            <ScanHeart className="size-4" aria-hidden />
+            Análisis
           </TabsTrigger>
           <TabsTrigger value="registros">
             <NotebookPen className="size-4" aria-hidden />
@@ -343,6 +374,10 @@ export function StudyDetail() {
               </Card>
             </aside>
           </div>
+        </TabsContent>
+
+        <TabsContent value="analisis">
+          <StudyAnalysisTab study={study} onLocate={handleLocateAnalysis} />
         </TabsContent>
 
         <TabsContent value="registros">

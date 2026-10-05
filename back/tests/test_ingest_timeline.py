@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.db.models.ecg_event import ECGEvent
 from app.db.models.study_timeline_segment import StudyTimelineSegment, TimeSyncSource
 from app.modules.ingest import timeline
 from app.modules.ingest.processing import process_batch
@@ -314,6 +315,79 @@ async def test_batches_of_the_same_run_extend_one_segment(
     segments = await _segments(db, body["studyId"])
     assert len(segments) == 1, "una grabación sin cortes es UN tramo"
     assert segments[0].sample_count == 3000
+
+
+async def _frame_gaps(db, study_id) -> list[ECGEvent]:
+    events = (await db.scalars(select(ECGEvent).where(ECGEvent.study_id == study_id))).all()
+    return [event for event in events if event.event_metadata["kind"] == "frame_gap"]
+
+
+async def test_a_short_gap_between_two_batches_is_a_frame_gap(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El borde entre dos lotes se mira igual que el borde entre dos tramas.
+
+    Medio segundo no llega a la tolerancia que abre un tramo nuevo, así que la
+    línea de tiempo pega los dos lotes; sin `frame_gap` ese hueco no quedaba
+    registrado en ningún lado. Con lotes de ~15 s, uno de cada ~48 bordes entre
+    tramas es también un borde entre lotes.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    now = _now_ms()
+
+    first = await _ingest(
+        client,
+        db,
+        device,
+        api_key,
+        build_frames(1500, boot_id=1),
+        uptime_ms=HOUR_MS,
+        bridge_epoch_ms=now,
+    )
+    # Contiguo arrancaría en 1500 × 2 ms = 3000 ms; arranca 500 ms después.
+    await _ingest(
+        client,
+        db,
+        device,
+        api_key,
+        build_frames(1500, boot_id=1, first_seq=first["lastAcceptedSeq"] + 1, t0_ms=3_500),
+        uptime_ms=HOUR_MS + 5_000,
+        bridge_epoch_ms=now + 5_000,
+    )
+
+    assert len(await _segments(db, first["studyId"])) == 1
+    gaps = await _frame_gaps(db, first["studyId"])
+    assert len(gaps) == 1
+    assert gaps[0].event_metadata["startSampleIndex"] == 1500
+    # 502 ms entre el final de la última trama (2998 ms) y la siguiente.
+    assert gaps[0].event_metadata["sampleCount"] == pytest.approx(251, abs=1)
+
+
+async def test_contiguous_batches_leave_no_frame_gap(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El caso normal no puede sembrar huecos de redondeo en cada borde."""
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    now = _now_ms()
+    frames = build_frames(3000, boot_id=1)
+    half = len(frames) // 2
+
+    body = await _ingest(
+        client, db, device, api_key, frames[:half], uptime_ms=HOUR_MS, bridge_epoch_ms=now
+    )
+    await _ingest(
+        client,
+        db,
+        device,
+        api_key,
+        frames[half:],
+        uptime_ms=HOUR_MS + 5_000,
+        bridge_epoch_ms=now + 5_000,
+    )
+
+    assert await _frame_gaps(db, body["studyId"]) == []
 
 
 # --------------------------------------------------------------------------- #

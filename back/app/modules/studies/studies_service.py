@@ -4,9 +4,8 @@ import json
 import math
 import struct
 import uuid
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, Literal, cast
 
 import structlog
 from fastapi import BackgroundTasks, HTTPException
@@ -26,16 +25,18 @@ from app.db.models.device import Device
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient import Patient, PatientStudyStatus
 from app.db.models.patient_report import PatientReport
+from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.study import Study, StudyStatus
 from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User
-from app.ml.holter_metrics import (
+from app.ml.holter_contracts import (
     BREAK_KINDS,
     ECTOPY_UNAVAILABLE,
     EXCLUSION_KINDS,
+    HARDWARE_QUALITY_REASONS,
+    QUALITY_EXCLUSION_REASONS,
     TimelineRun,
-    compute_holter_metrics,
 )
 from app.modules._alert_kind import resolve_alert_kind
 from app.modules.auth import auth_repository as auth_repo
@@ -43,6 +44,17 @@ from app.modules.patient_app import patient_app_repository as patient_app_repo
 from app.modules.patient_app import patient_app_service
 from app.modules.patient_app.catalogs import activity_label, symptom_label
 from app.modules.studies import studies_repository as repo
+from app.modules.studies.annotations import (
+    EventSpan,
+    ReportPlacement,
+    WallClockResolver,
+    drawable_event_episodes,
+    event_offset_map,
+    finite_number,
+    report_placements,
+    wall_clock_resolver,
+)
+from app.modules.studies.annotations import recorded_ms as _recorded_ms
 from app.modules.studies.studies_schemas import (
     HolterMetricsOut,
     MetricEvidenceOut,
@@ -82,26 +94,6 @@ from app.modules.studies.studies_schemas import (
 logger = structlog.get_logger(__name__)
 
 MAX_LEGACY_ECG_BYTES = 5 * 1024 * 1024
-
-_SIGNAL_QUALITY_KINDS = {
-    "noise",
-    "lead_off",
-    "sqi_unanalyzable",
-    "adc_saturated",
-}
-_CLINICAL_EVENT_TYPES = {
-    ECGEventType.TACHYCARDIA,
-    ECGEventType.BRADYCARDIA,
-    ECGEventType.AFIB,
-    ECGEventType.PVC,
-    ECGEventType.PAUSE,
-}
-_ANNOTATION_SEVERITY: dict[ECGEventSeverity, Literal["low", "medium", "high", "critical"]] = {
-    ECGEventSeverity.LOW: "low",
-    ECGEventSeverity.MEDIUM: "medium",
-    ECGEventSeverity.HIGH: "high",
-    ECGEventSeverity.CRITICAL: "critical",
-}
 
 
 def _duration_ms(study: Study) -> int:
@@ -195,117 +187,6 @@ def _not_started() -> HTTPException:
     )
 
 
-def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
-def _event_offsets_ms(event: ECGEvent, study: Study) -> tuple[int, int] | None:
-    """Normaliza coordenadas nuevas y legacy al eje comprimido de muestras."""
-    metadata: dict[str, Any] = event.event_metadata or {}
-    start_sample = _finite_number(metadata.get("startSampleIndex"))
-    sample_count = _finite_number(metadata.get("sampleCount"))
-    duration_seconds = _finite_number(event.duration_seconds)
-
-    if start_sample is not None:
-        start_ms = start_sample * 1000 / study.sample_rate
-        if sample_count is not None:
-            end_ms = (start_sample + max(sample_count, 0)) * 1000 / study.sample_rate
-        else:
-            end_ms = start_ms + max(duration_seconds or 0, 0) * 1000
-    else:
-        offset_seconds = _finite_number(metadata.get("offsetInStudySeconds"))
-        if offset_seconds is None:
-            offset_seconds = _finite_number(event.timestamp_in_recording)
-        if offset_seconds is None:
-            return None
-        start_ms = offset_seconds * 1000
-        end_ms = start_ms + max(duration_seconds or 0, 0) * 1000
-
-    recording_duration_ms = study.samples_count * 1000 / study.sample_rate
-    clipped_start = min(max(start_ms, 0), recording_duration_ms)
-    clipped_end = min(max(end_ms, clipped_start), recording_duration_ms)
-    return round(clipped_start), round(clipped_end)
-
-
-def _annotation_kind(event: ECGEvent) -> str:
-    kind = (event.event_metadata or {}).get("kind")
-    if isinstance(kind, str) and kind.strip():
-        return kind.strip().lower()
-    return event.event_type.value.lower()
-
-
-def _annotation_category(
-    event: ECGEvent, kind: str
-) -> Literal["signal_quality", "clinical", "patient_marker", "technical"]:
-    if kind == "symptom_marker":
-        return "patient_marker"
-    if kind in _SIGNAL_QUALITY_KINDS or event.event_type is ECGEventType.NOISE:
-        return "signal_quality"
-    if event.event_type in _CLINICAL_EVENT_TYPES:
-        return "clinical"
-    return "technical"
-
-
-def _recorded_ms(study: Study) -> float:
-    return study.samples_count * 1000 / study.sample_rate
-
-
-class _EventSpan(NamedTuple):
-    """Dónde se dibuja un hallazgo y qué anotación lo representa."""
-
-    start_ms: int
-    end_ms: int
-    #: Id de la anotación que lo dibuja. Es el del propio evento, salvo cuando
-    #: quedó absorbido en un episodio continuo (`_merge_continuous_spans`).
-    annotation_id: uuid.UUID
-
-
-class _ReportPlacement(NamedTuple):
-    """Coordenada del registro sobre la traza y el hallazgo del que cuelga."""
-
-    #: `None` mientras no haya señal debajo: el registro existe pero no se pinta.
-    offset_ms: int | None
-    #: El `ecg_event` que este registro responde, si quedó dibujado.
-    linked_event_id: uuid.UUID | None
-
-
-def _report_offset_ms(
-    report: PatientReport, study: Study, segments: list[StudyTimelineSegment]
-) -> int | None:
-    """Dónde cae el registro dentro de la señal, o `None` si todavía no hay.
-
-    **No se recorta contra el final de la grabación**, a diferencia de
-    `_event_offsets_ms`. Ese clipping es correcto para un evento derivado de un
-    lote ya decodificado: sus coordenadas vienen en muestras que existen. Acá
-    no: el paciente pudo marcar el síntoma a las 14:30 y el chaleco subir esa
-    hora recién a las 15:00. Recortarlo pegaría todos los registros recientes
-    contra el borde derecho de la traza — una marca en un lugar donde no pasó
-    nada, que es peor que no mostrar nada.
-
-    Devolver `None` hace que el registro espere. Cuando llegue el lote,
-    `samples_count` crece y la misma función lo empieza a ubicar sola: no hay
-    job ni backfill, es una función del estado actual.
-    """
-    if segments:
-        occurred_ms = int(report.occurred_at.timestamp() * 1000)
-        for segment in segments:
-            if segment.anchor_matches_boot is not True:
-                continue
-            if segment.start_epoch_ms <= occurred_ms <= segment.end_epoch_ms:
-                span = max(segment.end_epoch_ms - segment.start_epoch_ms, 1)
-                within = (occurred_ms - segment.start_epoch_ms) * segment.sample_count / span
-                sample = segment.start_sample_index + within
-                return round(sample * 1000 / study.sample_rate)
-        return None
-    if not study.started_at_verified:
-        return None
-    offset_ms = (report.occurred_at - study.started_at).total_seconds() * 1000
-    return round(offset_ms) if 0 <= offset_ms <= _recorded_ms(study) else None
-
-
 def _report_severity(report: PatientReport) -> Literal["low", "medium", "high", "critical"]:
     """ "No sentí nada" es contexto; un síntoma es un hallazgo."""
     symptoms = [item for item in (report.symptoms or []) if item != "sin_sintomas"]
@@ -337,63 +218,10 @@ def _report_alert_kind(report: PatientReport) -> str | None:
     )
 
 
-def _answered_event_id(report: PatientReport) -> uuid.UUID | None:
-    """El `ecg_event` que originó el aviso que este registro contesta."""
-    alert = report.alert
-    if alert is None:
-        return None
-    return alert.event_id
-
-
-def _report_placements(
-    study: Study,
-    reports: list[PatientReport],
-    event_offsets: dict[uuid.UUID, _EventSpan],
-    segments: list[StudyTimelineSegment],
-) -> dict[uuid.UUID, _ReportPlacement]:
-    """Dónde va cada registro sobre la traza, y de qué hallazgo cuelga.
-
-    Un registro espontáneo se ubica por su hora de pared (`_report_offset_ms`).
-    Uno que **responde un aviso** se ancla en el medio de la banda del hallazgo
-    que contesta, y no en su propia hora:
-
-    - Es lo que el médico necesita ver. Suelta en la traza, una respuesta es
-      una marca más entre las 24 h del estudio y no hay forma de saber a qué
-      aviso pertenece; sobre la banda, la pertenencia se lee sola.
-    - Es lo que hace que exista. El paciente contesta cuando ve la
-      notificación, que puede ser media hora después del hallazgo — y esa media
-      hora todavía no está grabada, así que por hora de pared el registro
-      quedaría "sin señal" y no se pintaría nunca.
-
-    La hora real del registro no se pierde: sigue viajando en `occurredAt` y es
-    lo que muestra la solapa de registros.
-
-    `event_offsets` son los hallazgos que **sí** quedaron dibujados. El vínculo
-    se resuelve contra ese diccionario y no contra `alert.event_id` a secas:
-    anclar contra un hallazgo que el visor no recibió dejaría la respuesta
-    colgada de nada.
-    """
-    placements: dict[uuid.UUID, _ReportPlacement] = {}
-    for report in reports:
-        event_id = _answered_event_id(report)
-        span = event_offsets.get(event_id) if event_id is not None else None
-        if span is not None:
-            # Se vincula con la anotación que lo dibuja: si el hallazgo quedó
-            # dentro de un episodio, su id propio no viaja en el manifest.
-            placements[report.id] = _ReportPlacement(
-                (span.start_ms + span.end_ms) // 2, span.annotation_id
-            )
-        else:
-            placements[report.id] = _ReportPlacement(
-                _report_offset_ms(report, study, segments), None
-            )
-    return placements
-
-
 def _report_annotations(
     reports: list[PatientReport],
-    placements: dict[uuid.UUID, _ReportPlacement],
-    to_epoch_ms: Callable[[int], int],
+    placements: dict[uuid.UUID, ReportPlacement],
+    to_epoch_ms: WallClockResolver,
 ) -> list[StudyEcgAnnotationOut]:
     annotations: list[StudyEcgAnnotationOut] = []
     for report in reports:
@@ -420,186 +248,47 @@ def _report_annotations(
     return annotations
 
 
-#: Estados que el chaleco informa muestra a muestra. La ingesta los deriva por
-#: lote, así que un electrodo suelto durante dos minutos llega como una docena
-#: de eventos pegados: uno por cada lote de ~9 s. Para el médico es un único
-#: episodio, y así se dibuja.
-_CONTINUOUS_KINDS = frozenset({"lead_off", "sqi_unanalyzable", "adc_saturated"})
-#: Hasta cuánto pueden separarse dos tramos del mismo estado para seguir siendo
-#: el mismo episodio. Cubre el corte entre lotes (cero) y el rebote corto que
-#: `derive_events` descarta por debajo de medio segundo.
-_CONTINUOUS_MERGE_GAP_MS = 1000
-#: Un tramo inanalizable cubierto por un electrodo desconectado no agrega nada:
-#: la causa ya está marcada, y repetirla duplica cada aviso en el panel.
-_REDUNDANT_UNDER = {"sqi_unanalyzable": "lead_off"}
-
-
-def _merge_continuous_spans(
-    study: Study,
-    events: list[ECGEvent],
-    spans: dict[uuid.UUID, _EventSpan],
-    segments: list[StudyTimelineSegment],
-) -> dict[uuid.UUID, _EventSpan]:
-    """Funde los tramos contiguos de un mismo estado en un único episodio.
-
-    Dos tramos solo se funden si también son contiguos en hora de pared: el
-    buffer empaquetado no tiene huecos, así que un corte de grabación entre dos
-    lotes los deja pegados por offset aunque entre uno y otro haya pasado una
-    hora.
-    """
-    to_epoch_ms = _wall_clock_resolver(study, segments)
-    by_kind: dict[str, list[uuid.UUID]] = {}
-    for event in events:
-        kind = _annotation_kind(event)
-        if kind in _CONTINUOUS_KINDS and event.id in spans:
-            by_kind.setdefault(kind, []).append(event.id)
-
-    merged = dict(spans)
-    episodes: dict[str, list[_EventSpan]] = {}
-    for kind, ids in by_kind.items():
-        ids.sort(key=lambda event_id: (spans[event_id].start_ms, spans[event_id].end_ms))
-        current: _EventSpan | None = None
-        members: list[uuid.UUID] = []
-
-        def close() -> None:
-            if current is None:
-                return
-            episodes.setdefault(kind, []).append(current)
-            for member in members:
-                merged[member] = current
-
-        for event_id in ids:
-            span = spans[event_id]
-            if current is not None:
-                offset_gap = span.start_ms - current.end_ms
-                last_ms = max(current.end_ms - 1, current.start_ms)
-                wall_gap = to_epoch_ms(span.start_ms) - to_epoch_ms(last_ms) - 1
-                if offset_gap <= _CONTINUOUS_MERGE_GAP_MS and wall_gap <= _CONTINUOUS_MERGE_GAP_MS:
-                    current = current._replace(end_ms=max(current.end_ms, span.end_ms))
-                    members.append(event_id)
-                    continue
-            close()
-            current = span._replace(annotation_id=event_id)
-            members = [event_id]
-        close()
-
-    for kind, cause in _REDUNDANT_UNDER.items():
-        for episode in episodes.get(kind, []):
-            covering = next(
-                (
-                    other
-                    for other in episodes.get(cause, [])
-                    if other.start_ms <= episode.start_ms and episode.end_ms <= other.end_ms
-                ),
-                None,
-            )
-            if covering is None:
-                continue
-            for event_id, span in merged.items():
-                if span.annotation_id == episode.annotation_id:
-                    merged[event_id] = covering
-    return merged
-
-
-def _event_offset_map(
-    study: Study, events: list[ECGEvent], segments: list[StudyTimelineSegment]
-) -> dict[uuid.UUID, _EventSpan]:
-    """Dónde se dibuja cada hallazgo **dibujable**, indexado por id de evento.
-
-    Vive aparte de `_event_annotations` porque hay dos consumidores con
-    necesidades distintas: el manifest quiere las anotaciones armadas, y la
-    solapa de registros del paciente solo quiere saber dónde cayó cada hallazgo
-    para anclarle su respuesta. Que los dos salgan de acá es lo que garantiza que
-    la solapa y el gráfico nunca discrepen sobre dónde está una marca.
-    """
-    spans: dict[uuid.UUID, _EventSpan] = {}
-    for event in events:
-        resolved = _event_offsets_ms(event, study)
-        if resolved is not None:
-            spans[event.id] = _EventSpan(resolved[0], resolved[1], event.id)
-    return _merge_continuous_spans(study, events, spans, segments)
-
-
 def _event_annotations(
-    study: Study,
-    events: list[ECGEvent],
-    to_epoch_ms: Callable[[int], int],
-    segments: list[StudyTimelineSegment],
-) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, _EventSpan]]:
-    """Los hallazgos dibujables, con dónde cae cada evento indexado por su id."""
-    annotations: list[StudyEcgAnnotationOut] = []
-    spans_by_event = _event_offset_map(study, events, segments)
-    for event in events:
-        span = spans_by_event.get(event.id)
-        # Un evento absorbido en un episodio lo dibuja la anotación del episodio.
-        if span is None or span.annotation_id != event.id:
-            continue
-        kind = _annotation_kind(event)
-        annotations.append(
-            StudyEcgAnnotationOut(
-                id=event.id,
-                kind=kind,
-                category=_annotation_category(event, kind),
-                severity=_ANNOTATION_SEVERITY[event.severity],
-                startOffsetMs=span.start_ms,
-                endOffsetMs=span.end_ms,
-                startEpochMs=to_epoch_ms(span.start_ms),
-                endEpochMs=to_epoch_ms(span.end_ms),
-                confidenceScore=event.confidence_score,
-            )
-        )
-    return annotations, spans_by_event
+    study: Study, events: list[ECGEvent], to_epoch_ms: WallClockResolver
+) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, EventSpan]]:
+    """Los hallazgos dibujables, con dónde cae cada evento indexado por su id.
 
-
-def _wall_clock_resolver(
-    study: Study, segments: list[StudyTimelineSegment]
-) -> Callable[[int], int]:
-    """Devuelve `offsetMs (buffer empaquetado) -> epoch ms (hora real)`.
-
-    Los offsets de las anotaciones están sobre el buffer de muestras, que no deja
-    huecos. La hora de pared sí los tiene. La traducción es por tramo: se busca
-    el que contiene esa muestra y se cuenta desde su hora de inicio.
-
-    Sin tramos —estudio seedeado o legacy, o uno ingerido antes del backfill— se
-    cae al comportamiento anterior, que para una grabación sin cortes da lo
-    mismo.
+    Qué es dibujable, dónde cae y qué tramos continuos forman un solo episodio
+    lo decide `annotations.drawable_event_episodes` —el mismo cálculo que
+    `event_offset_map` hace para la solapa de registros—; acá solo se serializa
+    al contrato del manifest.
     """
-    started_ms = int(study.started_at.timestamp() * 1000)
-    if not segments:
-        return lambda offset_ms: started_ms + offset_ms
-
-    rate = study.sample_rate or 500
-
-    def resolve(offset_ms: int) -> int:
-        sample = offset_ms * rate / 1000
-        for segment in segments:
-            end = segment.start_sample_index + segment.sample_count
-            if sample < end or segment is segments[-1]:
-                within = max(sample - segment.start_sample_index, 0)
-                return round(
-                    segment.start_epoch_ms
-                    + within
-                    * (segment.end_epoch_ms - segment.start_epoch_ms)
-                    / max(segment.sample_count, 1)
-                )
-        return started_ms + offset_ms
-
-    return resolve
+    views, spans_by_event = drawable_event_episodes(study, events, to_epoch_ms)
+    annotations = [
+        StudyEcgAnnotationOut(
+            id=view.id,
+            kind=view.kind,
+            category=view.category,
+            severity=view.severity,
+            startOffsetMs=view.start_ms,
+            endOffsetMs=view.end_ms,
+            startEpochMs=view.start_epoch_ms,
+            endEpochMs=view.end_epoch_ms,
+            confidenceScore=view.event.confidence_score,
+        )
+        for view in views
+    ]
+    return annotations, spans_by_event
 
 
 def _study_annotations(
     study: Study,
     events: list[ECGEvent],
     reports: list[PatientReport],
-    to_epoch_ms: Callable[[int], int],
+    to_epoch_ms: WallClockResolver,
     segments: list[StudyTimelineSegment],
 ) -> list[StudyEcgAnnotationOut]:
     # Los hallazgos primero: los registros necesitan saber cuáles llegaron a la
     # señal para poder anclarse en el que contestaron.
-    annotations, event_offsets = _event_annotations(study, events, to_epoch_ms, segments)
+    annotations, event_offsets = _event_annotations(study, events, to_epoch_ms)
     annotations.extend(
         _report_annotations(
-            reports, _report_placements(study, reports, event_offsets, segments), to_epoch_ms
+            reports, report_placements(study, reports, event_offsets, segments), to_epoch_ms
         )
     )
     annotations.sort(key=lambda item: (item.startOffsetMs, item.endOffsetMs, str(item.id)))
@@ -714,15 +403,29 @@ async def get_study_ecg_manifest(
     if background is not None:
         from app.modules.ingest.processing import process_study_task
 
+        closed = study.status is not StudyStatus.IN_PROGRESS
         if (
             pending
             or (
                 study.filter_view_enabled
-                and study.status is not StudyStatus.IN_PROGRESS
+                and closed
                 and study.filtered_samples_count < study.samples_count
             )
+            # La cola que el motor analiza recién al cierre: si la finalización
+            # falló, éste es el camino de recuperación, igual que para la vista
+            # filtrada. Solo con segmentos crudos: un estudio seedeado tiene
+            # `samples_count` sin nada que el motor pueda leer. Y la cuenta se
+            # cierra sola —la pasada del cierre lleva el cursor hasta
+            # `samples_count` aunque haya señal sin corrida que no se pueda
+            # analizar—, así que no se vuelve a agendar en cada vista.
             or (
-                study.status is not StudyStatus.IN_PROGRESS
+                settings.ml_enabled
+                and closed
+                and bool(study.ecg_segments)
+                and study.ml_analyzed_samples < study.samples_count
+            )
+            or (
+                closed
                 and bool(study.ecg_segments)
                 and study.beats_analyzed_samples < study.samples_count
             )
@@ -788,7 +491,7 @@ async def get_study_ecg_manifest(
         else None
     )
     timeline_segments = await repo.list_timeline_segments(db, study.id)
-    to_epoch_ms = _wall_clock_resolver(study, timeline_segments)
+    to_epoch_ms = wall_clock_resolver(study, timeline_segments)
     timeline = [
         StudyEcgTimelineSegmentOut(
             ordinal=segment.ordinal,
@@ -1233,6 +936,9 @@ async def _transition(
         raise _not_started()
 
     _close(study, target)
+    # La fusión de morfologías del motor no corre acá sino en la finalización
+    # (`processing.process_study_task`): el cierre puede dejar lotes en cola y la
+    # fusión tiene que ver el banco completo.
     await _sync_patient_status(db, patient, target)
     await auth_repo.log_audit_event(
         db,
@@ -1302,7 +1008,7 @@ async def simulate_anomaly(
     El hallazgo se ancla **hacia atrás desde el final de lo grabado** y no en el
     instante del pedido. Es lo que distingue esto de crear una alerta suelta:
     con el `occurredAt` dentro de la grabación, la respuesta del paciente cae
-    dentro de la traza (`_report_offset_ms` la ubica en vez de omitirla) y el
+    dentro de la traza (`report_offset_ms` la ubica en vez de omitirla) y el
     médico la ve como marca sobre el ECG, que es el flujo real que se quiere
     probar.
 
@@ -1336,12 +1042,16 @@ async def simulate_anomaly(
 
     event = ECGEvent(
         batch_id=batch.id,
+        # `ml_persistence.recount_events` cuenta por esta columna: sin ella el
+        # hallazgo se ve en el visor (que llega por el lote) pero no entra en
+        # `events_count`.
+        study_id=study.id,
         event_type=ECGEventType[kind.upper()],
         severity=severity,
         timestamp_in_recording=start_sample / sample_rate,
         duration_seconds=length_samples / sample_rate,
         # Las mismas claves que escribe `ingest/processing._persist_events`: son
-        # las que `_event_offsets_ms` sabe leer para pintar la banda.
+        # las que `annotations.event_offsets_ms` sabe leer para pintar la banda.
         event_metadata={
             "kind": kind,
             "studyId": str(study.id),
@@ -1364,6 +1074,11 @@ async def simulate_anomaly(
     )
     db.add(alert)
     await db.flush()
+    # Import perezoso: `ml_persistence` arrastra numpy, y este módulo lo importa
+    # cada arranque en frío de la API (ver `app/ml/frame_header.py`).
+    from app.modules.ingest import ml_persistence
+
+    await ml_persistence.recount_events(db, study)
 
     alert_id = alert.id
     event_id = event.id
@@ -1392,9 +1107,14 @@ async def simulate_anomaly(
 
 
 def _schedule_study_finalization(background: BackgroundTasks | None, study: Study) -> None:
-    if background is None or not (
-        study.filter_view_enabled or study.ecg_segments or study.ecg_pyramid_levels
-    ):
+    """Agenda `process_study_task`: drena la cola, cierra las colas y funde morfologías.
+
+    También para un estudio que todavía no tiene señal procesada: se puede
+    cerrar con su primer lote en cola, y sin esta pasada ese lote se procesaría
+    después sin que nadie fundiera las morfologías del estudio. Sin nada que
+    hacer, la tarea toma la fila, no escribe nada y commitea.
+    """
+    if background is None:
         return
     from app.modules.ingest.processing import process_study_task
 
@@ -1499,8 +1219,8 @@ async def list_study_patient_reports(
     # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún
     # lado. La ubicación de un registro se decide en un solo lugar.
     segments = await repo.list_timeline_segments(db, study.id)
-    event_offsets = _event_offset_map(study, await repo.list_ecg_events(db, study.id), segments)
-    placements = _report_placements(study, reports, event_offsets, segments)
+    event_offsets = event_offset_map(study, await repo.list_ecg_events(db, study.id), segments)
+    placements = report_placements(study, reports, event_offsets, segments)
 
     items: list[StudyPatientReportOut] = []
     pending = 0
@@ -1741,20 +1461,85 @@ def _metric_runs(study: Study, timeline: list[StudyTimelineSegment]) -> list[Tim
     ]
 
 
-def _metric_quality_marks(
-    events: list[ECGEvent],
-) -> tuple[list[tuple[int, int]], list[int]]:
-    """Tramos excluidos y cortes puntuales, desde los eventos de calidad."""
+def _metric_noise(
+    study: Study,
+    runs: list[TimelineRun],
+    quality: list[SignalQualityInterval],
+) -> list[tuple[int, int]] | None:
+    """Las ventanas que el motor marcó como ruido, o `None` si no evaluó la señal.
+
+    Solo excluyen los `bad` por ruido (`QUALITY_EXCLUSION_REASONS`), con su
+    tramo exacto: el motor los escribe troceados por bloque y
+    `compute_holter_metrics` funde los contiguos. Los rieles (`flatline`) no son
+    ruido: van con el hardware (`_metric_rails`), bajo esta misma condición.
+
+    Pero solo si el motor evaluó **toda** la señal que tenía que evaluar —cada
+    corrida desde su inicio, hasta donde llegó su cursor, o hasta el de los
+    latidos con el motor apagado—: escribe una fila por tramo de cualquier
+    nivel, así que un hueco en la unión de las filas es señal que no miró. Pasa
+    con un estudio que estaba en curso cuando se desplegó el motor (la
+    migración le pone el cursor en `samples_count`), con uno grabado con el
+    motor apagado, o con un prefijo al que `backfill_timeline` le dio corrida
+    después. Ahí las métricas son las del algoritmo 1 enteras y lo dicen
+    (`None`): excluir el ruido solo donde hay filas dejaría una nota de método
+    que afirma una exclusión que no se aplicó a toda la señal.
+    """
+    if not quality:
+        return None
+    limit = study.beats_analyzed_samples
+    if settings.ml_enabled:
+        # En curso, el motor espera bloques enteros y va detrás de los latidos:
+        # lo que todavía no evaluó entra sin filtrar, y el informe final no
+        # puede emitirse hasta que lo alcance (`ML_ANALYSIS_PENDING`).
+        limit = min(limit, study.ml_analyzed_samples)
+    covered = sorted(
+        (row.start_sample_index, row.start_sample_index + row.sample_count) for row in quality
+    )
+    index = 0
+    for run in sorted(runs, key=lambda item: item.start_sample):
+        position = run.start_sample
+        end = min(run.start_sample + run.sample_count, limit)
+        while position < end:
+            while index < len(covered) and covered[index][1] <= position:
+                index += 1
+            if index == len(covered) or covered[index][0] > position:
+                return None
+            position = covered[index][1]
+    return [
+        (row.start_sample_index, row.start_sample_index + row.sample_count)
+        for row in quality
+        if row.level is SignalQualityLevel.BAD and row.reason in QUALITY_EXCLUSION_REASONS
+    ]
+
+
+def _metric_rails(quality: list[SignalQualityInterval]) -> list[tuple[int, int]]:
+    """Los rieles que el motor declaró señal que falta (`HARDWARE_QUALITY_REASONS`).
+
+    Entran como un tramo del hardware más —salen también de las pausas— y no
+    como ruido: un riel sin `LEAD_OFF` (segmento viejo, ADC congelado, corto)
+    no es una asistolia, y el motor no infiere una pausa a través de él
+    (`quiet_gap`). Sin esto `/holter-metrics` listaba una "pausa" de lo que
+    durara el riel. Solo con el veredicto del motor completo (`_metric_noise`).
+    """
+    return [
+        (row.start_sample_index, row.start_sample_index + row.sample_count)
+        for row in quality
+        if row.level is SignalQualityLevel.BAD and row.reason in HARDWARE_QUALITY_REASONS
+    ]
+
+
+def _metric_quality_marks(events: list[ECGEvent]) -> tuple[list[tuple[int, int]], list[int]]:
+    """Tramos excluidos por el hardware y cortes puntuales, desde los eventos."""
     exclusions: list[tuple[int, int]] = []
     breaks: list[int] = []
     for event in events:
         metadata = event.event_metadata or {}
-        start = _finite_number(metadata.get("startSampleIndex"))
+        start = finite_number(metadata.get("startSampleIndex"))
         if start is None:
             continue
         kind = metadata.get("kind")
         if kind in EXCLUSION_KINDS:
-            count = _finite_number(metadata.get("sampleCount")) or 0
+            count = finite_number(metadata.get("sampleCount")) or 0
             exclusions.append((int(start), int(start + count)))
         elif kind in BREAK_KINDS:
             breaks.append(int(start))
@@ -1780,29 +1565,45 @@ def _metrics_unavailable(status: str, reason: str) -> HolterMetricsOut:
 
 
 async def _holter_metrics(
-    study: Study, events: list[ECGEvent], timeline: list[StudyTimelineSegment]
+    study: Study,
+    events: list[ECGEvent],
+    timeline: list[StudyTimelineSegment],
+    quality: list[SignalQualityInterval],
 ) -> HolterMetricsOut:
     """Métricas recalculadas desde los latidos persistidos.
 
     No se cachean: el cálculo es determinista y lineal en la cantidad de
-    latidos, y el informe final congela el resultado en su snapshot.
+    latidos, y el informe final congela el resultado en su snapshot. Desde que
+    el motor de detección excluye ruido (`quality`), dependen también de su
+    cursor: por eso `ML_ANALYSIS_PENDING` frena el informe final hasta que el
+    motor cubre toda la señal, y el hash del preview coincide con el del final.
     """
+    # Adentro y no arriba: los dos cargan numpy, y este módulo se importa al
+    # arrancar la API (`test_starting_the_api_does_not_import_numpy`).
+    from app.ml.holter_metrics import compute_holter_metrics
     from app.modules.ingest.processing import load_beats
 
     if not study.ecg_segments:
         return _metrics_unavailable("unavailable", "SIGNAL_NOT_SEGMENTED")
     if study.beats_analyzed_samples <= 0:
         return _metrics_unavailable("pending", "ANALYSIS_PENDING")
+    runs = _metric_runs(study, timeline)
     exclusions, breaks = _metric_quality_marks(events)
+    noise = _metric_noise(study, runs, quality)
+    if noise is not None:
+        # El riel del motor sale como un `lead_off`, pausas incluidas; el ruido
+        # sale de todo salvo de las pausas (`compute_holter_metrics`).
+        exclusions += _metric_rails(quality)
     beats = await asyncio.to_thread(load_beats, study)
     raw = await asyncio.to_thread(
         compute_holter_metrics,
         beats,
-        _metric_runs(study, timeline),
+        runs,
         exclusions,
         breaks,
         study.sample_rate or 500,
         study.beats_analyzed_samples,
+        noise=noise,
     )
     return HolterMetricsOut.model_validate(raw)
 
@@ -1816,6 +1617,7 @@ async def get_holter_metrics(input_data: StudyIdInput, db: AsyncSession) -> Holt
         study,
         await repo.list_ecg_events(db, study.id),
         await repo.list_timeline_segments(db, study.id),
+        await repo.list_quality_intervals(db, study.id),
     )
 
 
@@ -1867,10 +1669,12 @@ async def _clinical_report_snapshot(
         study,
         events,
         reports,
-        _wall_clock_resolver(study, timeline),
+        wall_clock_resolver(study, timeline),
         timeline,
     )
-    metrics = await _holter_metrics(study, events, timeline)
+    metrics = await _holter_metrics(
+        study, events, timeline, await repo.list_quality_intervals(db, study.id)
+    )
     windows = _metric_window_plans(metrics) + _report_window_plans(annotations)
     doctor_info = await repo.get_responsible_doctor(db, patient.doctor_id)
     doctor, doctor_user = doctor_info if doctor_info is not None else (None, None)
@@ -2014,6 +1818,26 @@ async def _clinical_report_snapshot(
                 message=(
                     "El análisis de latidos todavía no cubre toda la señal. "
                     "Esperá a que termine o ejecutá el backfill antes de emitir el informe final."
+                ),
+                severity="blocking",
+            )
+        )
+    # Las métricas excluyen el ruido que marca el motor: con su cursor atrás,
+    # un preview mostraría métricas que el informe final no va a congelar. Al
+    # cerrar el estudio los dos cursores llegan a `samples_count`. Con el motor
+    # apagado no hay nada que esperar, y apagarlo es la salida si el motor se
+    # traba en un bloque.
+    if (
+        settings.ml_enabled
+        and study.ecg_segments
+        and study.ml_analyzed_samples < study.samples_count
+    ):
+        issues.append(
+            StudyClinicalReportIssueOut(
+                code="ML_ANALYSIS_PENDING",
+                message=(
+                    "El análisis automático de la señal todavía no la cubre completa. "
+                    "Esperá a que termine antes de emitir el informe final."
                 ),
                 severity="blocking",
             )

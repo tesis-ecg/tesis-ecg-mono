@@ -601,6 +601,27 @@ function drawSpectrum(doc: jsPDF, metrics: HolterMetrics, frameTop: number) {
   )
 }
 
+const METHOD_DETECTION =
+  'Método. Los latidos se detectan en el servidor (Pan-Tompkins) sobre el canal 1.'
+
+/**
+ * Primer párrafo de la nota de método, según el algoritmo que calculó las métricas.
+ *
+ * El snapshot de un informe final congela `analysis.algorithmVersion`, y el PDF se
+ * vuelve a generar desde ese snapshot: un informe emitido con la versión 1 tiene que
+ * seguir describiendo la versión 1 aunque este código ya conozca otra. Desde la
+ * versión 2 las métricas también excluyen lo que el motor de detección marcó como
+ * ruido, salvo las pausas: el análisis de calidad no distingue una asistolia del
+ * ruido, así que se siguen buscando ahí y el médico las verifica en su tira. El
+ * backend informa la versión 1 cuando el motor no evaluó toda la señal.
+ */
+export function metricsMethodNote(algorithmVersion: number | null | undefined): string {
+  if (algorithmVersion != null && algorithmVersion >= 2) {
+    return `${METHOD_DETECTION} Se excluyen los tramos con electrodo suelto, señal no analizable o saturación, y los que el análisis automático de calidad de señal clasifica como ruido o artefacto. Las pausas se buscan también en esos tramos, porque una asistolia no se distingue del ruido: cada una debe verificarse en su tira. Un corte o hueco del registro nunca se cuenta como pausa.`
+  }
+  return `${METHOD_DETECTION} Los tramos con electrodo suelto, señal no analizable o saturación se excluyen, y un corte o hueco del registro nunca se cuenta como pausa.`
+}
+
 export function hasTrends(metrics: HolterMetrics | null | undefined): metrics is HolterMetrics {
   return metrics?.status === 'ok'
 }
@@ -620,7 +641,7 @@ export function drawTrendsPage(doc: jsPDF, metrics: HolterMetrics, startY: numbe
   const analysis = metrics.analysis
   const heart = metrics.heartRate
   const method = [
-    'Método. Los latidos se detectan en el servidor (Pan-Tompkins) sobre el canal 1. Los tramos con electrodo suelto, señal no analizable o saturación se excluyen, y un corte o hueco del registro nunca se cuenta como pausa.',
+    metricsMethodNote(analysis?.algorithmVersion),
     `FC mínima y máxima: promedio móvil de ${heart?.windowBeats ?? 8} intervalos NN consecutivos. La VFC se calcula sobre intervalos RR filtrados (300–2000 ms y ±20 % de la mediana local): todavía no hay clasificación de latidos, así que los ectópicos se descartan por ese filtro y no por su morfología.`,
     analysis
       ? `Tiempo analizado: ${formatDuration(analysis.analyzedMs)} · excluido por calidad: ${formatDuration(analysis.excludedMs)} · intervalos RR válidos: ${formatMetricValue(analysis.rrIntervals)} · NN: ${formatMetricValue(analysis.nnIntervals)} · algoritmo v${analysis.algorithmVersion}.`

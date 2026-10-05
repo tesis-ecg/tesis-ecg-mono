@@ -346,6 +346,30 @@ describe('ECGViewer — escala clínica', () => {
     expect(max).toBeCloseTo(60, 6)
   })
 
+  it.each([true, false])(
+    'un salto pedido antes del encuadre lo espera y centra a escala clínica (seguir lo último: %s)',
+    (followLatest) => {
+      // El visor oculto en otra pestaña: el polling lo recrea con ancho 0 y el
+      // encuadre queda pendiente. "Ver en el ECG" salta antes de que la pestaña
+      // se muestre, y el encuadre pendiente pisaba el salto con lo último
+      // grabado (siguiendo) o con el estudio entero (mirando el pasado).
+      uPlotMock.widthAtConstruction = 0
+      const ref = createRef<ECGViewerHandle>()
+      const startTimestamp = 1_700_000_000_000
+      render(<ECGViewer ref={ref} signal={signal(600)} followLatest={followLatest} />)
+
+      act(() => ref.current?.jumpTo(startTimestamp + 300_000))
+      act(() => {
+        resizeCallback?.(
+          [{ contentRect: { width: 500 } } as unknown as ResizeObserverEntry],
+          {} as ResizeObserver,
+        )
+      })
+
+      expect(plot().scales.x).toEqual({ min: 295, max: 305 })
+    },
+  )
+
   it('avisa cuando el zoom libre sacó el trazado de la escala, y cuando vuelve', () => {
     const onScaleMatchChange = vi.fn()
     const ref = createRef<ECGViewerHandle>()

@@ -1,11 +1,13 @@
 import { api } from '@/lib/api'
 
 import type {
+  HolterMetrics,
   Study,
   StudyClinicalReportDraft,
   StudyClinicalReportDraftUpdate,
   StudyClinicalReportPreview,
   StudyClinicalReportVersion,
+  StudyFindings,
   StudyListParams,
   StudyListResponse,
   StudyPatientReportsResponse,
@@ -49,6 +51,28 @@ export async function cancelStudy(id: string): Promise<Study> {
  */
 export async function getStudyPatientReports(id: string): Promise<StudyPatientReportsResponse> {
   const { data } = await api.get<StudyPatientReportsResponse>(`/studies/${id}/patient-reports`)
+  return data
+}
+
+/**
+ * Lo que encontró el motor de detección, agrupado para revisión, más cuánto del
+ * registro se pudo evaluar.
+ *
+ * No trae FC, pausas ni VFC a propósito: esos números salen de
+ * `getStudyHolterMetrics`, que es lo mismo que congela el informe. Dos fuentes
+ * para la misma métrica pondrían dos SDNN distintos delante del médico.
+ */
+export async function getStudyFindings(id: string): Promise<StudyFindings> {
+  const { data } = await api.get<StudyFindings>(`/studies/${id}/findings`)
+  return data
+}
+
+/**
+ * Métricas Holter (FC, pausas, VFC, ST) recalculadas desde los latidos
+ * persistidos. Son las mismas que el informe clínico congela en su snapshot.
+ */
+export async function getStudyHolterMetrics(id: string): Promise<HolterMetrics> {
+  const { data } = await api.get<HolterMetrics>(`/studies/${id}/holter-metrics`)
   return data
 }
 

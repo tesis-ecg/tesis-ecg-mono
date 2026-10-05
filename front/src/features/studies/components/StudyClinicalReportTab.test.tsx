@@ -132,7 +132,7 @@ describe('StudyClinicalReportTab', () => {
     render(<StudyClinicalReportTab study={study} onPreview={vi.fn()} />)
 
     expect(screen.getByText('Faltan 2 requisitos para emitir el informe final')).toBeTruthy()
-    expect(screen.getByText('4/6')).toBeTruthy()
+    expect(screen.getByText('5/7')).toBeTruthy()
     expect(screen.getByText('La hora de las muestras no está verificada.')).toBeTruthy()
     expect(screen.getByText('La señal fue generada con un chaleco simulado.')).toBeTruthy()
     expect(screen.getAllByText('Requerido para finalizar')).toHaveLength(1)

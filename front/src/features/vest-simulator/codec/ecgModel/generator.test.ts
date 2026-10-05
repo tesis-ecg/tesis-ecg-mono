@@ -11,7 +11,12 @@ import {
   SQ_GOOD,
 } from '../frame'
 import { encodeSamples } from '../riceEncoder'
-import { generateEcg, initialGeneratorState, STATUS_LEAD_SIGNAL_SUSPECT } from './generator'
+import {
+  FIRMWARE_R_PEAK_LAG_SEC,
+  generateEcg,
+  initialGeneratorState,
+  STATUS_LEAD_SIGNAL_SUSPECT,
+} from './generator'
 import { DEFAULT_SIGNAL_PROFILE, type ResolvedEpisode, type SignalProfile } from './types'
 
 const AFTERNOON = new Date(2026, 9, 3, 15).getTime()
@@ -107,17 +112,21 @@ describe('modelo de ECG', () => {
     expect(second.samples[0].timestampMs).toBe(30_000)
   })
 
-  it('marca un R_PEAK por latido, sobre el máximo local del QRS', () => {
+  it('marca un R_PEAK por latido, con el retardo de confirmación del firmware', () => {
     const out = generate(60)
     const values = out.samples.map((s) => s.rawUV[0])
     const peaks = rPeaks(out.samples.map((s) => s.flags))
+    const lag = Math.round(FIRMWARE_R_PEAK_LAG_SEC * SAMPLE_RATE_HZ)
 
     // 68 lpm de reposo más el circadiano de la tarde: del orden de 70 latidos.
     expect(peaks.length).toBeGreaterThan(55)
     expect(peaks.length).toBeLessThan(90)
+    // El máximo local del QRS está 250 ms antes del bit, no sobre él: es lo
+    // que el motor de la nube compensa antes de calcular el bSQI.
     for (const p of peaks.slice(1, -1)) {
-      const window = values.slice(p - 10, p + 11)
-      expect(values[p]).toBeGreaterThanOrEqual(Math.max(...window) - 60)
+      const r = p - lag
+      const window = values.slice(r - 10, r + 11)
+      expect(values[r]).toBeGreaterThanOrEqual(Math.max(...window) - 60)
     }
   })
 

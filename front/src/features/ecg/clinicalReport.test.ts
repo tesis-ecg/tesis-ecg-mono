@@ -4,7 +4,7 @@ import type { HolterMetrics } from '@/features/studies/types'
 
 import { automaticAnnotations, buildClinicalReport } from './clinicalReport'
 import { formatMetricValue, sexLabel } from './clinicalReportFormat'
-import { metricsStatusText } from './clinicalReportSummary'
+import { metricsMethodNote, metricsStatusText } from './clinicalReportSummary'
 import type { ClinicalReportInput } from './clinicalReportTypes'
 
 const start = 1_700_000_000_000
@@ -298,5 +298,33 @@ describe('formato de métricas del informe', () => {
     expect(metricsStatusText(metrics())).toBeNull()
     expect(metricsStatusText({ ...metrics(), status: 'pending' })).toMatch(/pendiente/)
     expect(metricsStatusText(null)).toMatch(/no incluidas/)
+  })
+
+  it('describe el método del algoritmo que calculó las métricas congeladas', () => {
+    // Un informe final ya emitido con la versión 1 se vuelve a generar desde su
+    // snapshot: tiene que seguir diciendo exactamente lo que decía.
+    expect(metricsMethodNote(1)).toBe(
+      'Método. Los latidos se detectan en el servidor (Pan-Tompkins) sobre el canal 1. Los tramos con electrodo suelto, señal no analizable o saturación se excluyen, y un corte o hueco del registro nunca se cuenta como pausa.',
+    )
+    expect(metricsMethodNote(1)).not.toMatch(/ruido/)
+
+    const v2 = metricsMethodNote(2)
+    expect(v2).toMatch(/electrodo suelto, señal no analizable o saturación/)
+    expect(v2).toMatch(/análisis automático de calidad de señal clasifica como ruido/)
+    // El ruido del motor no saca pausas: una asistolia se le parece.
+    expect(v2).toMatch(/pausas se buscan también en esos tramos/)
+    expect(v2).toMatch(/nunca se cuenta como pausa/)
+  })
+
+  it('genera la hoja de tendencias con métricas de la versión 2 del algoritmo', () => {
+    const value = input()
+    value.snapshot.schemaVersion = 2
+    const base = metrics()
+    value.snapshot.metrics = {
+      ...base,
+      analysis: base.analysis && { ...base.analysis, algorithmVersion: 2 },
+    }
+
+    expect(new TextDecoder().decode(buildClinicalReport(value).slice(0, 8))).toContain('%PDF-')
   })
 })

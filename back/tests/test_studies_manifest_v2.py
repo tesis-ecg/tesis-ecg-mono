@@ -273,6 +273,35 @@ async def test_contiguous_signal_quality_events_are_one_episode(
     ]
 
 
+async def test_findings_list_the_same_signal_quality_episodes_as_the_trace(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    """El panel lleva al visor: si el visor dibuja un episodio, la lista no puede
+    mostrar doce filas, una por lote."""
+    _, study_id = await _ingested_study(client, db, make_patient, make_device)
+    batch = await db.scalar(select(ECGBatch).where(ECGBatch.study_id == study_id))
+    assert batch is not None
+    db.add_all(
+        [
+            _quality_event(batch.id, "lead_off", 1000, 500),
+            _quality_event(batch.id, "lead_off", 500, 500),
+            _quality_event(batch.id, "sqi_unanalyzable", 500, 500),
+            _quality_event(batch.id, "sqi_unanalyzable", 3500, 300),
+        ]
+    )
+    await db.flush()
+    as_user(await make_user(UserRole.ADMIN))
+
+    body = (await client.get(f"/studies/{study_id}/findings")).json()
+    items = [item for group in body["groups"] for item in group["items"]] + body["ungrouped"]
+
+    assert sorted(
+        (item["kind"], item["startOffsetMs"], item["endOffsetMs"])
+        for item in items
+        if item["kind"] in {"lead_off", "sqi_unanalyzable"}
+    ) == [("lead_off", 1000, 3000), ("sqi_unanalyzable", 7000, 7600)]
+
+
 async def test_a_study_without_any_signal_is_404(
     client, s3, db, as_user, make_user, make_patient, make_device, make_study
 ) -> None:

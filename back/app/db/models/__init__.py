@@ -5,9 +5,11 @@ from app.db.models.device import Device
 from app.db.models.doctor import Doctor
 from app.db.models.ecg_batch import ECGBatch
 from app.db.models.ecg_event import ECGEvent
+from app.db.models.ecg_interval_measurement import ECGIntervalMeasurement
 from app.db.models.patient import Patient
 from app.db.models.patient_report import PatientReport
 from app.db.models.push_token import PushToken
+from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.study import Study
 from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
 from app.db.models.study_timeline_segment import StudyTimelineSegment, TimeSyncSource
@@ -21,10 +23,13 @@ __all__ = [
     "Device",
     "ECGBatch",
     "ECGEvent",
+    "ECGIntervalMeasurement",
     "Alert",
     "User",
     "AuditEvent",
     "AuthRateLimit",
+    "SignalQualityInterval",
+    "SignalQualityLevel",
     "Study",
     "StudyClinicalReport",
     "StudyClinicalReportDraft",

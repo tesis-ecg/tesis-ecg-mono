@@ -41,12 +41,17 @@ const KIND_LABEL: Record<string, string> = {
   bradycardia: 'Bradicardia',
   afib: 'Fibrilación auricular',
   pvc: 'Extrasístole ventricular',
-  pause: 'Pausa ventricular',
+  // La pausa del motor es una alerta (≥ `ml_pause_seconds`, 2,5 s) y no la cuenta
+  // del informe, que sigue la convención Holter de > 2,0 s (`pause_longest` y las
+  // métricas). Con el umbral en la etiqueta, "Pausas > 2000 ms: 3" junto a una
+  // alerta de pausa ×1 no se lee como una contradicción.
+  pause: 'Pausa ≥ 2,5 s (alerta)',
   noise: 'Ruido / artefacto',
   lead_off: 'Electrodo desconectado',
   sqi_unanalyzable: 'Señal inanalizable',
   adc_saturated: 'Saturación del ADC',
   internal_gap: 'Hueco de datos',
+  frame_gap: 'Hueco entre tramas',
   symptom_marker: 'Síntoma marcado por el paciente',
   patient_report: 'Registro del paciente',
   backlog_overflow: 'Pérdida de tramas confirmada por el Holter',
@@ -55,6 +60,14 @@ const KIND_LABEL: Record<string, string> = {
   close_reason_2: 'Cierre técnico: apagado o batería crítica',
   close_reason_3: 'Cierre técnico: corridas agotadas',
   corrupt_frame: 'Trama descartada por el equipo',
+  // Motor de detección (`back/app/ml`). El nombre no menciona ninguna
+  // enfermedad a propósito: el motor es no supervisado y lo único que puede
+  // afirmar es que ese latido no se parece a los del propio paciente. Llamarlo
+  // "extrasístole" sería un diagnóstico que ningún dato del sistema respalda.
+  morphology_anomaly: 'Latido de morfología atípica',
+  recurrent_morphology: 'Morfología recurrente',
+  flatline: 'Señal plana',
+  noise_burst: 'Ruido en la señal',
   other: 'Hallazgo',
 }
 

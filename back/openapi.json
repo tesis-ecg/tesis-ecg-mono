@@ -4949,6 +4949,313 @@
         "title": "StudyEcgTimelineSegmentOut",
         "type": "object"
       },
+      "StudyFindingGroupOut": {
+        "description": "Una morfología recurrente, o todos los hallazgos de un mismo tipo.\n\nAgrupar no es cosmético: 412 latidos de la misma forma son **un** hallazgo\ncon 412 ocurrencias, no 412 filas. Sin esto, el panel del médico es\nilegible y la herramienta no se usa.",
+        "properties": {
+          "beatCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beatcount"
+          },
+          "burdenPct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Burdenpct"
+          },
+          "category": {
+            "enum": [
+              "signal_quality",
+              "clinical",
+              "patient_marker",
+              "technical"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "firstEpochMs": {
+            "title": "Firstepochms",
+            "type": "integer"
+          },
+          "firstOffsetMs": {
+            "title": "Firstoffsetms",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StudyFindingOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "lastEpochMs": {
+            "title": "Lastepochms",
+            "type": "integer"
+          },
+          "lastOffsetMs": {
+            "title": "Lastoffsetms",
+            "type": "integer"
+          },
+          "meanIntraCorrelation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Meanintracorrelation"
+          },
+          "occurrences": {
+            "title": "Occurrences",
+            "type": "integer"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "category",
+          "severity",
+          "occurrences",
+          "firstOffsetMs",
+          "lastOffsetMs",
+          "firstEpochMs",
+          "lastEpochMs"
+        ],
+        "title": "StudyFindingGroupOut",
+        "type": "object"
+      },
+      "StudyFindingOut": {
+        "description": "Un hallazgo puntual, ubicable sobre la traza.",
+        "properties": {
+          "beatCount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beatcount"
+          },
+          "category": {
+            "enum": [
+              "signal_quality",
+              "clinical",
+              "patient_marker",
+              "technical"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "clusterId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clusterid"
+          },
+          "confidenceScore": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidencescore"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "endOffsetMs": {
+            "title": "Endoffsetms",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "modelVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelversion"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
+          "startOffsetMs": {
+            "title": "Startoffsetms",
+            "type": "integer"
+          },
+          "validationStatus": {
+            "enum": [
+              "pending",
+              "confirmed",
+              "rejected",
+              "uncertain"
+            ],
+            "title": "Validationstatus",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "category",
+          "severity",
+          "startOffsetMs",
+          "endOffsetMs",
+          "startEpochMs",
+          "endEpochMs",
+          "confidenceScore",
+          "modelVersion",
+          "validationStatus"
+        ],
+        "title": "StudyFindingOut",
+        "type": "object"
+      },
+      "StudyFindingsOut": {
+        "properties": {
+          "durationMs": {
+            "title": "Durationms",
+            "type": "integer"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/StudyFindingGroupOut"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "modelVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelversion"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/StudyQualitySummaryOut"
+          },
+          "sampleCount": {
+            "title": "Samplecount",
+            "type": "integer"
+          },
+          "sampleRate": {
+            "title": "Samplerate",
+            "type": "integer"
+          },
+          "studyId": {
+            "format": "uuid",
+            "title": "Studyid",
+            "type": "string"
+          },
+          "totals": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Totals",
+            "type": "object"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "ungrouped": {
+            "items": {
+              "$ref": "#/components/schemas/StudyFindingOut"
+            },
+            "title": "Ungrouped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "studyId",
+          "sampleRate",
+          "sampleCount",
+          "durationMs",
+          "modelVersion",
+          "quality"
+        ],
+        "title": "StudyFindingsOut",
+        "type": "object"
+      },
       "StudyListResponse": {
         "properties": {
           "items": {
@@ -5144,6 +5451,91 @@
           "pendingSignalTotal"
         ],
         "title": "StudyPatientReportsResponse",
+        "type": "object"
+      },
+      "StudyQualityIntervalOut": {
+        "properties": {
+          "endEpochMs": {
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "endOffsetMs": {
+            "title": "Endoffsetms",
+            "type": "integer"
+          },
+          "level": {
+            "enum": [
+              "good",
+              "marginal",
+              "bad",
+              "unknown"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "title": "Startepochms",
+            "type": "integer"
+          },
+          "startOffsetMs": {
+            "title": "Startoffsetms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "startOffsetMs",
+          "endOffsetMs",
+          "startEpochMs",
+          "endEpochMs",
+          "level",
+          "reason"
+        ],
+        "title": "StudyQualityIntervalOut",
+        "type": "object"
+      },
+      "StudyQualitySummaryOut": {
+        "description": "Cuánto del registro se pudo evaluar. Es un dato clínico, no una métrica.\n\nUn informe que no dice qué fracción del Holter era ilegible está afirmando\nde más: \"no se detectaron arritmias\" sobre un registro 40 % inutilizable no\nsignifica lo mismo que sobre uno limpio.",
+        "properties": {
+          "analyzableRatio": {
+            "title": "Analyzableratio",
+            "type": "number"
+          },
+          "badRatio": {
+            "title": "Badratio",
+            "type": "number"
+          },
+          "evaluatedMs": {
+            "title": "Evaluatedms",
+            "type": "integer"
+          },
+          "goodRatio": {
+            "title": "Goodratio",
+            "type": "number"
+          },
+          "intervals": {
+            "items": {
+              "$ref": "#/components/schemas/StudyQualityIntervalOut"
+            },
+            "title": "Intervals",
+            "type": "array"
+          },
+          "marginalRatio": {
+            "title": "Marginalratio",
+            "type": "number"
+          }
+        },
+        "required": [
+          "analyzableRatio",
+          "goodRatio",
+          "marginalRatio",
+          "badRatio",
+          "evaluatedMs"
+        ],
+        "title": "StudyQualitySummaryOut",
         "type": "object"
       },
       "StudyStatus": {
@@ -10792,6 +11184,94 @@
           }
         },
         "summary": "Get Study Ecg Report Windows",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/findings": {
+      "get": {
+        "description": "Lo que el motor encontró, agrupado para revisión.\n\nSin paginación **a propósito**: el presupuesto de revisión acota la respuesta\npor construcción (`ml_findings_max_per_study`), y paginar señalizaría que el\nresultado no está acotado — que es exactamente lo contrario de lo que este\ndiseño afirma. Lo que sí viaja es `truncated`, para que un recorte nunca se\nlea como \"esto es todo lo que hay\".",
+        "operationId": "get_study_findings_studies__study_id__findings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "itemsPerGroup",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Itemspergroup",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudyFindingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Study Findings",
         "tags": [
           "studies"
         ]

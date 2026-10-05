@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Reunión con médicos — Guía de preguntas</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 14mm 15mm; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 9.6pt; line-height: 1.45; color: #16181d; margin: 0;
+  }
+  h1 { font-size: 17pt; margin: 0 0 2px; letter-spacing: -0.3px; }
+  .sub { font-size: 9pt; color: #61666e; margin-bottom: 14px; }
+  .rule { height: 3px; background: #0f766e; margin: 0 0 14px; }
+
+  h2 {
+    font-size: 11pt; margin: 22px 0 8px; padding-bottom: 4px;
+    border-bottom: 1.5px solid #16181d; letter-spacing: -0.2px;
+    page-break-after: avoid;
+  }
+  h2 .tag { float: right; font-size: 8pt; font-weight: 500; color: #61666e; letter-spacing: 0; }
+
+  .intro {
+    background: #f4f6f7; border-left: 3px solid #0f766e;
+    padding: 9px 12px; margin-bottom: 6px; font-size: 9pt;
+  }
+  .intro p { margin: 0 0 5px; }
+  .intro p:last-child { margin-bottom: 0; }
+  .intro strong { color: #0f766e; }
+
+  .top5 { border: 2px solid #16181d; padding: 11px 13px 6px; margin-bottom: 4px; }
+  .top5 h3 { margin: 0 0 8px; font-size: 10.5pt; }
+  .top5 ol { margin: 0; padding-left: 19px; }
+  .top5 li { margin-bottom: 7px; }
+  .top5 .why { color: #61666e; font-size: 8.4pt; display: block; margin-top: 1px; }
+
+  .q { margin-bottom: 9px; page-break-inside: avoid; }
+  .q .txt { display: block; }
+  .q .txt::before {
+    content: attr(data-n); font-weight: 700; color: #0f766e;
+    display: inline-block; min-width: 20px;
+  }
+  .star { color: #16181d; font-weight: 700; }
+  .why {
+    display: block; color: #61666e; font-size: 8.4pt;
+    margin: 1px 0 0 20px; font-style: italic;
+  }
+  .opts {
+    display: block; margin: 3px 0 0 20px; font-size: 8.6pt; color: #34383f;
+  }
+  .opts b { font-weight: 600; color: #16181d; }
+  .lines {
+    margin: 5px 0 0 20px; border-bottom: 1px solid #ccd0d4; height: 15px;
+  }
+  .lines.two { height: 31px; background-image: linear-gradient(#ccd0d4 1px, transparent 1px); background-size: 100% 16px; }
+
+  .note {
+    background: #fdf6e8; border-left: 3px solid #b7791f;
+    padding: 8px 11px; margin: 10px 0; font-size: 8.8pt;
+  }
+  .note b { color: #8a5a08; }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 4px; font-size: 8.8pt; }
+  th { text-align: left; background: #eceff1; padding: 5px 7px; border: 1px solid #ccd0d4; font-size: 8.4pt; }
+  td { padding: 5px 7px; border: 1px solid #ccd0d4; vertical-align: top; }
+  td.blank { height: 26px; }
+
+  .pb { page-break-before: always; }
+  footer { margin-top: 20px; padding-top: 8px; border-top: 1px solid #ccd0d4; font-size: 8pt; color: #61666e; }
+</style>
+</head>
+<body>
+
+<h1>Reunión con médicos — guía de preguntas</h1>
+<div class="sub">Holter Wearable ECG · jueves 27/08/2026 · las preguntas marcadas <span class="star">★</span> son las que no pueden quedar sin respuesta</div>
+<div class="rule"></div>
+
+<div class="intro">
+  <p><b>Cómo encuadrar el proyecto en los primeros 2 minutos</b> (importante: define cómo responden todo lo demás)</p>
+  <p>Es un chaleco con electrodos secos que registra ECG de una derivación durante 24 h y sube los datos a la nube. El software <strong>no diagnostica</strong>: marca segmentos para que un médico los revise, y ordena el estudio por prioridad. En esta primera etapa detecta dos cosas — <strong>tramos inservibles por ruido</strong> y <strong>latidos atípicos</strong> — sin ponerles nombre clínico.</p>
+  <p>Conviene decir explícitamente <em>“no les vamos a mostrar un diagnóstico automático”</em>. Baja la resistencia y evita que la conversación se vaya a discutir precisión de algoritmos en lugar de flujo de trabajo.</p>
+</div>
+
+<div class="top5">
+  <h3>Si solo alcanza el tiempo para cinco</h3>
+  <ol>
+    <li><b>¿Cuántos hallazgos por estudio de 24 h estás dispuesto a revisar realmente?</b>
+      <span class="why">Fija el punto de operación de todo el sistema. Sin este número no se puede calibrar nada.</span></li>
+    <li><b>¿Preferís que no se escape nada aunque revises falsos positivos, o pocos hallazgos muy seguros aunque se pierda alguno? ¿Cambia según el tipo de evento?</b>
+      <span class="why">Define el balance sensibilidad/especificidad, que probablemente sea distinto para una pausa que para una extrasístole.</span></li>
+    <li><b>¿Qué hallazgo justifica avisarte en el momento, y qué puede esperar al informe final?</b>
+      <span class="why">Decide si hay que construir infraestructura de tiempo real o alcanza con procesamiento diferido. Es la decisión de arquitectura más cara de la lista.</span></li>
+    <li><b>¿El trial va a incluir pacientes con arritmia conocida, o población sana?</b>
+      <span class="why">Si es población sana no vamos a tener ni un solo evento patológico propio, y toda la validación queda apoyada en bases públicas. Hay que saberlo ya.</span></li>
+    <li><b>¿Podemos acceder a Holters del servicio que ya estén informados?</b>
+      <span class="why">Un Holter con informe firmado es un registro anotado por un experto. Es, por lejos, lo más valioso que nos pueden dar y no lo podemos conseguir de ninguna otra forma.</span></li>
+  </ol>
+</div>
+
+<h2>A. Carga de trabajo y triage <span class="tag">cómo trabajan hoy</span></h2>
+
+<div class="q"><span class="txt" data-n="A1"><span class="star">★</span> ¿Cuánto tiempo te lleva informar un Holter de 24 h? ¿Lo hacés vos de punta a punta o un técnico lo pre-procesa?</span>
+<span class="why">Es la medida del dolor que estamos tratando de resolver. Si son 15 minutos, el valor del producto es otro que si son 90.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="A2">Cuando abrís un estudio, ¿qué es lo primero que mirás?</span>
+<span class="why">Define qué va arriba de todo en la pantalla. No preguntar “qué te gustaría ver”: preguntar qué mira hoy.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="A3"><span class="star">★</span> Si el sistema te entrega una lista priorizada de hallazgos, ¿cuántos mirarías antes de cansarte o dejar de confiar?</span>
+<span class="opts"><b>Ofrecer opciones concretas:</b> ~10 · ~30 · ~100 · todos los que haya</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="A4"><span class="star">★</span> De los hallazgos que te muestre, ¿qué proporción puede ser basura antes de que dejes de usar el sistema?</span>
+<span class="opts"><b>Ofrecer opciones:</b> 1 de cada 10 · 1 de cada 4 · 1 de cada 2</span>
+<span class="why">Esta es la métrica que decide si el producto se adopta o se apaga. Vale más que cualquier número de precisión.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="A5">¿Qué es lo que más te frustra del equipo de Holter que usás hoy?</span>
+<span class="why">Pregunta abierta deliberada. Suele ser donde aparece el requerimiento que nadie había pensado.</span>
+<div class="lines two"></div></div>
+
+<h2>B. Calidad de señal y tramos no diagnósticos <span class="tag">el problema #1 del hardware</span></h2>
+
+<div class="note"><b>Contexto para dar antes de este bloque:</b> el chaleco usa electrodos secos de tela, no gel. Se espera más artefacto de movimiento y pérdidas de contacto que en un Holter convencional. Saber qué hacen hoy con señal mala es lo que nos dice cuánto es tolerable.</div>
+
+<div class="q"><span class="txt" data-n="B1"><span class="star">★</span> ¿Qué hacés hoy cuando un Holter viene con tramos ilegibles? ¿Informás igual, repetís el estudio, lo aclarás en el informe?</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="B2"><span class="star">★</span> ¿A partir de qué porcentaje de registro inservible mandarías a repetir el estudio?</span>
+<span class="opts"><b>Ofrecer opciones:</b> 10 % · 20 % · 30 % · 50 % · depende de si capturó el evento</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="B3">¿Cómo querés ver la calidad: un semáforo por tramo sobre la línea de tiempo, un porcentaje global del estudio, o las dos cosas?</span>
+<span class="why">Tenemos una clasificación de tres niveles (bueno / aceptable / inservible) que mapea natural a tres colores, pero hay que confirmar que sirve así.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="B4">Un estudio con 30 % de registro inservible pero que capturó el evento que buscabas, ¿te sirve o lo descartás igual?</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="B5"><span class="star">★</span> ¿Tiene sentido avisarle al paciente en el momento (“acomodate el chaleco”), o eso genera ansiedad y más problemas de los que resuelve?</span>
+<span class="why">Decisión de producto grande: define si el dispositivo necesita devolverle feedback al paciente, y con eso, pantalla o vibración y todo el diseño de interacción.</span>
+<div class="lines two"></div></div>
+
+<h2 class="pb">C. Qué es un “hallazgo” <span class="tag">define el output del sistema</span></h2>
+
+<div class="q"><span class="txt" data-n="C1"><span class="star">★</span> Por diseño, el sistema va a decir “este latido es atípico” <em>sin</em> decir qué es. ¿Te sirve como punto de partida, o preferís que arriesgue una etiqueta aunque a veces se equivoque?</span>
+<span class="why">Es la pregunta que valida el alcance completo de esta etapa. Si la respuesta es “sin nombre no me sirve”, hay que replantear.</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="C2"><span class="star">★</span> Si hay 400 latidos raros de la misma forma, ¿preferís verlos agrupados (“400 ocurrencias de una misma morfología”) o como lista de 400 ítems?</span>
+<span class="why">El sistema puede agrupar por morfología. Confirmar que esa es la unidad de lectura correcta, porque cambia todo el diseño del panel.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="C3">Al lado de cada hallazgo, ¿qué necesitás para decidir en cinco segundos si es real?</span>
+<span class="opts"><b>Sondear:</b> tira de ECG (¿cuántos segundos antes y después?) · hora del día · FC del momento · latidos vecinos · actividad del paciente</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="C4">¿Qué tiene que tener sí o sí el informe final? ¿Va a alguna historia clínica electrónica, y a cuál?</span>
+<div class="lines two"></div></div>
+
+<h2>D. Alertas y urgencia <span class="tag">decisión de arquitectura</span></h2>
+
+<div class="q"><span class="txt" data-n="D1"><span class="star">★</span> ¿Qué hallazgo justifica interrumpirte en el momento, y cuál puede esperar al informe?</span>
+<span class="opts"><b>Sondear con números:</b> pausa de más de ¿2, 3, 5 s? · FC por debajo de ¿40, 30? · FC sostenida por encima de ¿150, 180? · otros</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="D2"><span class="star">★</span> Si el sistema detecta algo grave un domingo a las 3 de la mañana, ¿a quién le llega y quién responde?</span>
+<span class="why">Si no hay nadie del otro lado, la alerta en tiempo real no es una función: es un riesgo. Mejor saberlo antes de construirla.</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="D3">¿Por qué canal debería llegar? ¿Y cómo se maneja hoy en el servicio que una alerta no sea atendida?</span>
+<span class="opts"><b>Canales:</b> mail · SMS · push en el celular · llamada al call center · panel que alguien mira por turno</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="D4">¿El paciente debería enterarse de algo en algún momento, o toda la información pasa siempre por el médico?</span>
+<div class="lines"></div></div>
+
+<h2>E. Umbrales y perfil del paciente <span class="tag">Módulo 3</span></h2>
+
+<div class="q"><span class="txt" data-n="E1">¿Ajustás los umbrales de frecuencia cardíaca por paciente en la práctica, o usás los que trae el equipo?</span>
+<span class="why">Si nadie los toca, la configuración por paciente es una función que no vale la pena construir todavía.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="E2">¿En qué casos concretos los cambiarías?</span>
+<span class="opts"><b>Sondear:</b> atletas · pacientes con betabloqueantes · FA crónica · insuficiencia cardíaca · edad</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="E3"><span class="star">★</span> ¿Va a haber pacientes con marcapasos entre los que usen el dispositivo?</span>
+<span class="why">Técnicamente importante: las espigas de estimulación rompen los detectores de QRS estándar y requieren tratamiento aparte. Mejor saberlo ahora que descubrirlo con datos del trial.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="E4">¿Quién debería cargar esos umbrales: el médico que indica el estudio, el técnico que coloca el equipo, o deberían salir automáticamente de la historia clínica?</span>
+<div class="lines"></div></div>
+
+<h2 class="pb">F. Validación de hallazgos <span class="tag">de esto depende que el sistema mejore</span></h2>
+
+<div class="note"><b>Cómo plantearlo (conviene ser explícito y honesto):</b> cada vez que un médico confirma o descarta un hallazgo, el sistema aprende de esa corrección. Es el mecanismo por el cual mejora con el uso. Sin esa devolución, se queda como salió de fábrica. No es una función administrativa: es el motor del producto.</div>
+
+<div class="q"><span class="txt" data-n="F1"><span class="star">★</span> ¿Marcarías cada hallazgo como correcto o incorrecto, si te lleva dos segundos por ítem?</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="F2">¿Cuánto tiempo extra por estudio sería aceptable para eso? ¿Y qué te haría querer hacerlo — ver que el sistema mejora, que quede registrado en el informe, otra cosa?</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="F3">¿Preferís validar hallazgo por hallazgo, o poder decir “todo este bloque está bien” de una vez?</span>
+<div class="lines"></div></div>
+
+<h2>G. Uso real y logística del estudio</h2>
+
+<div class="q"><span class="txt" data-n="G1">¿Quién le coloca el equipo al paciente hoy, y qué instrucciones recibe?</span>
+<span class="why">Con electrodos secos, la colocación es la principal fuente de señal mala. Si se lo pone el paciente solo, es un requerimiento de diseño enorme.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="G2">¿Qué hace que un estudio se pierda o haya que repetirlo? ¿Con qué frecuencia pasa?</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="G3">¿Los pacientes se lo sacan durante el registro? ¿Se bañan, duermen incómodos, se quejan del equipo?</span>
+<div class="lines"></div></div>
+
+<h2>H. Datos y trial <span class="tag">lo más importante que nos pueden dar</span></h2>
+
+<div class="q"><span class="txt" data-n="H1"><span class="star">★</span> ¿Podemos acceder a Holters del servicio que ya estén informados, aunque sean de otro equipo?</span>
+<span class="opts"><b>Precisar:</b> ¿cuántos? · ¿qué formato exporta el equipo actual (ISHNE, EDF, propietario)? · ¿el informe viene asociado al registro? · ¿qué hace falta para anonimizarlos?</span>
+<span class="why">Un registro con informe firmado equivale a datos anotados por un experto. Es la vía más rápida y más barata a un set de validación real, y solo ellos lo tienen.</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="H2"><span class="star">★</span> El trial: ¿cuántos pacientes, con qué perfil, cuántas horas de registro cada uno, y en qué ventana de tiempo?</span>
+<span class="opts"><b>Clave:</b> ¿población sana o con patología conocida? ¿Qué patologías esperan ver?</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="H3"><span class="star">★</span> ¿Podemos grabar a voluntarios sanos del servicio con el chaleco, una o dos horas, haciendo movimientos pautados?</span>
+<span class="why">Es lo de mejor relación esfuerzo/valor de todo el proyecto: con una tarde de grabación y una planilla de horarios obtenemos el set que necesitamos para calibrar la detección de ruido con nuestro propio hardware.</span>
+<div class="lines"></div></div>
+
+<div class="q"><span class="txt" data-n="H4">¿Qué necesita el comité de ética, y cuánto tarda? ¿Hay algo que podamos ir preparando ya?</span>
+<div class="lines two"></div></div>
+
+<div class="q"><span class="txt" data-n="H5">¿Hay alguien del servicio que pueda ser nuestro referente clínico para consultas puntuales entre reuniones?</span>
+<div class="lines"></div></div>
+
+<h2 class="pb">Compromisos a cerrar antes de terminar</h2>
+
+<p style="font-size:8.8pt; color:#61666e; margin:0 0 8px;">Que la reunión no termine sin nombres y fechas. Una conversación buena sin compromisos concretos no destraba nada.</p>
+
+<table>
+  <tr><th style="width:44%">Qué</th><th style="width:26%">Quién</th><th style="width:30%">Para cuándo</th></tr>
+  <tr><td>Acceso a Holters históricos ya informados</td><td class="blank"></td><td></td></tr>
+  <tr><td>Definición del trial: N, perfil de pacientes, fechas</td><td class="blank"></td><td></td></tr>
+  <tr><td>Ventana para grabar voluntarios sanos con el chaleco</td><td class="blank"></td><td></td></tr>
+  <tr><td>Referente clínico para consultas entre reuniones</td><td class="blank"></td><td></td></tr>
+  <tr><td>Estado y requisitos del comité de ética</td><td class="blank"></td><td></td></tr>
+  <tr><td>Próxima reunión</td><td class="blank"></td><td></td></tr>
+</table>
+
+<h2>Cómo conducir la reunión</h2>
+
+<div class="q"><span class="txt" data-n="1.">Pedir permiso para grabar. Los detalles del flujo de trabajo se pierden en las notas.</span></div>
+
+<div class="q"><span class="txt" data-n="2.">No pedirles que diseñen la interfaz. Pedirles que describan lo que hacen hoy, paso a paso. El diseño sale de ahí; las opiniones sobre pantallas hipotéticas no sirven.</span></div>
+
+<div class="q"><span class="txt" data-n="3.">Cuando digan “estaría bueno tener X”, preguntar <em>“¿cuándo fue la última vez que te hizo falta?”</em>. Separa el requerimiento real del deseo abstracto.</span></div>
+
+<div class="q"><span class="txt" data-n="4.">Insistir en números, no en adjetivos. “Pocos falsos positivos” no se puede implementar; “no más de uno de cada cuatro” sí.</span></div>
+
+<div class="q"><span class="txt" data-n="5.">Si la conversación se va a discutir la precisión del algoritmo, traerla de vuelta al flujo de trabajo. Lo que no podemos averiguar solos es cómo trabajan, no cuán bueno tiene que ser el modelo.</span></div>
+
+<div class="q"><span class="txt" data-n="6.">Anotar textualmente las frases sobre carga de trabajo y frustraciones. Son material directo para justificar decisiones de producto en la tesis.</span></div>
+
+<footer>
+  Holter Wearable ECG · guía preparada para la reunión del 27/08/2026 · el detalle técnico que fundamenta estas preguntas está en <code>docs/deteccion-ml/README.md</code>
+</footer>
+
+</body>
+</html>

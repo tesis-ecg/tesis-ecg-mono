@@ -14,6 +14,20 @@ ninguna marca.
 Idempotente: borra los tramos del estudio antes de reescribirlos, así que se
 puede correr las veces que haga falta.
 
+Si los tramos cambian, los latidos de las métricas Holter quedan viejos: se
+analizaron corrida por corrida contra los tramos de antes, y la señal que ninguna
+corrida cubría se salteó (`append_beat_analysis`). Con el cursor ya pasado, ese
+prefijo quedaría contado como tiempo analizado sin un solo latido y bajaría
+`averageBpm` sin que nada lo avise. Por eso el script vuelve a cero
+`beats_analyzed_samples` y `ecg_beat_chunks` de esos estudios, y la próxima
+pasada (el lote siguiente, o `process_study_task` al abrir un estudio cerrado, o
+`backfill_beat_analysis`) los rehace. Los objetos de S3 de los latidos viejos no
+se borran acá: una pasada concurrente puede reescribir las mismas claves.
+
+El motor de detección no se rehace: volver a plegar bloques ya plegados al banco
+de morfologías duplicaría su carga. Su prefijo queda sin filas de calidad, y las
+métricas de ese estudio se informan con el algoritmo 1 (`_metric_noise`).
+
     python -m app.scripts.backfill_timeline [--dry-run] [--study <uuid>]
 """
 
@@ -132,10 +146,31 @@ def _segments_for(study: Study, batches: list[ECGBatch]) -> list[StudyTimelineSe
     return segments
 
 
+async def _current_layout(db: AsyncSession, study_id: uuid.UUID) -> list[tuple[int, int]]:
+    rows = await db.scalars(
+        select(StudyTimelineSegment)
+        .where(StudyTimelineSegment.study_id == study_id)
+        .order_by(StudyTimelineSegment.start_sample_index)
+    )
+    return [(row.start_sample_index, row.sample_count) for row in rows]
+
+
+def _reset_beats_if_stale(
+    study: Study, before: list[tuple[int, int]], segments: list[StudyTimelineSegment]
+) -> bool:
+    """Vuelve a cero los latidos si se analizaron contra otros tramos."""
+    after = [(segment.start_sample_index, segment.sample_count) for segment in segments]
+    if after == before or (study.beats_analyzed_samples <= 0 and not study.ecg_beat_chunks):
+        return False
+    study.beats_analyzed_samples = 0
+    study.ecg_beat_chunks = []
+    return True
+
+
 async def _run(dry_run: bool, study_id: uuid.UUID | None) -> None:
     async with async_session_factory() as db:
         studies = await _studies_to_backfill(db, study_id)
-        rebuilt = skipped = 0
+        rebuilt = skipped = beats_reset = 0
 
         for study in studies:
             batches = await _batches(db, study.id)
@@ -154,16 +189,23 @@ async def _run(dry_run: bool, study_id: uuid.UUID | None) -> None:
             if dry_run:
                 continue
 
+            before = await _current_layout(db, study.id)
             await db.execute(
                 delete(StudyTimelineSegment).where(StudyTimelineSegment.study_id == study.id)
             )
             for segment in segments:
                 db.add(segment)
             rebuilt += 1
+            if _reset_beats_if_stale(study, before, segments):
+                beats_reset += 1
+                print(f"{study.id}  latidos vueltos a cero: se analizaron con otros tramos")
 
         if not dry_run:
             await db.commit()
-        print(f"\nEstudios reconstruidos: {rebuilt}. Sin lotes (seedeados/legacy): {skipped}.")
+        print(
+            f"\nEstudios reconstruidos: {rebuilt}. Sin lotes (seedeados/legacy): {skipped}."
+            f" Con los latidos vueltos a cero: {beats_reset}."
+        )
 
 
 def main() -> None:

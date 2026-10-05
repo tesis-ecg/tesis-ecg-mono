@@ -490,7 +490,14 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         //
         // La spec de `ResizeObserver` garantiza un callback inicial por cada
         // elemento observado, así que esto siempre corre.
-        const restore = followsLatestRef.current ? null : preservedViewportRef.current
+        //
+        // Un `jumpTo` que llegó antes (ver `pendingJumpRef`) encuadra a la
+        // escala clínica y centra en su destino. No restaura el viewport
+        // preservado: con el visor oculto, el autoescalado de uPlot y el propio
+        // salto lo dejaron en el estudio entero.
+        const jumpTarget = pendingJumpRef.current
+        const restore =
+          jumpTarget !== null || followsLatestRef.current ? null : preservedViewportRef.current
         if (
           applyInitialFraming(
             inst,
@@ -498,11 +505,20 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             signal,
             durationSec,
             restore,
-            initialWindowSeconds,
+            jumpTarget !== null ? undefined : initialWindowSeconds,
             hasCursorAnchorRef.current ? cursorTimestampRef.current : undefined,
           )
         ) {
           pendingInitialSpanRef.current = false
+          pendingJumpRef.current = null
+          if (jumpTarget !== null) {
+            const { min, max } = inst.scales.x
+            if (min != null && max != null) {
+              const targetSec = (jumpTarget - startTimestamp) / 1000
+              const [newMin, newMax] = centerRangeAt(targetSec, min, max, 0, durationSec)
+              inst.setScale('x', { min: newMin, max: newMax })
+            }
+          }
           if (followsLatestRef.current) {
             cursorTimestampRef.current = latestTimestampMs(signal)
           }
@@ -723,6 +739,13 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // trazado todavía medía 0. Lo resuelve el primer `ResizeObserver`, que corre
   // ya con layout.
   const pendingInitialSpanRef = useRef(false)
+  // Un `jumpTo` pedido mientras el encuadre inicial está pendiente. Pasa con el
+  // visor oculto (la pestaña Señal con `forceMount`): el polling lo recrea
+  // dentro de un contenedor de ancho 0 y el encuadre espera al primer layout
+  // con ancho. Saltar en ese momento centraba sobre el rango automático de
+  // uPlot, y al mostrarse la pestaña el encuadre pendiente lo pisaba con lo
+  // último grabado o con el estudio entero: "Ver en el ECG" abría otro lado.
+  const pendingJumpRef = useRef<number | null>(null)
   // La señal, para el efecto de escala: no puede entrar como dependencia sin
   // reencuadrar en cada lote nuevo que llega por polling.
   const signalRef = useRef(signal)
@@ -761,6 +784,13 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       jumpTo(timestampMs: number) {
         const inst = uplotRef.current
         if (!inst) return
+        if (pendingInitialSpanRef.current) {
+          // Saltar es dejar de seguir lo último que llega: si no, el encuadre
+          // pendiente volvería al borde derecho.
+          pendingJumpRef.current = timestampMs
+          followsLatestRef.current = false
+          return
+        }
         const { min, max } = inst.scales.x
         if (min == null || max == null) return
         const targetSec = (timestampMs - signal.startTimestamp) / 1000

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -70,6 +71,15 @@ class ECGBatch(TimestampMixin, Base):
             name="ck_ecg_batch_backlog_seconds",
         ),
         Index("ix_ecg_batch_study_first_seq", "study_id", "first_seq"),
+        # El barrido de colas viejas del motor (`list_studies_with_stale_tail`)
+        # pregunta cada minuto, por estudio en curso, si llegó un lote reciente
+        # y si queda alguno sin procesar.
+        Index("ix_ecg_batch_study_received", "study_id", "received_at"),
+        Index(
+            "ix_ecg_batch_study_unprocessed",
+            "study_id",
+            postgresql_where=text("processing_status <> 'DONE'"),
+        ),
     )
 
     device_id: Mapped[uuid.UUID] = mapped_column(
