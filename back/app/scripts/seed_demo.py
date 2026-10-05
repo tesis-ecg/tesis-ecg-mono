@@ -1,6 +1,6 @@
 """Carga datos de demo en la base: pacientes, Holters, estudios con ECG y alertas.
 
-El ECG se sintetiza (P-QRS-T + ruido + arritmias inyectadas) y se sube a S3/MinIO
+El ECG se sintetiza (P-QRS-T + ruido + arritmias inyectadas) y se sube a S3
 como float32 little-endian crudo, que es exactamente lo que espera el visor del
 front (`front/src/features/ecg/api/ecgApi.ts`: `new Float32Array(buffer)` con
 `sampleCount * 4` bytes).
@@ -389,7 +389,7 @@ def synth_ecg(
 
 
 # --------------------------------------------------------------------------- #
-# S3 / MinIO
+# S3
 # --------------------------------------------------------------------------- #
 
 

@@ -16,7 +16,7 @@ Monorepo, git root at repository top. Three product surfaces plus project docume
 
 | Path | What it is | Stack |
 |---|---|---|
-| `back/` | Cloud API for the Holter device, the medical dashboard **and the patient app** | FastAPI, SQLAlchemy 2.0 (async), Alembic, PostgreSQL, S3/MinIO, Auth0, Expo Push |
+| `back/` | Cloud API for the Holter device, the medical dashboard **and the patient app** | FastAPI, SQLAlchemy 2.0 (async), Alembic, PostgreSQL, S3, Auth0, Expo Push |
 | `front/` | Medical dashboard (web) | Vite, React 19, TypeScript, Tailwind v4, React Router v7, TanStack Query, Axios, shadcn/ui |
 | `mobile/` | Patient companion app (iOS + Android) | Expo SDK 57, expo-router, NativeWind v5 + Tailwind v4, TanStack Query, Axios, expo-notifications |
 | `info del proyecto/` | System/communication architecture docs (Spanish) | Markdown |
@@ -157,7 +157,7 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 
 - **Auth0** — identity provider, backend-mediated (ROPG + Management API). Client: `back/app/core/auth0_client.py`. Config: `auth0_*` settings.
 - **PostgreSQL** — primary DB. Async engine in `back/app/db/session.py` uses timeouts and `NullPool` in preview/production. Local via root docker-compose (`postgres:16.10-alpine`).
-- **S3 / MinIO** — ECG binary blob storage (pre-signed URLs). Client built in `studies_service._get_s3_client()` (boto3, s3v4). Local via docker-compose (`minio/minio`). Config: `s3_*`/`aws_*` settings.
+- **S3** — ECG binary blob storage (pre-signed URLs). Client built in `studies_service._get_s3_client()` (boto3, s3v4). Local via docker-compose (`s3` service, RustFS). Config: `s3_*`/`aws_*` settings.
 - **Local ECG annotation showcase** — `python -m app.scripts.seed_ecg_showcase` creates/replaces only `SHOWCASE-ECG-ALERTS` and `showcases/ecg-alerts/` in development/test. It writes one deterministic 10-minute study, raw + pyramid objects, and six quality/clinical/patient events across all severities; default owner is `dev@tesis.com`, which must be an active doctor.
 - **Vest placement / anomaly test bench** — the vest simulator (`/__sim/vest`, admin-only) drives both patient pushes by hand while `app/ml/*` stays a stub: `VestTestPanel` toggles placement through the device-authenticated `POST /ingest/device-status` and fires `POST /studies/{id}/simulate-anomaly` with the portal session. The mobile side reads placement from `GET /mobile/device` (`vestPlacement`), not from a time window over alerts.
 - **Local patient-app alert seed** — `python -m app.scripts.seed_patient_alerts [--dni 44554402]` writes five unanswered `alert` rows (no `ecg_event` behind them) for one patient in development/test, so the mobile app's bell badge, Home pending cards and Notifications list can be reviewed without processing a study. Idempotent: it recognises its own rows by their fixed messages and drops them — plus any `patient_report` answering them — before rewriting.

@@ -9,7 +9,7 @@
 | ORM | SQLAlchemy 2.0 async (`asyncpg`) | API moderna async, evita hacks de greenlet |
 | Migraciones | Alembic (async `env.py`) | Estándar para SQLAlchemy |
 | Validación | Pydantic v2 | `model_config = ConfigDict(from_attributes=True)` para ORM → DTO |
-| S3 | `boto3` via `asyncio.to_thread()` | Estable; local con MinIO |
+| S3 | `boto3` via `asyncio.to_thread()` | Estable; local con RustFS (servicio `s3` del compose) |
 | Background jobs | FastAPI `BackgroundTasks` (MVP) | Sin infraestructura extra; path de upgrade a Celery claro |
 | Auth médicos | Auth0 JWT (RS256) via `python-jose` | Planificado — no implementado aún |
 | Auth dispositivo | `X-API-Key` header custom | Planificado — no implementado aún |
@@ -27,7 +27,7 @@ back/
 ├── uv.lock
 ├── .env.example
 ├── Dockerfile
-├── docker-compose.yml           # FastAPI + PostgreSQL + MinIO
+├── docker-compose.yml           # FastAPI + PostgreSQL + S3 (RustFS)
 ├── alembic.ini
 ├── alembic/
 │   ├── env.py                   # Alembic async
@@ -135,7 +135,7 @@ Variables clave:
 ```
 DATABASE_URL            postgresql+asyncpg://user:pass@db:5432/holter
 S3_BUCKET_NAME          ecg-batches
-S3_ENDPOINT_URL         http://minio:9000   # vacío en producción → usa AWS
+S3_ENDPOINT_URL         http://s3:9000   # vacío en producción → usa AWS
 AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY
 AWS_REGION              us-east-1

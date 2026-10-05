@@ -87,7 +87,7 @@ ecg_batch
   num_channels        Integer  NOT NULL DEFAULT 3
   num_samples         Integer  NOT NULL
   compression_type    String   NOT NULL  -- ej: "delta"
-  s3_key              String   NOT NULL  -- clave en S3/MinIO
+  s3_key              String   NOT NULL  -- clave en S3
   file_size_bytes     Integer  NULLABLE
   processing_status   Enum     DEFAULT "PENDING"
     -- valores: PENDING | PROCESSING | DONE | FAILED

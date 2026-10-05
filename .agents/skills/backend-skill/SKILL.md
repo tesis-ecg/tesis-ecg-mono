@@ -291,8 +291,8 @@ Validated at startup via `app/core/config.py` (Pydantic `BaseSettings`). App cra
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://holter:holter@db:5432/holter` | SQLAlchemy async |
 | `S3_BUCKET_NAME` | `ecg-batches` | |
-| `S3_ENDPOINT_URL` | `http://minio:9000` | Empty in production (uses AWS default) |
-| `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO in dev, real key in prod |
+| `S3_ENDPOINT_URL` | `http://s3:9000` | Empty in production (uses AWS default) |
+| `AWS_ACCESS_KEY_ID` | `minioadmin` | `minioadmin` is the local S3 server's key (RustFS) in dev, real key in prod |
 | `AWS_SECRET_ACCESS_KEY` | `minioadmin` | |
 | `AWS_REGION` | `us-east-1` | |
 | `AUTH0_DOMAIN` | `<tenant>.auth0.com` | For JWKS endpoint — needed when auth is implemented |
