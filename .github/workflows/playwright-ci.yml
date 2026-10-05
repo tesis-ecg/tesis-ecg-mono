@@ -177,3 +177,17 @@ jobs:
           path: front/test-results/pr-screenshots/
           retention-days: 7
           if-no-files-found: ignore
+
+      # uvx runs the S3 server out of the uv cache and holds its lock while it lives.
+      # setup-uv's post step prunes that cache and, with the server still up, waits 300 s
+      # for the lock and fails the job even though every test passed. pkill -f takes the
+      # uv wrapper and the Python process it leaves behind.
+      - name: Stop the S3 server
+        if: always()
+        run: |
+          pkill -f 'moto_server -H 127.0.0.1' || true
+          for _ in $(seq 1 20); do
+            pgrep -f 'moto_server -H 127.0.0.1' > /dev/null || exit 0
+            sleep 0.5
+          done
+          echo "::warning::The S3 server is still running; the uv cache post step may time out"
