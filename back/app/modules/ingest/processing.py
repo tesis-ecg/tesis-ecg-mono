@@ -1711,6 +1711,13 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
 
     El lock del estudio hace que dos tareas concurrentes reconsulten los estados
     en serie; la segunda no vuelve a anexar lo que la primera terminó.
+
+    **Una transacción por lote.** Antes el drenaje entero iba en una sola: con
+    la fila tomada de punta a punta, un POST esperaba todo el atraso, y como
+    era todo o nada, un atraso más largo que la duración máxima de la función
+    se revertía entero en cada intento y no avanzaba nunca. Ahora cada lote
+    commitea y suelta la fila; si la tarea se corta, lo hecho queda y el
+    próximo disparo sigue desde ahí.
     """
     requested = await repo.get_batch(db, batch_id)
     if requested is None:
@@ -1725,76 +1732,81 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
         return
 
     failed_batch_id = batch_id
+    patient_id: uuid.UUID | None = None
+    # La alerta más severa de lo ya commiteado. Se avisa aunque el drenaje se
+    # corte después: esas alertas existen, y el push sale una vez por drenaje.
+    pushable: Pushable | None = None
     try:
-        study = await _lock_study(db, requested.study_id)
-        if study is None:
-            raise RuntimeError("el estudio del lote no existe")
-
-        processed: list[tuple[ECGBatch, int, int]] = []
-        pushable: Pushable | None = None
-        for pending in await repo.list_batches_to_process(db, study.id):
-            failed_batch_id = pending.id
-            samples, events, batch_pushable = await _process_one_batch(db, study, pending)
-            processed.append((pending, samples, events))
-            pushable = most_severe(pushable, batch_pushable)
-
-        if processed:
-            # Después de `_persist_events` a propósito: los `frame_gap` /
-            # `internal_gap` de los lotes drenados ya están en la sesión, y el
-            # motor los lee como empalmes del bloque. Analiza solo los bloques
-            # que esos lotes completaron (casi siempre ninguno: un bloque son
-            # ~20 lotes); el resto espera al siguiente o al cierre. **Una**
-            # pasada por transacción y no una por lote: el presupuesto de la
-            # pasada (`ML_PASS_BUDGET_SECONDS`) es lo que mantiene la fila
-            # debajo del `lock_timeout`, y con una pasada por lote un drenaje de
-            # N lotes atrasados lo multiplicaba por N. El cursor hace que el
-            # resultado sea el mismo; lo escrito se atribuye al último lote. En
-            # un SAVEPOINT: una falla del motor no puede tirar abajo los lotes.
-            last_batch, last_samples, last_events = processed[-1]
-            ml_pass = await _guarded_ml_pass(db, study, last_batch)
-            pushable = most_severe(pushable, ml_pass.pushable)
-            processed[-1] = (last_batch, last_samples, last_events + ml_pass.written)
+        while True:
+            study = await _lock_study(db, requested.study_id)
+            if study is None:
+                raise RuntimeError("el estudio del lote no existe")
+            pending = await repo.list_batches_to_process(db, study.id)
+            if not pending:
+                await db.commit()
+                break
+            batch = pending[0]
+            failed_batch_id = batch.id
+            samples, events, batch_pushable = await _process_one_batch(db, study, batch)
+            last = len(pending) == 1
+            if last:
+                # Después de `_persist_events` a propósito: los `frame_gap` /
+                # `internal_gap` de los lotes drenados ya están en la base o en
+                # la sesión, y el motor los lee como empalmes del bloque.
+                # Analiza solo los bloques que esos lotes completaron (casi
+                # siempre ninguno: un bloque son ~20 lotes); el resto espera al
+                # siguiente o al cierre. **Una** pasada por drenaje y no una por
+                # lote: el presupuesto de la pasada (`ML_PASS_BUDGET_SECONDS`)
+                # es lo que mantiene la fila debajo del `lock_timeout`, y con una
+                # pasada por lote un drenaje de N lotes atrasados lo multiplicaba
+                # por N. El cursor hace que el resultado sea el mismo; lo escrito
+                # se atribuye al último lote. En un SAVEPOINT: una falla del
+                # motor no puede tirar abajo el lote.
+                ml_pass = await _guarded_ml_pass(db, study, batch)
+                batch_pushable = most_severe(batch_pushable, ml_pass.pushable)
+                events += ml_pass.written
             # Recuento y no `+=`: los encabezados por morfología del motor se
             # upsertean (la fila ya existe y solo crece su conteo), así que
             # "filas escritas" no es "eventos nuevos". Contar las filas del
             # estudio cuenta cada evento una sola vez, lo haya escrito la Capa A
             # o el motor.
             await ml_persistence.recount_events(db, study)
-
-        patient_id = study.patient_id
-        await db.commit()
-        for done, samples, events in processed:
+            patient_id = study.patient_id
+            await db.commit()
+            pushable = most_severe(pushable, batch_pushable)
             await logger.ainfo(
                 "process_batch_done",
-                batch_id=str(done.id),
+                batch_id=str(batch.id),
                 study_id=str(study.id),
                 samples=samples,
                 events=events,
             )
-        # Recién acá, con la transacción cerrada: el `alertId` del push tiene
-        # que existir cuando el paciente toque la notificación.
-        if pushable is not None:
-            await notify_patient_task(
-                patient_id,
-                anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
-            )
+            if last:
+                break
     except DBAPIError as error:
         if not is_lock_contention(error):
             await _mark_failed(db, batch_id, failed_batch_id, error)
-            return
-        # No se pudo tomar la fila ni después de los reintentos, o Postgres
-        # cortó un deadlock eligiendo esta transacción. El lote NO es
-        # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
-        # pendiente para que lo drene la próxima pasada — marcarlo fallido sería
-        # declarar rota una señal que está entera.
-        await db.rollback()
-        await logger.awarning(
-            "process_batch_contended",
-            requested_batch_id=str(batch_id),
-            pending_batch_id=str(failed_batch_id),
-        )
+        else:
+            # No se pudo tomar la fila ni después de los reintentos, o Postgres
+            # cortó un deadlock eligiendo esta transacción. El lote NO es
+            # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
+            # pendiente para que lo drene la próxima pasada — marcarlo fallido
+            # sería declarar rota una señal que está entera.
+            await db.rollback()
+            await logger.awarning(
+                "process_batch_contended",
+                requested_batch_id=str(batch_id),
+                pending_batch_id=str(failed_batch_id),
+            )
     except Exception as error:  # noqa: BLE001 — el estado del lote tiene que reflejarlo
         await _mark_failed(db, batch_id, failed_batch_id, error)
+    # Recién acá, con la transacción cerrada: el `alertId` del push tiene que
+    # existir cuando el paciente toque la notificación.
+    if pushable is not None and patient_id is not None:
+        await notify_patient_task(
+            patient_id,
+            anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
+        )
 
 
 async def _mark_failed(

@@ -576,6 +576,53 @@ async def test_a_failure_never_overwrites_a_batch_another_task_finished(
     assert batch.processing_error is None
 
 
+async def test_a_failure_mid_drain_keeps_the_batches_already_processed(
+    client, s3, db, make_patient, make_device, monkeypatch
+) -> None:
+    """Cada lote del drenaje commitea por su cuenta.
+
+    Antes el drenaje era todo o nada: un lote roto al final, o un atraso más
+    largo que la duración máxima de la función, revertía también los lotes
+    buenos, y el atraso no avanzaba nunca.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(4500)
+    third = len(frames) // 3
+    bodies = [
+        (await post_frames(client, device, api_key, chunk)).json()
+        for chunk in (frames[:third], frames[third : 2 * third], frames[2 * third :])
+    ]
+    broken = await db.get(ECGBatch, bodies[2]["batchId"])
+    assert broken is not None and broken.frames_s3_key is not None
+    broken_key = broken.frames_s3_key
+    real_get = get_object
+
+    def fail_last(key: str) -> bytes:
+        if key == broken_key:
+            raise RuntimeError("último lote ilegible")
+        return real_get(key)
+
+    monkeypatch.setattr("app.modules.ingest.processing.get_object", fail_last)
+    await process_batch(db, bodies[2]["batchId"])
+
+    batches = [await db.get(ECGBatch, body["batchId"]) for body in bodies]
+    for batch in batches:
+        assert batch is not None
+        await db.refresh(batch)
+    assert [batch.processing_status for batch in batches if batch is not None] == [
+        ProcessingStatus.DONE,
+        ProcessingStatus.DONE,
+        ProcessingStatus.FAILED,
+    ]
+    study = await db.get(Study, bodies[0]["studyId"])
+    assert study is not None
+    await db.refresh(study)
+    assert study.samples_count == sum(
+        batch.num_samples or 0 for batch in batches[:2] if batch is not None
+    )
+
+
 async def test_a_batch_without_frames_fails_cleanly(client, s3, db, make_patient, make_device):
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
