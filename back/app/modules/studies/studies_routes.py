@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.study import StudyStatus
 from app.dependencies.auth_dependencies import RoleScope, get_doctor_scope
 from app.dependencies.common_dependencies import get_db
+from app.modules.studies import findings_service
 from app.modules.studies import studies_service as service
 from app.modules.studies.studies_schemas import (
     HolterMetricsOut,
@@ -24,6 +25,8 @@ from app.modules.studies.studies_schemas import (
     StudyEcgOut,
     StudyEcgReportWindowsRequest,
     StudyEcgReportWindowsResponse,
+    StudyFindingsInput,
+    StudyFindingsOut,
     StudyIdInput,
     StudyListInput,
     StudyListResponse,
@@ -318,4 +321,30 @@ async def list_study_patient_reports(
     """
     return await service.list_study_patient_reports(
         StudyIdInput(doctor_id=scope.doctor_id, study_id=study_id), db
+    )
+
+
+@router.get("/{study_id}/findings", response_model=StudyFindingsOut)
+async def get_study_findings(
+    study_id: uuid.UUID,
+    items_per_group: int = Query(default=10, ge=1, le=100, alias="itemsPerGroup"),
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> StudyFindingsOut:
+    """Lo que el motor encontró, agrupado para revisión.
+
+    Sin paginación **a propósito**: el presupuesto de revisión acota la respuesta
+    por construcción (`ml_findings_max_per_study`), y paginar señalizaría que el
+    resultado no está acotado — que es exactamente lo contrario de lo que este
+    diseño afirma. Lo que sí viaja es `truncated`, para que un recorte nunca se
+    lea como "esto es todo lo que hay".
+    """
+    return await findings_service.get_study_findings(
+        StudyFindingsInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            actor_id=scope.user.id,
+            items_per_group=items_per_group,
+        ),
+        db,
     )

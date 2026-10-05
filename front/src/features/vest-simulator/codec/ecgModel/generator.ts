@@ -46,6 +46,17 @@ export const FULL_SCALE_UV = 403_333
 /** El firmware marca `ADC_SATURATED` por encima del 95 % del fondo de escala. */
 export const SATURATION_UV = Math.round(FULL_SCALE_UV * 0.95)
 
+/**
+ * El bit `R_PEAK` no cae sobre el pico: cae donde el detector del MCU confirma
+ * el latido, 200-300 ms después (FIR de 161 taps = 160 ms de retardo de grupo,
+ * + 40 ms de la cascada, + hasta 100 ms de ventana de confirmación; medido por
+ * el equipo de firmware sobre el chaleco el 2026-09-03). El motor de la nube lo
+ * compensa (`ml_firmware_peak_lag_ms`) antes de comparar sus dos detectores: un
+ * simulador que marcara el pico exacto dejaría el bSQI en ~0, todas las
+ * ventanas `marginal` y el motor sin un solo hallazgo.
+ */
+export const FIRMWARE_R_PEAK_LAG_SEC = 0.25
+
 /** Umbrales del SQI del firmware para una derivación, con 10 % de histéresis. */
 const SQI_BAD_RATIO = 10
 const SQI_MARGINAL_RATIO = 15
@@ -470,9 +481,12 @@ export function generateEcg(request: GenerateRequest): GeneratedEcg {
   // 4. Picos R y botón de síntoma.
   let beatCount = 0
   for (const beat of beats) {
-    if (beat.r < g0 || beat.r >= gEnd) continue
-    const i = Math.min(n - 1, Math.round((beat.r - g0) * FS))
-    beatCount++
+    if (beat.r >= g0 && beat.r < gEnd) beatCount++
+    // Un latido del final del lote se confirma en el siguiente: sigue en
+    // `state.beats` porque `BEAT_AFTER_SEC` es mayor que el retardo.
+    const confirmed = beat.r + FIRMWARE_R_PEAK_LAG_SEC
+    if (confirmed < g0 || confirmed >= gEnd) continue
+    const i = Math.min(n - 1, Math.round((confirmed - g0) * FS))
     if ((flags[i] & FLAG_LEAD_OFF) === 0 && state.leadBlend < 0.1) flags[i] |= FLAG_R_PEAK
   }
   for (const e of episodes) {

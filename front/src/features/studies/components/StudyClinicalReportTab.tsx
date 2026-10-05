@@ -46,6 +46,9 @@ const REPORT_REQUIREMENTS: { code: string; label: string; fieldId?: string }[] =
   { code: 'TIME_NOT_VERIFIED', label: 'Hora de las muestras verificada' },
   { code: 'MISSING_RAW_SIGNAL', label: 'Señal cruda disponible' },
   { code: 'BEAT_ANALYSIS_PENDING', label: 'Análisis de latidos completo' },
+  // Las métricas excluyen el ruido que marca el motor: hasta que cubre toda la
+  // señal, el informe final no las puede congelar.
+  { code: 'ML_ANALYSIS_PENDING', label: 'Análisis automático completo' },
   { code: 'MISSING_INDICATION', label: 'Indicación del estudio', fieldId: 'report-indication' },
   { code: 'MISSING_CONCLUSION', label: 'Conclusión clínica', fieldId: 'report-conclusion' },
 ]

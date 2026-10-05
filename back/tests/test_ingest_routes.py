@@ -5,7 +5,10 @@ delta contiguo, y equivocarse ahí no rompe nada de forma visible — simplement
 hace que el equipo borre de su flash señal que el servidor nunca guardó.
 """
 
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -414,3 +417,27 @@ async def test_errors_use_the_stable_envelope(client, s3, make_device, field: st
 
     assert response.status_code == 409
     assert field in response.json()
+
+
+def test_starting_the_api_does_not_import_numpy() -> None:
+    """Un arranque en frío que solo contesta el 202 no paga numpy ni el motor.
+
+    Es la razón por la que `app/ml/frame_header.py` existe separado de
+    `decompression.py` (informe de ingesta del 8/9/2026, hallazgo 2). Un import a
+    nivel de módulo de cualquier cosa que cuelgue de `app.ml.pipeline` en un
+    servicio que carga `app.main` lo deshace sin que ningún otro test lo note.
+    En un proceso aparte: en este, otros tests ya importaron numpy.
+    """
+    probe = (
+        "import sys, app.main; "
+        "print(sorted(m for m in ('numpy', 'scipy', 'app.ml.pipeline') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "[]", result.stderr

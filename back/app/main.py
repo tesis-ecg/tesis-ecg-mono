@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import hmac
+import importlib
 import re
 import time
 import uuid
@@ -19,6 +21,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from app.core.config import settings as _settings
 from app.core.logging import setup_logging
 from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
+from app.core.workers import shutdown_workers, warmup_ml
 from app.db.errors import is_lock_contention
 from app.db.session import engine
 from app.modules.alerts import router as alerts_router
@@ -33,10 +36,38 @@ from app.modules.studies import router as studies_router
 from app.modules.users import router as users_router
 
 
+async def _sweep_stale_tails() -> None:
+    """El barrido de colas viejas del motor (`processing.sweep_stale_tails_forever`).
+
+    `processing` se importa acá, en un hilo, y no arriba: arrastra numpy y el
+    motor, y cargar `app.main` no los puede pagar
+    (`test_starting_the_api_does_not_import_numpy`). En un hilo, como
+    `warmup_ml`, para que el import en frío no congele el arranque.
+    """
+    processing = await asyncio.to_thread(importlib.import_module, "app.modules.ingest.processing")
+    await processing.sweep_stale_tails_forever()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     setup_logging()
+    # En un hilo y sin await del resultado: el proceso queda listo para atender
+    # requests mientras carga el motor. Lo importante es que el costo del import
+    # no lo pague el primer lote que llegue.
+    asyncio.get_running_loop().run_in_executor(None, warmup_ml)
+    # La cola de una corrida abierta que dejó de crecer: sin esto, una pausa que
+    # ya llegó no se analiza hasta que el chaleco vuelva a subir.
+    sweeper = (
+        asyncio.create_task(_sweep_stale_tails())
+        if _settings.ml_enabled and _settings.ml_open_tail_flush_minutes > 0
+        else None
+    )
     yield
+    if sweeper is not None:
+        sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper
+    shutdown_workers()
     await engine.dispose()
 
 

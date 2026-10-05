@@ -636,6 +636,10 @@ async def _seed_study(
                 continue
             event = ECGEvent(
                 batch_id=batch.id,
+                # El lote demo no cuelga del estudio (`ecg_batch.study_id` queda
+                # en NULL): sin esta columna el evento no entra en el
+                # `events_count` que recalcula la ingesta.
+                study_id=study.id,
                 event_type=spec_event.type,
                 severity=spec_event.severity,
                 timestamp_in_recording=spec_event.start_s - chunk_start_s,

@@ -1,8 +1,39 @@
 import type { PatientStudySessionStatus } from '@/features/patients/types'
-import type { HolterMetricsOut } from '@/generated/openapi'
+import type {
+  HolterMetricsOut,
+  MetricEvidenceOut,
+  StudyFindingGroupOut,
+  StudyFindingOut,
+  StudyFindingsOut,
+  StudyQualityIntervalOut,
+  StudyQualitySummaryOut,
+} from '@/generated/openapi'
 
 /** Métricas del informe Holter (`GET /studies/:id/holter-metrics`). */
 export type HolterMetrics = HolterMetricsOut
+
+/** Dónde ocurrió una métrica (FC mínima, pausa más larga…), para ir a verla. */
+export type MetricEvidence = MetricEvidenceOut
+
+/**
+ * Hallazgos del motor de detección (`GET /studies/:id/findings`).
+ *
+ * Solo calidad y hallazgos: la FC, las pausas y la VFC que lee el médico vienen
+ * de `HolterMetrics`, la misma fuente que congela el informe.
+ */
+export type StudyFindings = StudyFindingsOut
+
+/** Un hallazgo agrupado: todos los episodios de un tipo, o de una morfología. */
+export type StudyFindingGroup = StudyFindingGroupOut
+
+/** Un episodio concreto, con su hora de pared para llevar el visor ahí. */
+export type StudyFinding = StudyFindingOut
+
+/** Cuánto del registro pudo evaluar el motor, y con qué nivel de calidad. */
+export type StudyQualitySummary = StudyQualitySummaryOut
+
+/** Un tramo de calidad homogénea, con el motivo por el que quedó así. */
+export type StudyQualityInterval = StudyQualityIntervalOut
 
 /**
  * Metadata expandida de un estudio individual. Diferencia con

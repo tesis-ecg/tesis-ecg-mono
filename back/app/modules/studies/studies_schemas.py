@@ -578,3 +578,121 @@ class StudyIdInput:
     doctor_id: uuid.UUID | None
     study_id: uuid.UUID
     actor_id: uuid.UUID | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Hallazgos del motor de detección
+# --------------------------------------------------------------------------- #
+
+
+class StudyFindingOut(CamelModel):
+    """Un hallazgo puntual, ubicable sobre la traza."""
+
+    id: uuid.UUID
+    kind: str
+    category: Literal["signal_quality", "clinical", "patient_marker", "technical"]
+    severity: Literal["low", "medium", "high", "critical"]
+    startOffsetMs: int
+    endOffsetMs: int
+    #: Hora de pared real, resuelta igual que en `StudyEcgAnnotationOut`: es lo
+    #: que el panel usa para llevar el visor a la banda del hallazgo.
+    startEpochMs: int
+    endEpochMs: int
+    #: Cuán atípico, en [0, 1]. **No es una probabilidad calibrada**: el motor es
+    #: no supervisado y no hay con qué calibrarla.
+    confidenceScore: float | None
+    #: `null` en los hallazgos previos al motor y en los del disparador manual.
+    #: Es lo que distingue "esto lo afirmó un modelo, y cuál" de "esto es un bit
+    #: del hardware".
+    modelVersion: str | None
+    validationStatus: Literal["pending", "confirmed", "rejected", "uncertain"]
+    clusterId: int | None = None
+    beatCount: int | None = None
+    description: str | None = None
+
+
+class StudyFindingGroupOut(CamelModel):
+    """Una morfología recurrente, o todos los hallazgos de un mismo tipo.
+
+    Agrupar no es cosmético: 412 latidos de la misma forma son **un** hallazgo
+    con 412 ocurrencias, no 412 filas. Sin esto, el panel del médico es
+    ilegible y la herramienta no se usa.
+    """
+
+    key: str
+    kind: str
+    category: Literal["signal_quality", "clinical", "patient_marker", "technical"]
+    #: La máxima del grupo.
+    severity: Literal["low", "medium", "high", "critical"]
+    occurrences: int
+    beatCount: int | None = None
+    #: Porcentaje de los latidos del estudio que tiene esta morfología. Solo en
+    #: los grupos de cluster.
+    burdenPct: float | None = None
+    #: Correlación media de los miembros con su centroide. Alta = foco real;
+    #: baja = bolsa de artefactos que casualmente se parecieron.
+    meanIntraCorrelation: float | None = None
+    firstOffsetMs: int
+    lastOffsetMs: int
+    firstEpochMs: int
+    lastEpochMs: int
+    items: list[StudyFindingOut] = Field(default_factory=list)
+
+
+class StudyQualityIntervalOut(CamelModel):
+    startOffsetMs: int
+    endOffsetMs: int
+    #: Hora de pared, igual que los hallazgos: los offsets son del buffer
+    #: empaquetado y se despegan de la hora en cuanto el estudio tiene un hueco.
+    #: Un intervalo nunca cruza una corrida, así que sus dos bordes se resuelven
+    #: contra el mismo tramo.
+    startEpochMs: int
+    endEpochMs: int
+    level: Literal["good", "marginal", "bad", "unknown"]
+    #: `lead_off`, `saturated`, `firmware_sqi`, `flatline`, `psqi`, `ksqi`,
+    #: `bassqi`, `no_beats`, `bsqi`, `ok`; `spectral` en estudios analizados antes
+    #: de separar los tres índices espectrales.
+    #: Sin el motivo, "malo" no distingue el electrodo despegado —que el paciente
+    #: puede acomodar— del ruido muscular, que no.
+    reason: str
+
+
+class StudyQualitySummaryOut(CamelModel):
+    """Cuánto del registro se pudo evaluar. Es un dato clínico, no una métrica.
+
+    Un informe que no dice qué fracción del Holter era ilegible está afirmando
+    de más: "no se detectaron arritmias" sobre un registro 40 % inutilizable no
+    significa lo mismo que sobre uno limpio.
+    """
+
+    analyzableRatio: float
+    goodRatio: float
+    marginalRatio: float
+    badRatio: float
+    evaluatedMs: int
+    intervals: list[StudyQualityIntervalOut] = Field(default_factory=list)
+
+
+class StudyFindingsOut(CamelModel):
+    studyId: uuid.UUID
+    sampleRate: int
+    sampleCount: int
+    durationMs: int
+    modelVersion: str | None
+    quality: StudyQualitySummaryOut
+    groups: list[StudyFindingGroupOut] = Field(default_factory=list)
+    #: Marcadores del paciente y detalles técnicos: no se agrupan porque cada uno
+    #: es un hecho suelto.
+    ungrouped: list[StudyFindingOut] = Field(default_factory=list)
+    totals: dict[str, int] = Field(default_factory=dict)
+    #: Verdadero si el tope de revisión recortó hallazgos. Se expone porque un
+    #: listado recortado en silencio se lee como "esto es todo lo que hay".
+    truncated: bool = False
+
+
+@dataclass
+class StudyFindingsInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID | None = None
+    items_per_group: int = 10

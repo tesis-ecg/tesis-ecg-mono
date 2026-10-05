@@ -17,6 +17,7 @@ from app.ml.decompression import (
     FLAG_RLD_OFF,
     FLAG_SQI_SHIFT,
     SQ_BAD,
+    STEP_MS,
 )
 from app.ml.status_flags import STATUS_FLAG_BACKLOG_OVERFLOW, STATUS_FLAG_CORRUPT_FRAME
 from app.modules.ingest.processing import derive_events, process_batch
@@ -57,6 +58,27 @@ async def test_symptom_marker_creates_an_event_and_an_alert(
     assert len(alerts) == 1
     assert alerts[0].patient_id == patient.id
     assert alerts[0].event_id == markers[0].id
+
+
+async def test_hardware_events_carry_their_source_and_study(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """La Capa A se distingue del motor por `source`, y cuelga del estudio.
+
+    Los hallazgos del motor llevan `"source": "ml"` y `model_version`; los de los
+    bits del hardware, `"source": "firmware_flags"` y ninguna versión de modelo:
+    no los escribió el motor y nada los reescribe.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames_with_flag_span(1200, span=(400, 404), flags=FLAG_EVENT_MARKER)
+
+    body = await _ingest(client, db, device, api_key, frames)
+
+    [marker] = [e for e in await _events(db) if e.event_metadata["kind"] == "symptom_marker"]
+    assert marker.event_metadata["source"] == "firmware_flags"
+    assert marker.model_version is None
+    assert str(marker.study_id) == body["studyId"]
 
 
 async def test_lead_off_is_marked_but_the_samples_are_kept(
@@ -258,6 +280,84 @@ def test_every_symptom_press_is_its_own_event() -> None:
 
     assert len(events) == 2
     assert all(e.alert_message for e in events)
+
+
+# --------------------------------------------------------------------------- #
+# Huecos entre tramas
+# --------------------------------------------------------------------------- #
+
+
+def _frame_info(seq: int, t0_ms: int, n_samples: int):
+    """Trama sin huecos internos: `durationMs` es exactamente el de sus muestras."""
+    from app.ml.decompression import FrameInfo
+
+    return FrameInfo(
+        seq=seq,
+        t0_ms=t0_ms,
+        n_samples=n_samples,
+        duration_ms=(n_samples - 1) * STEP_MS,
+        streams=1,
+        n_channels=1,
+        includes_diagnostic=False,
+        close_reason=0,
+        simulated=False,
+        boot_id=0,
+    )
+
+
+def _decoded_frame(info):
+    from app.ml.decompression import DecodedFrame
+
+    empty = np.zeros((1, info.n_samples), dtype=np.int32)
+    return DecodedFrame(
+        info=info,
+        raw_uV=empty,
+        diagnostic_uV=np.zeros((0, info.n_samples), dtype=np.int32),
+        flags=np.zeros(info.n_samples, dtype=np.uint8),
+    )
+
+
+def _batch_from_frames(frames):
+    from app.modules.ingest.processing import _DecodedBatch
+
+    total = sum(frame.info.n_samples for frame in frames)
+    return _DecodedBatch(
+        signal_mV=np.zeros(total, dtype="<f4"),
+        flags=np.zeros(total, dtype=np.uint8),
+        frames=frames,
+    )
+
+
+def test_a_gap_between_two_frames_is_reported() -> None:
+    """Lo que el equipo dejó de adquirir ENTRE dos tramas no lo miraba nadie.
+
+    El `gap_beyond_clock_ms` solo ve lo que falta adentro de una trama. Las tramas de
+    un lote son contiguas por `seq` y de un solo `bootId`, así que un salto de
+    `t0Ms` acá es adquisición perdida de verdad — y sin marcarla, el visor
+    dibujaría una línea isoeléctrica indistinguible de una asistolia.
+    """
+    first = _frame_info(seq=0, t0_ms=0, n_samples=250)
+    # La siguiente arranca 500 ms después de donde terminó la anterior.
+    second_t0 = first.t0_ms + first.duration_ms + 500
+    second = _frame_info(seq=1, t0_ms=second_t0, n_samples=250)
+    batch = _batch_from_frames([_decoded_frame(first), _decoded_frame(second)])
+
+    events = derive_events(batch, 500)
+
+    gaps = [event for event in events if event.kind == "frame_gap"]
+    assert len(gaps) == 1
+    assert gaps[0].severity == ECGEventSeverity.MEDIUM
+    assert gaps[0].start_sample == first.n_samples
+    assert gaps[0].length_samples == 250  # 500 ms a 500 Hz
+
+
+def test_contiguous_frames_produce_no_gap() -> None:
+    """Un lote sano no puede ensuciar el informe con huecos de redondeo."""
+    first = _frame_info(seq=0, t0_ms=0, n_samples=250)
+    second = _frame_info(seq=1, t0_ms=first.duration_ms + STEP_MS, n_samples=250)
+    batch = _batch_from_frames([_decoded_frame(first), _decoded_frame(second)])
+
+    assert [e for e in derive_events(batch, 500) if e.kind == "frame_gap"] == []
 
 
 # --------------------------------------------------------------------------- #

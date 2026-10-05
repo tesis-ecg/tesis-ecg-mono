@@ -82,7 +82,10 @@ class Study(TimestampMixin, Base):
     #: Un estudio de banco no se puede archivar como clínico (INTEGRACION.md §7.3),
     #: y una vez marcado nunca vuelve a falso.
     is_simulated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    #: `[{key, startSampleIndex, sampleCount, byteLength, sha256}]` en orden.
+    #: `[{key, startSampleIndex, sampleCount, byteLength, sha256, firstSeq}]` en
+    #: orden. `firstSeq` marca que el lote archivó también sus flags y por qué
+    #: lote atribuir lo que el motor escriba en el cierre; los segmentos de antes
+    #: no lo tienen.
     ecg_segments: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, nullable=False)
     #: Muestras sobrantes del último batch que no completaron un bucket de 16.
     #: Se anteponen al batch siguiente para que los buckets de la pirámide queden
@@ -121,6 +124,27 @@ class Study(TimestampMixin, Base):
     #: `bootId` de esa última trama. Un cambio de bootId invalida la comparación
     #: de `seq` y de `t0Ms`: el equipo se reinició y su reloj volvió a cero.
     last_boot_id: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+
+    # --- Motor de detección --------------------------------------------------- #
+    #: Estado acumulado del banco de plantillas y las métricas del pipeline.
+    #: `{schemaVersion, modelVersion, templatesKey, templates[], beatsSeen,
+    #:   unmatchedBeats, nextClusterId, lastFoldKey, scoreFloor, totals{},
+    #:   metrics{}}`. `totals` son las sumas del estudio (`app/ml/totals.py`) y
+    #: `metrics` su resumen legible más el estado del banco.
+    #:
+    #: Los **centroides** no viven acá sino en S3 (`templatesKey`): `select(Study)`
+    #: trae todas las columnas, y 40 KB de vectores TOASTeados se leerían en cada
+    #: listado y cada detalle de estudio. Acá queda solo la metadata liviana.
+    ml_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    #: Cursor del motor sobre el buffer empaquetado: todo lo anterior ya se
+    #: analizó y se informó una sola vez. Mismo patrón que
+    #: `filtered_samples_count` para la vista filtrada. BIGINT porque un estudio
+    #: de 50 días a 500 SPS ya no entra en un INTEGER.
+    ml_analyzed_samples: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
 
     patient: Mapped[Patient] = relationship()
     device: Mapped[Device] = relationship()
