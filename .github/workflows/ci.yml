@@ -9,6 +9,34 @@ permissions:
   contents: read
 
 jobs:
+  # `backend` es el job lento (minutos de tests del motor), así que en un PR solo
+  # corre si el PR toca algo de lo que depende. En `push` a main corre siempre:
+  # es la red de seguridad si este filtro se queda corto.
+  #
+  # Se filtra a nivel de job y no con `paths:` en `on:`. Un job salteado cuenta
+  # como exitoso, así que sigue siendo seguro si algún día `backend` pasa a ser un
+  # check requerido; con `paths:` a nivel de workflow, ese check nunca se
+  # reportaría y el PR quedaría esperándolo para siempre.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ github.event_name != 'pull_request' || steps.filter.outputs.backend == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            backend:
+              - 'back/**'
+              # `export_openapi --check` compara el contrato del backend con este
+              # archivo: un cambio a mano ahí rompe el job aunque `back/` no cambie.
+              - 'front/src/generated/**'
+              - '.github/workflows/ci.yml'
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -55,6 +83,8 @@ jobs:
       - run: npm run audit:high
 
   backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
