@@ -209,6 +209,7 @@ ignore_missing_imports = true
 ```bash
 cd back/
 uv run pytest                          # todos los tests
+uv run pytest -n auto                  # en paralelo, una base por worker
 uv run pytest tests/test_device_upload.py -v   # test específico
 uv run pytest --cov=app                # con coverage
 ```
