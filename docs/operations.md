@@ -6,7 +6,7 @@ Este runbook cubre la infraestructura de frontend, backend, PostgreSQL y S3. No 
 
 - Development, Preview y Production deben usar proyectos, bases, buckets, credenciales Auth0 y secretos distintos. Nunca conectar un Preview a datos de Production.
 - Configurar `BACKEND_ORIGIN` y `S3_PUBLIC_ORIGIN` en el proyecto Vercel del frontend. `/api` debe reescribir al backend antes del fallback SPA.
-- Fijar frontend y backend en una región cercana a PostgreSQL/S3. En Preview/Production el backend usa `NullPool`; `DATABASE_URL` debe apuntar al pooler administrado si el proveedor lo ofrece.
+- Fijar frontend y backend en una región cercana a PostgreSQL/S3. Hoy la base (Neon) está en `aws-us-east-1` y el bucket en `us-east-2`, así que las funciones del backend van en `iad1` (`back/vercel.json`): cada lote hace muchas más idas y vueltas a la base que a S3, y desde `gru1` cada una cruzaba el continente. En Preview/Production el backend usa `NullPool`; `DATABASE_URL` debe apuntar al pooler administrado si el proveedor lo ofrece.
 - Desplegar primero migraciones compatibles, luego backend y por último frontend. Para la migración de sesión, conservar ambas cookies durante al menos un TTL completo antes de retirar la legacy y CORS con credenciales.
 
 ## Auth0 ROPG
