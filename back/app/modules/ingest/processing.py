@@ -32,6 +32,7 @@ from typing import Any
 
 import numpy as np
 import structlog
+from sqlalchemy import update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -1800,15 +1801,27 @@ async def _mark_failed(
     db: AsyncSession, batch_id: uuid.UUID, failed_batch_id: uuid.UUID, error: Exception
 ) -> None:
     await db.rollback()
-    failed = await repo.get_batch(db, failed_batch_id)
-    if failed is not None:
-        failed.processing_status = ProcessingStatus.FAILED
-        failed.processing_error = str(error)[:1024]
-        await db.commit()
+    # Condicional: otra tarea pudo haber terminado este lote mientras ésta
+    # fallaba (esperando la fila, por ejemplo). Pisar ese `DONE` con `FAILED`
+    # hacía que el próximo drenaje lo volviera a anexar.
+    marked = await db.scalar(
+        update(ECGBatch)
+        .where(
+            ECGBatch.id == failed_batch_id,
+            ECGBatch.processing_status != ProcessingStatus.DONE,
+        )
+        .values(
+            processing_status=ProcessingStatus.FAILED,
+            processing_error=str(error)[:1024],
+        )
+        .returning(ECGBatch.id)
+    )
+    await db.commit()
     await logger.aexception(
         "process_batch_failed",
         requested_batch_id=str(batch_id),
         failed_batch_id=str(failed_batch_id),
+        marked_failed=marked is not None,
     )
 
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import random
+import uuid
 from datetime import UTC, datetime
 
 import numpy as np
@@ -13,6 +14,7 @@ from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.study import Study, StudyStatus
 from app.modules.ingest.processing import (
     BASE_BUCKET,
+    _mark_failed,
     build_envelope,
     envelope_prefix,
     process_batch,
@@ -551,6 +553,29 @@ async def test_a_batch_appended_but_not_marked_done_is_not_appended_again(
     assert offset == study.samples_count == sum(batch.num_samples or 0 for batch in batches)
 
 
+async def test_a_failure_never_overwrites_a_batch_another_task_finished(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Una tarea que falla no pisa el `DONE` que otra tarea ya commiteó.
+
+    La tarea pudo haber fallado esperando la fila mientras otra terminaba ese
+    mismo lote. Marcarlo `FAILED` hacía que el próximo drenaje lo volviera a
+    anexar.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    body = await _ingest_and_process(client, db, device, api_key, build_frames(1500))
+    batch_id = uuid.UUID(body["batchId"])
+
+    await _mark_failed(db, batch_id, batch_id, TimeoutError("esperando la fila del estudio"))
+
+    batch = await db.get(ECGBatch, batch_id)
+    assert batch is not None
+    await db.refresh(batch)
+    assert batch.processing_status is ProcessingStatus.DONE
+    assert batch.processing_error is None
+
+
 async def test_a_batch_without_frames_fails_cleanly(client, s3, db, make_patient, make_device):
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
@@ -568,8 +593,6 @@ async def test_a_batch_without_frames_fails_cleanly(client, s3, db, make_patient
 
 
 async def test_processing_a_missing_batch_is_a_noop(db, s3) -> None:
-    import uuid
-
     await process_batch(db, uuid.uuid4())  # no debe explotar
 
 
