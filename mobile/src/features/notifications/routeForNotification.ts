@@ -4,10 +4,15 @@ export interface NotificationData {
   occurredAt?: string
   /** Tipo de hallazgo, para encabezar el formulario con qué se detectó. */
   kind?: string
+  /** Severidad del aviso, para pintar el encabezado del formulario. */
+  severity?: string
 }
 
 export type NotificationRoute =
-  | { pathname: '/report'; params: { alertId: string; occurredAt: string; kind?: string } }
+  | {
+      pathname: '/report'
+      params: { alertId: string; occurredAt: string; kind?: string; severity?: string }
+    }
   | { pathname: '/(tabs)/device' }
   | { pathname: '/notifications' }
 
@@ -37,6 +42,7 @@ export function routeForNotification(data: NotificationData | null | undefined):
         alertId: data.alertId,
         occurredAt: data.occurredAt,
         ...(data.kind ? { kind: data.kind } : {}),
+        ...(data.severity ? { severity: data.severity } : {}),
       },
     }
   }

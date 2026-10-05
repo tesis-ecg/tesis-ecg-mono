@@ -34,10 +34,9 @@ const HERO = require("@/assets/images/login-hero.jpg");
  * misma imagen que el portal médico, y sirve para que el paciente reconozca de
  * entrada que esto es lo de su médico y no una app cualquiera.
  *
- * La foto es muy clara —un pasillo blanco a contraluz—, así que lleva un velo
- * azul encima (`bg-hero-scrim`). Sin él la marca en blanco no se lee, y con un
- * velo parejo la cara de la foto se apaga; por eso el gradiente es más denso
- * arriba y abajo que en el medio.
+ * La foto es vertical y la banda es apaisada, así que se ancla arriba: centrada
+ * cortaba la cara del hombre a la altura de los ojos. Arriba entran las dos
+ * caras y el pecho del chaleco con los electrodos.
  */
 export default function Login() {
   const { signIn } = useAuth();
@@ -93,8 +92,9 @@ export default function Login() {
 
   return (
     <View className="flex-1 bg-white">
-      {/* La foto arranca detrás de la barra de estado, así que va en claro. */}
-      <StatusBar style="light" />
+      {/* La foto arranca detrás de la barra de estado y arriba es cielo claro:
+          en blanco la hora y la batería no se leían. */}
+      <StatusBar style="dark" />
 
       <KeyboardAwareScrollView
         ref={scrollRef}
@@ -122,6 +122,7 @@ export default function Login() {
             source={HERO}
             style={{ width: "100%", height: "100%" }}
             contentFit="cover"
+            contentPosition="top"
             // La imagen está en el bundle: no hay descarga que atenuar, y un
             // fundido de entrada solo agregaría un parpadeo al abrir la app.
             transition={0}

@@ -66,6 +66,12 @@
     --color-warning-300: #f7dcac;
     --color-warning-400: #f3d097;
     --color-warning-500: #efc482;
+    /*
+     * Mismo valor que en el portal (`--ecg-alert-high`): el único ámbar de la
+     * rampa que se lee como ícono sobre un fondo claro. El 500 se pierde y el
+     * 700 se lee marrón.
+     */
+    --color-warning-600: #b86a16;
     --color-warning-700: #4a2b14;
 
     --color-info-100: #f1f6ff;

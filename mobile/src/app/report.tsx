@@ -47,6 +47,7 @@ export default function Report() {
     alertId?: string;
     occurredAt?: string;
     kind?: string;
+    severity?: string;
   }>();
   const catalogs = useCatalogs();
   const createReport = useCreateReport();
@@ -187,7 +188,11 @@ export default function Report() {
       contentClassName="gap-6"
     >
       {params.alertId ? (
-        <DetectedBanner kind={params.kind} occurredAt={params.occurredAt} />
+        <DetectedBanner
+          kind={params.kind}
+          severity={params.severity}
+          occurredAt={params.occurredAt}
+        />
       ) : null}
 
       <View className="gap-3">

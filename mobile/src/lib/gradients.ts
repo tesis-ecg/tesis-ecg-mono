@@ -28,6 +28,32 @@ export const brandGradient: ViewStyle = {
     "linear-gradient(160deg, #1a3edf 0%, #0b2185 55%, #081b73 100%)",
 };
 
+/**
+ * Los avisos de Inicio, pintados según qué tan urgentes son.
+ *
+ * Son fondos claros con un gradiente apenas perceptible, como el
+ * `brandGradientSoft`: el aviso tiene que destacarse sin gritar, y el color lo
+ * terminan de decir el ícono y el borde. Los extremos son tokens
+ * (`--color-info-100` → `--color-primary-50`, `--color-error-50` →
+ * `--color-error-100`, `--color-warning-100` → `--color-warning-300`). El
+ * ámbar llega más lejos en la rampa que los otros dos porque es el más claro
+ * de los tres: con el mismo salto se perdía contra el fondo de la pantalla.
+ */
+export const alertGradient: Record<"info" | "warning" | "danger", ViewStyle> = {
+  info: {
+    experimental_backgroundImage:
+      "linear-gradient(160deg, #f1f6ff 0%, #e5e7fe 100%)",
+  },
+  warning: {
+    experimental_backgroundImage:
+      "linear-gradient(160deg, #fff3d6 0%, #f7dcac 100%)",
+  },
+  danger: {
+    experimental_backgroundImage:
+      "linear-gradient(160deg, #fff7f6 0%, #fae0de 100%)",
+  },
+};
+
 /** La versión clara, para superficies que acompañan sin pedir atención. */
 export const brandGradientSoft: ViewStyle = {
   experimental_backgroundImage:
