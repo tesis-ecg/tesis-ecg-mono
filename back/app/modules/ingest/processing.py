@@ -177,6 +177,11 @@ def decode_batch(payload: bytes) -> _DecodedBatch:
     return _DecodedBatch(signal_mV=signal.astype("<f4"), flags=flags, frames=frames)
 
 
+def _read_batch(frames_key: str) -> _DecodedBatch:
+    """Las tramas archivadas de un lote, decodificadas. **Bloqueante**: corre en un hilo."""
+    return decode_batch(get_object(frames_key))
+
+
 # --------------------------------------------------------------------------- #
 # Pirámide
 # --------------------------------------------------------------------------- #
@@ -826,12 +831,14 @@ async def _place_on_timeline(
     return 0, previous_end_t0_ms
 
 
-def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
+async def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
     """Read a bounded contiguous range from immutable decoded raw segments.
 
-    Shared by the filtered view and the detection engine (`append_ml_analysis`).
+    Shared by the filtered view and the beat pass. The GETs run in a thread
+    (`run_io`): on the event loop they froze every other request of the same
+    instance while a batch was being processed.
     """
-    return _raw_range(study.ecg_segments, start, end)
+    return await run_io(_raw_range, list(study.ecg_segments), start, end)
 
 
 def _raw_range(segments: list[dict[str, Any]], start: int, end: int) -> np.ndarray:
@@ -949,13 +956,13 @@ async def append_filtered_view(db: AsyncSession, study: Study) -> None:
             break
         read_start = max(run_start, cursor - context)
         read_end = min(run_end, safe_end + context)
-        raw = _raw_signal_range(study, read_start, read_end)
+        raw = await _raw_signal_range(study, read_start, read_end)
         filtered = filter_visualization(raw, rate)[cursor - read_start : safe_end - read_start]
         if filtered.size != safe_end - cursor:
             raise RuntimeError("La vista filtrada no cubre el tramo esperado.")
         key = filtered_segment_key(study.id, cursor)
         payload = filtered.tobytes()
-        put_object(key, payload)
+        await run_io(put_object, key, payload)
         filtered_segments = [item for item in study.ecg_filtered_segments if item.get("key") != key]
         filtered_segments.append(
             _object_meta(key, payload, startSampleIndex=cursor, sampleCount=int(filtered.size))
@@ -969,7 +976,7 @@ async def append_filtered_view(db: AsyncSession, study: Study) -> None:
         )
         envelope, remainder = build_envelope(np.concatenate((old_carry, filtered)))
         if envelope.size:
-            put_object(filtered_envelope_key(study.id, cursor), envelope.tobytes())
+            await run_io(put_object, filtered_envelope_key(study.id, cursor), envelope.tobytes())
         study.ecg_filtered_envelope_carry = remainder.tobytes() if remainder.size else None
         study.filtered_samples_count = safe_end
         study.ecg_filtered_pyramid_levels = append_level_chunks(
@@ -1052,12 +1059,12 @@ async def append_beat_analysis(
             break
         read_start = max(run_start, cursor - context)
         read_end = min(run_end, safe_end + context)
-        raw = _raw_signal_range(study, read_start, read_end)
+        raw = await _raw_signal_range(study, read_start, read_end)
         beats = analyze_window(raw, rate, offset=read_start, keep_start=cursor, keep_end=safe_end)
         if beats.size:
             key = beat_chunk_key(study.id, cursor)
             payload = encode_beats(beats)
-            put_object(key, payload)
+            await run_io(put_object, key, payload)
             chunks = [chunk for chunk in chunks if chunk.get("key") != key]
             chunks.append(
                 _object_meta(
@@ -1541,17 +1548,20 @@ async def _process_one_batch(
     batch.processing_status = ProcessingStatus.PROCESSING
     await db.flush()
 
-    decoded = decode_batch(get_object(batch.frames_s3_key))
+    # Las llamadas a S3 de acá abajo van a un hilo (`run_io`): en el event loop
+    # congelan los demás requests de la misma instancia mientras el lote se
+    # procesa, incluidos los POST de otros chalecos.
+    decoded = await run_io(_read_batch, batch.frames_s3_key)
     sample_rate = study.sample_rate or 500
 
     # --- Segmento ---------------------------------------------------------- #
     start_sample_index = study.samples_count
     payload = decoded.signal_mV.tobytes()
     key = segment_key(study.id, batch.first_seq or 0)
-    put_object(key, payload)
+    await run_io(put_object, key, payload)
     flags_payload = decoded.flags.astype(np.uint8).tobytes()
     flags_object = flags_key(study.id, batch.first_seq or 0)
-    put_object(flags_object, flags_payload)
+    await run_io(put_object, flags_object, flags_payload)
 
     segments = [segment for segment in study.ecg_segments if segment.get("key") != key]
     segments.append(
@@ -1579,7 +1589,7 @@ async def _process_one_batch(
     )
     envelope, remainder = build_envelope(np.concatenate([carry, decoded.signal_mV]))
     if envelope.size:
-        put_object(envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
+        await run_io(put_object, envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
     study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
     # Antes acá se llamaba `rebuild_pyramid`, que releía de S3 TODAS las
     # envolventes del estudio en cada lote. Era una fuente de contención que
