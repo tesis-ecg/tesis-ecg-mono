@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
 
+import { prScreenshot } from '../support/pr-screenshot'
+
 test('a logged-out visitor is sent to the login page and keeps where they were going', async ({
   page,
 }) => {
@@ -39,4 +41,20 @@ test('wrong credentials show an error and keep the visitor on the login page', a
 
   await expect(page.getByRole('alert')).toHaveText('Email o contraseña incorrectos.')
   await expect(page).toHaveURL(/\/login/)
+})
+
+test('the eye button reveals and hides the typed password', async ({ page }) => {
+  await page.goto('/login')
+  const password = page.getByLabel('Contraseña', { exact: true })
+  await password.fill('contraseña-de-ejemplo')
+  await expect(password).toHaveAttribute('type', 'password')
+
+  await page.getByRole('button', { name: 'Mostrar contraseña' }).click()
+  await expect(password).toHaveAttribute('type', 'text')
+  await expect(password).toHaveValue('contraseña-de-ejemplo')
+  await prScreenshot(page.getByRole('main').locator('form'), 'password-visible')
+
+  await page.getByRole('button', { name: 'Ocultar contraseña' }).click()
+  await expect(password).toHaveAttribute('type', 'password')
+  await expect(password).toHaveValue('contraseña-de-ejemplo')
 })
