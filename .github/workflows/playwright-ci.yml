@@ -1,0 +1,173 @@
+name: Playwright
+
+# The front/e2e suite against both real apps (Vite + FastAPI), a migrated and
+# seeded Postgres, MinIO for the ECG signal, and the real Auth0 login of a
+# dedicated test user. It is how a PR that changes the UI proves the change
+# works: lint and build cannot.
+#
+# This job runs the PR's own code, so its token is read-only. It only uploads
+# results and screenshots; playwright-report.yml (main's code) turns them into
+# the PR comment and the PR description's Screenshots section.
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "front/**"
+      - "back/**"
+      - ".github/workflows/playwright-ci.yml"
+
+concurrency:
+  group: playwright-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  playwright:
+    name: Playwright e2e
+    # The repository is public: PRs from forks get no secrets, so there is no test
+    # user to sign in as. Skipped, not red, and the job never runs their code with them.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: front
+
+    services:
+      postgres:
+        image: postgres:16.10-alpine
+        env:
+          POSTGRES_USER: holter
+          POSTGRES_PASSWORD: holter
+          POSTGRES_DB: holter_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U holter -d holter_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Backend. There is no .env on the runner: every required variable is set
+      # here. MinIO (started below) is the S3 the demo seed writes the ECG to.
+      DATABASE_URL: postgresql+asyncpg://holter:holter@localhost:5432/holter_e2e
+      S3_BUCKET_NAME: ecg-batches
+      S3_ENDPOINT_URL: http://localhost:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      ENVIRONMENT: test
+      FRONTEND_URL: http://localhost:5173
+      JWT_SECRET: ci-only-placeholder-not-a-real-secret-0000
+      # The login goes to the real Auth0 tenant (ROPG), so these are real. Use the
+      # dev tenant, never production.
+      AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
+      AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+      AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
+      AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
+      # Required by the settings, never called: no spec provisions users through
+      # the Management API.
+      AUTH0_MGMT_CLIENT_ID: ci-placeholder
+      AUTH0_MGMT_CLIENT_SECRET: ci-placeholder
+      # The test user (AGENTS.md -> "Verificar cambios de UI"). The seed links its
+      # Auth0 sub to an active row so the backend recognises the session.
+      E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+      E2E_AUTH0_SUB: ${{ secrets.E2E_AUTH0_SUB }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the test user and Auth0 secrets
+        run: |
+          missing=""
+          for name in E2E_EMAIL E2E_PASSWORD E2E_AUTH0_SUB AUTH0_DOMAIN AUTH0_CLIENT_ID AUTH0_CLIENT_SECRET AUTH0_AUDIENCE; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Repository secrets missing:$missing. See AGENTS.md, 'Verificar cambios de UI (Playwright)'."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install front dependencies
+        run: npm ci
+
+      - name: Install back dependencies
+        run: uv sync --frozen --no-dev
+        working-directory: back
+
+      # The compose image, run by hand: a service container cannot pass `server /data`.
+      - name: Start MinIO
+        working-directory: .
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && exit 0
+            sleep 1
+          done
+          echo "::error::MinIO did not come up"
+          docker logs minio
+          exit 1
+
+      - name: Migrate and seed the database
+        working-directory: back
+        run: |
+          uv run alembic upgrade head
+          uv run python -m app.scripts.seed_e2e_user --email "$E2E_EMAIL" --auth0-id "$E2E_AUTH0_SUB"
+          uv run python -m app.scripts.seed_demo --doctor-email "$E2E_EMAIL"
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Playwright starts both dev servers itself (playwright.config.ts).
+      - name: Playwright
+        run: npm run test:e2e
+
+      # Only the page snapshots. Traces of the signed-in specs carry the test
+      # user's session cookie, and artifacts of a public repository are readable
+      # by anyone.
+      - name: Upload failure snapshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures
+          path: front/test-results/**/error-context.md
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Read by playwright-report.yml: the JSON report for the PR comment, and
+      # the prScreenshot() images for the PR description (green runs only).
+      - name: Upload results for the PR report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: front/playwright-report/results.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload PR screenshots
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-screenshots
+          path: front/test-results/pr-screenshots/
+          retention-days: 7
+          if-no-files-found: ignore
