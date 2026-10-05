@@ -11,6 +11,9 @@ if [ -n "$STAGED_PY" ]; then
   cd back
   echo "$STAGED_PY" | sed 's|^back/||' | xargs uv run ruff format
   echo "$STAGED_PY" | sed 's|^back/||' | xargs uv run ruff check --fix
-  echo "$STAGED_PY" | sed 's|^back/||' | xargs git add
   cd ..
+  # Re-stage from the repo root with the back/-prefixed paths: inside a worktree git
+  # exports GIT_DIR without GIT_WORK_TREE, so `git add` from back/ would treat back/ as
+  # the work-tree root and record the files at the repository root.
+  echo "$STAGED_PY" | xargs git add
 fi
