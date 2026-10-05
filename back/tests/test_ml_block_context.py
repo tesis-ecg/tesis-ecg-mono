@@ -18,6 +18,7 @@ from app.db.models.ecg_event import ECGEventSeverity, ECGEventType
 from app.db.models.signal_quality import SignalQualityLevel
 from app.ml import pipeline
 from app.ml.contracts import Finding, QualityWindow
+from app.ml.decompression import FLAG_LEAD_OFF
 from app.ml.episodes import apply_refractory
 from app.ml.hrv import RRSeries, build_rr, hrv_summary
 from app.ml.morphology import TemplateBank
@@ -695,15 +696,85 @@ def test_un_empalme_en_medio_de_una_taquicardia_no_la_parte() -> None:
     assert puenteada.metadata["peakBpm"] == pytest.approx(125.0, abs=1.0)
 
 
+def _with_noise(signal_mv: np.ndarray, *spans_s: tuple[int, int]) -> np.ndarray:
+    """La señal con ruido gaussiano de 0,6 mV —ilegible para el gate— en cada tramo."""
+    ruidosa = signal_mv.copy()
+    rng = np.random.default_rng(3)
+    for desde, hasta in spans_s:
+        ruidosa[desde * SR : hasta * SR] = rng.normal(0.0, 0.6, (hasta - desde) * SR)
+    return ruidosa
+
+
+def _unreadable(flags: np.ndarray, *spans_s: tuple[int, int]) -> np.ndarray:
+    """Los flags con `LEAD_OFF` en cada tramo: ventanas que el gate rechaza con
+    los latidos intactos debajo, como las que el simulador de chalecos perdía por
+    curtosis. Con ruido el detector inventa R en los bordes del tramo, y esos
+    R-R válidos que no cumplen el umbral cortan el episodio por otro motivo."""
+    marcados = flags.copy()
+    for desde, hasta in spans_s:
+        marcados[desde * SR : hasta * SR] |= FLAG_LEAD_OFF
+    return marcados
+
+
+def _rhythm(result: pipeline.PipelineResult, kind: str) -> list[Finding]:
+    return [finding for finding in result.findings if finding.kind == kind]
+
+
 def test_un_hueco_largo_de_senal_ilegible_si_corta_el_episodio() -> None:
-    """El puente es para empalmes, no para señal que no se pudo leer: 20 s de
-    ruido en medio de 50 s de taquicardia la dejan en dos tramos de 15 s, y
-    ninguno es una taquicardia sostenida."""
+    """20 s de ruido en medio de 50 s de taquicardia dejan 30 s de ventanas
+    ilegibles (la de 10-20 s y la de 30-40 s también tienen ruido): más que el
+    puente. Quedan dos tramos de 10 s y ninguno es una taquicardia sostenida."""
     ecg = synth_ecg(duration_s=50.0, bpm=125.0)
-    ruidosa = ecg.signal_mv.copy()
-    ruidosa[15 * SR : 35 * SR] = np.random.default_rng(3).normal(0.0, 0.6, 20 * SR)
-    result = _analyze(ruidosa, ecg.flags)
-    assert not [finding for finding in result.findings if finding.kind == "tachycardia"]
+    result = _analyze(_with_noise(ecg.signal_mv, (15, 35)), ecg.flags)
+    assert not _rhythm(result, "tachycardia")
+
+
+def test_una_ventana_ilegible_suelta_no_parte_la_taquicardia() -> None:
+    """Visto con el simulador de chalecos: a 155 lpm la curtosis de una ventana
+    suelta baja de 5 y el gate la rechaza. Sin el puente, una taquicardia
+    continua de 6 min salía como tres eventos con un aviso cada uno."""
+    ecg = synth_ecg(duration_s=100.0, bpm=125.0)
+    [referencia] = _rhythm(_analyze(ecg.signal_mv, ecg.flags), "tachycardia")
+    puenteadas = _rhythm(_analyze(ecg.signal_mv, _unreadable(ecg.flags, (40, 50))), "tachycardia")
+
+    assert len(puenteadas) == 1, "un episodio, un aviso"
+    [puenteada] = puenteadas
+    assert (puenteada.start_sample, puenteada.length_samples) == (
+        referencia.start_sample,
+        referencia.length_samples,
+    )
+    # Las frecuencias, de lo leído: los R-R de la ventana ilegible no entran.
+    assert puenteada.metadata["peakBpm"] == pytest.approx(125.0, abs=1.0)
+
+
+def test_una_bradicardia_partida_en_tramos_cortos_legibles_es_un_episodio() -> None:
+    """La bradicardia del simulador: a 40 lpm el basSQI queda en 0,89 y el gate
+    rechaza ventanas intercaladas. Ningún tramo legible llega solo a 30 s —de
+    los 2 min quedaban 42 s—, pero entre todos son ~60 s de ritmo leído: es una
+    bradicardia, y una sola. El hueco de 70-90 s, dos ventanas, es el más largo
+    que se puentea."""
+    ecg = synth_ecg(duration_s=100.0, bpm=40.0)
+    flags = _unreadable(ecg.flags, (20, 30), (50, 60), (70, 90))
+    [bradicardia] = _rhythm(_analyze(ecg.signal_mv, flags), "bradycardia")
+
+    assert bradicardia.start_sample < 2 * SR
+    assert bradicardia.start_sample + bradicardia.length_samples > 97 * SR
+    assert bradicardia.severity is ECGEventSeverity.HIGH
+    assert bradicardia.metadata["minBpm"] == pytest.approx(40.0, abs=1.0)
+
+
+def test_lo_ilegible_une_los_tramos_pero_no_suma_a_los_30_s() -> None:
+    """Sostenido es sostenido **leído**. 34 s de taquicardia con una ventana
+    ilegible en el medio son ~23 s de ritmo medido: no llegan. Con 50 s sí, y
+    sale un solo episodio desde el principio aunque ninguna de las dos mitades
+    llegue sola a 30 s."""
+    corta = synth_ecg(duration_s=34.0, bpm=125.0)
+    assert _rhythm(_analyze(corta.signal_mv, corta.flags), "tachycardia"), "entera sí llega"
+    assert not _rhythm(_analyze(corta.signal_mv, _unreadable(corta.flags, (10, 20))), "tachycardia")
+
+    larga = synth_ecg(duration_s=50.0, bpm=125.0)
+    [unida] = _rhythm(_analyze(larga.signal_mv, _unreadable(larga.flags, (10, 20))), "tachycardia")
+    assert unida.start_sample < 1 * SR
 
 
 def test_dos_pausas_seguidas_fundidas_no_cuentan_dos_veces_el_r_del_medio() -> None:

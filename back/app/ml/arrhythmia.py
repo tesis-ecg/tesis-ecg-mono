@@ -38,12 +38,18 @@ BRADYCARDIA_HIGH_BPM = 40.0
 PAUSE_CRITICAL_SECONDS = 3.0
 
 #: Tramo máximo de R-R **inválidos** que se puentea dentro de un episodio
-#: sostenido (`_bridged_runs`). Un empalme del buffer (`frame_gap`,
-#: `internal_gap`) saca ~1,4 s de lo analizable (`quality.exclude_splices`) e
-#: invalida los dos o tres R-R que lo tocan: hasta ~4,4 s a 40 lpm. Más que eso
-#: ya no es un empalme sino señal que no se pudo leer, y ahí el episodio se
-#: corta como antes.
-MAX_INVALID_BRIDGE_SECONDS = 5.0
+#: sostenido (`_bridged_runs`): dos ventanas de calidad de 10 s ilegibles
+#: seguidas, más el R-R que cruza cada borde a 30 lpm.
+#:
+#: No es solo para los empalmes del buffer (`frame_gap`, `internal_gap`), que
+#: invalidan ~1,4 s. Medido con el simulador de chalecos: el gate rechaza
+#: ventanas sueltas en medio de un ritmo limpio —a 155 lpm la curtosis baja de
+#: 5 (4,4-4,9, con bSQI = 1,00: los dos detectores ven los mismos latidos), a
+#: 40 lpm el basSQI queda en 0,89—, y cada una partía el episodio. Una
+#: taquicardia continua de 6 min salía como tres eventos y tres avisos, y de
+#: una bradicardia de 2 min quedaban 42 s. Más que esto ya no es una ventana
+#: suelta sino señal que no se pudo leer, y el episodio se corta.
+MAX_INVALID_BRIDGE_SECONDS = 25.0
 
 #: Texto del aviso al paciente. Solo los hallazgos severos lo llevan: el push
 #: existe para preguntarle cómo se sentía, y una taquicardia de 105 lpm mientras
@@ -66,7 +72,7 @@ def _smooth_bpm(rr_seconds: Floats) -> Floats:
     return np.asarray(np.median(windows, axis=-1), dtype=np.float32)[: bpm.size]
 
 
-def _bridged_runs(mask: Mask, rr: RRSeries, sample_rate: int) -> list[tuple[int, int]]:
+def _bridged_runs(mask: Mask, rr: RRSeries, sample_rate: int) -> list[tuple[int, int, int]]:
     """`sample_runs(mask)` con los tramos cortados solo por R-R inválidos vueltos a unir.
 
     Un empalme de 50 ms en medio de una taquicardia de 56 s invalida dos o tres
@@ -76,20 +82,22 @@ def _bridged_runs(mask: Mask, rr: RRSeries, sample_rate: int) -> list[tuple[int,
     del mismo tipo si **todo** lo que hay entre ellos son R-R inválidos y ese
     hueco no pasa de `MAX_INVALID_BRIDGE_SECONDS`. Un R-R válido que no cumple
     el umbral sí corta: es el ritmo que cambió.
+
+    Cada tramo es `(primero, cantidad, muestras_ilegibles)`: lo último es lo
+    que suman los huecos puenteados, para que el mínimo de duración se mida
+    sobre lo que sí se leyó (`detect_rhythm`).
     """
     max_gap = MAX_INVALID_BRIDGE_SECONDS * sample_rate
-    runs: list[tuple[int, int]] = []
+    runs: list[tuple[int, int, int]] = []
     for first, count in sample_runs(mask):
         if runs:
-            previous_first, previous_count = runs[-1]
+            previous_first, previous_count, unreadable = runs[-1]
             gap_start = previous_first + previous_count
-            if (
-                not rr.valid[gap_start:first].any()
-                and int(rr.rpeaks[first]) - int(rr.rpeaks[gap_start]) <= max_gap
-            ):
-                runs[-1] = (previous_first, first + count - previous_first)
+            gap = int(rr.rpeaks[first]) - int(rr.rpeaks[gap_start])
+            if not rr.valid[gap_start:first].any() and gap <= max_gap:
+                runs[-1] = (previous_first, first + count - previous_first, unreadable + gap)
                 continue
-        runs.append((first, count))
+        runs.append((first, count, 0))
     return runs
 
 
@@ -115,11 +123,14 @@ def detect_rhythm(rr: RRSeries, thresholds: RhythmThresholds, sample_rate: int) 
             ECGEventType.BRADYCARDIA,
         ),
     ):
-        for first, count in _bridged_runs(mask, rr, sample_rate):
+        for first, count, unreadable in _bridged_runs(mask, rr, sample_rate):
             start_sample = int(rr.rpeaks[first])
             end_sample = int(rr.rpeaks[min(first + count, rr.n_beats - 1)])
             length = end_sample - start_sample
-            if length < min_samples:
+            # Sostenido es sostenido **leído**: un hueco ilegible une dos tramos
+            # del mismo ritmo pero no suma a los 30 s. Dos ráfagas de 15 s con
+            # 20 s de ruido en el medio no son una taquicardia de 50 s.
+            if length - unreadable < min_samples:
                 continue
             # Las frecuencias, solo de los R-R válidos: el que cruza un empalme
             # mide el hueco y no el corazón.
