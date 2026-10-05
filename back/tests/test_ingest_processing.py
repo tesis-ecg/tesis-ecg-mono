@@ -510,6 +510,47 @@ async def test_a_retry_after_failure_does_not_duplicate_segments(
     assert study.samples_count == study.ecg_segments[0]["sampleCount"]
 
 
+async def test_a_batch_appended_but_not_marked_done_is_not_appended_again(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Un lote cuyo segmento ya está en el estudio no se vuelve a anexar.
+
+    Le pasó a un estudio real del chaleco el 1/10/2026: el lote se anexó y se
+    commiteó, pero su estado terminó en `FAILED`. Cada reintento lo corría al
+    final de `ecg_segments` con la misma clave y dejaba un hueco donde estaba;
+    la vista filtrada fallaba ahí en cada intento, con todo el atraso detrás.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(4500)
+    third = len(frames) // 3
+    first = await _ingest_and_process(client, db, device, api_key, frames[:third])
+    second = await _ingest_and_process(client, db, device, api_key, frames[third : 2 * third])
+    poisoned = await db.get(ECGBatch, second["batchId"])
+    assert poisoned is not None
+    poisoned.processing_status = ProcessingStatus.FAILED
+    poisoned.processing_error = "Hay un hueco entre los segmentos crudos del estudio."
+    await db.commit()
+    later = (await post_frames(client, device, api_key, frames[2 * third :])).json()
+
+    await process_batch(db, later["batchId"])
+
+    study = await db.get(Study, first["studyId"])
+    assert study is not None
+    await db.refresh(study)
+    batches = list((await db.scalars(select(ECGBatch).where(ECGBatch.study_id == study.id))).all())
+    for batch in batches:
+        await db.refresh(batch)
+    assert [batch.processing_status for batch in batches] == [ProcessingStatus.DONE] * 3
+    assert all(batch.processing_error is None for batch in batches)
+    offset = 0
+    for segment in study.ecg_segments:
+        assert segment["startSampleIndex"] == offset
+        offset += segment["sampleCount"]
+    assert len(study.ecg_segments) == 3
+    assert offset == study.samples_count == sum(batch.num_samples or 0 for batch in batches)
+
+
 async def test_a_batch_without_frames_fails_cleanly(client, s3, db, make_patient, make_device):
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)

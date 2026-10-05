@@ -1545,6 +1545,28 @@ async def _process_one_batch(
     """Procesa un lote con el estudio ya bloqueado; no maneja la transacción."""
     if batch.frames_s3_key is None:
         raise RuntimeError("El lote no tiene tramas archivadas.")
+    key = segment_key(study.id, batch.first_seq or 0)
+    appended = next((s for s in study.ecg_segments if s.get("key") == key), None)
+    if appended is not None:
+        # El segmento ya está en el estudio: un procesamiento anterior lo anexó
+        # y commiteó (segmento, muestras, línea de tiempo y eventos van en la
+        # misma transacción), pero el estado del lote quedó en otro valor.
+        # Anexarlo de nuevo lo corría al final de `ecg_segments` con la misma
+        # clave y dejaba un hueco donde estaba: la vista filtrada fallaba ahí en
+        # cada reintento, y el drenaje, que va en orden, no pasaba de este lote.
+        # Le pasó a un estudio real del chaleco el 1/10/2026, con 62 lotes
+        # trabados detrás.
+        samples = int(appended["sampleCount"])
+        await logger.awarning(
+            "process_batch_already_appended",
+            batch_id=str(batch.id),
+            study_id=str(study.id),
+            previous_status=batch.processing_status.value,
+        )
+        batch.num_samples = samples
+        batch.processing_status = ProcessingStatus.DONE
+        batch.processing_error = None
+        return samples, 0, None
     batch.processing_status = ProcessingStatus.PROCESSING
     await db.flush()
 
@@ -1557,13 +1579,12 @@ async def _process_one_batch(
     # --- Segmento ---------------------------------------------------------- #
     start_sample_index = study.samples_count
     payload = decoded.signal_mV.tobytes()
-    key = segment_key(study.id, batch.first_seq or 0)
     await run_io(put_object, key, payload)
     flags_payload = decoded.flags.astype(np.uint8).tobytes()
     flags_object = flags_key(study.id, batch.first_seq or 0)
     await run_io(put_object, flags_object, flags_payload)
 
-    segments = [segment for segment in study.ecg_segments if segment.get("key") != key]
+    segments = list(study.ecg_segments)
     segments.append(
         _object_meta(
             key,
