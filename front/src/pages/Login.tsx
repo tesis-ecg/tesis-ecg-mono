@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import loginBanner from '@/assets/login-banner.jpg'
 import { isApiError, unwrapError } from '@/lib/api'
+import { PasswordInput } from '@/components/PasswordInput'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -128,8 +129,7 @@ export function Login() {
                       </Link>
                     </div>
                     <FormControl>
-                      <Input
-                        type="password"
+                      <PasswordInput
                         autoComplete="current-password"
                         placeholder="••••••••"
                         className="h-11 border-gray-200 bg-white text-body2 text-gray-900 placeholder:text-gray-400 focus-visible:border-primary-300 focus-visible:ring-2 focus-visible:ring-primary-100"
