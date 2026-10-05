@@ -96,10 +96,13 @@ jobs:
       - run: uv run mypy app
       - run: uv run python -m app.scripts.export_openapi --check
       - run: uv run alembic upgrade head
-      - run: uv run pytest -m "not slow" --cov=app --cov-report=term-missing --cov-fail-under=65
+      # En paralelo (pytest-xdist), un proceso y una base por núcleo
+      # (`tests/conftest.py`). `worksteal` reparte de nuevo cuando un worker se
+      # queda sin tests: los del motor tardan mucho más que el resto.
+      - run: uv run pytest -m "not slow" -n auto --dist worksteal --cov=app --cov-report=term-missing --cov-fail-under=65
       # Los `slow` procesan un lote realista de 1 h (~6.480 tramas). Van
       # aparte para no sumar minutos a cada push, pero igual corren en CI.
-      - run: uv run pytest -m slow
+      - run: uv run pytest -m slow -n auto --dist worksteal
       - run: uvx bandit -q -r app
       - run: uv export --frozen --no-dev --no-hashes -o /tmp/runtime-requirements.txt
       # PYSEC-2026-3447 (setuptools < 83): `MANIFEST.in` no normaliza Unicode al
