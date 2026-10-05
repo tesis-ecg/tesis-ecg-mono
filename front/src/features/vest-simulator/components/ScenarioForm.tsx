@@ -24,7 +24,9 @@ import { unwrapError } from '@/lib/api'
 
 import { rotateApiKey, type SimulatorDevice } from '../api/simulatorApi'
 import { estimateBatch, formatBytes } from '../defaults'
-import type { AnomalySpan, VestConfig } from '../types'
+import type { ElectrodeKind, MainsEnvironment } from '../codec/signal'
+import type { VestConfig } from '../types'
+import { EpisodesEditor } from './EpisodesEditor'
 
 interface ScenarioFormProps {
   open: boolean
@@ -124,64 +126,15 @@ function Toggle({
   )
 }
 
-/** Un solo tramo por anomalía: alcanza para probar y mantiene la UI legible. */
-/**
- * Perfil del latido ectópico. Los valores son los de una extrasístole
- * ventricular típica: llega al 60 % del R-R esperado, QRS tres veces más ancho
- * (~180 ms) y onda T de polaridad opuesta. El formulario deja elegir cada
- * cuántos latidos aparece, que es lo que cambia la carga; el resto define "qué
- * es un ectópico" y no hace falta tocarlo para probar el motor.
- */
-const ECTOPIC_DEFAULTS = {
-  everyNBeats: 12,
-  coupling: 0.6,
-  widthFactor: 3,
-  amplitudeFactor: 1.4,
-  invertT: true,
-} as const
+const ELECTRODE_LABEL: Record<ElectrodeKind, string> = {
+  dry: 'Seco (textil)',
+  gel: 'Con gel',
+}
 
-function SpanField({
-  label,
-  spans,
-  onChange,
-}: {
-  label: string
-  spans: AnomalySpan[]
-  onChange: (spans: AnomalySpan[]) => void
-}) {
-  const span = spans[0]
-  return (
-    <div className="flex flex-col gap-1">
-      <Label className="text-body3">{label}</Label>
-      <div className="flex items-center gap-2">
-        <Input
-          type="number"
-          min={0}
-          placeholder="desde (s)"
-          value={span?.startSec ?? ''}
-          onChange={(event) => {
-            const startSec = Number(event.target.value)
-            onChange(
-              event.target.value === '' ? [] : [{ startSec, durationSec: span?.durationSec || 5 }],
-            )
-          }}
-        />
-        <Input
-          type="number"
-          min={0}
-          placeholder="dura (s)"
-          value={span?.durationSec ?? ''}
-          onChange={(event) =>
-            onChange(
-              event.target.value === ''
-                ? []
-                : [{ startSec: span?.startSec ?? 0, durationSec: Number(event.target.value) }],
-            )
-          }
-        />
-      </div>
-    </div>
-  )
+const ENVIRONMENT_LABEL: Record<MainsEnvironment, string> = {
+  clean: 'Limpio (lejos de la red)',
+  home: 'Casa (~2 mV pp de 50 Hz)',
+  router: 'Al lado del router (~18 mV pp)',
 }
 
 export function ScenarioForm({
@@ -303,7 +256,7 @@ export function ScenarioForm({
           </Section>
 
           <Section
-            title="Señal y volumen"
+            title="Lotes y cadencia"
             hint={`${estimate.samples.toLocaleString('es-AR')} muestras · ~${estimate.estimatedFrames.toLocaleString('es-AR')} tramas · ~${formatBytes(estimate.estimatedBytes)} comprimidos (${formatBytes(estimate.uncompressedBytes)} sin comprimir)`}
           >
             <NumberField
@@ -312,7 +265,7 @@ export function ScenarioForm({
               min={1}
               max={180}
               onChange={(batchMinutes) => setDraft((c) => ({ ...c, batchMinutes }))}
-              hint="El equipo real manda 60."
+              hint="El equipo abre una ventana de envío cada 10 min."
             />
             <NumberField
               label="Cantidad de lotes"
@@ -330,7 +283,7 @@ export function ScenarioForm({
                     ...current,
                     cadence:
                       kind === 'accelerated'
-                        ? { kind: 'accelerated', factor: 120 }
+                        ? { kind: 'accelerated', factor: 60 }
                         : { kind: kind as 'instant' | 'realtime' },
                   }))
                 }
@@ -341,9 +294,15 @@ export function ScenarioForm({
                 <SelectContent>
                   <SelectItem value="instant">Instantánea (todo de una)</SelectItem>
                   <SelectItem value="accelerated">Acelerada</SelectItem>
-                  <SelectItem value="realtime">Tiempo real (1 lote/hora)</SelectItem>
+                  <SelectItem value="realtime">
+                    Tiempo real (1 lote cada {draft.batchMinutes} min)
+                  </SelectItem>
                 </SelectContent>
               </Select>
+              <span className="text-body3 text-gray-600">
+                La primera corrida termina en la hora actual; las siguientes continúan desde el
+                último dato grabado.
+              </span>
             </div>
             {draft.cadence.kind === 'accelerated' && (
               <NumberField
@@ -354,161 +313,111 @@ export function ScenarioForm({
                 onChange={(factor) =>
                   setDraft((current) => ({ ...current, cadence: { kind: 'accelerated', factor } }))
                 }
-                hint="120× → un lote de 1 h cada 30 s."
+                hint="60× → un lote de 10 min cada 10 s."
               />
             )}
+          </Section>
+
+          <Section
+            title="Paciente y chaleco"
+            hint="Ruido y red calibrados con las capturas reales de la placa (canal 2)."
+          >
+            <div className="flex flex-col gap-1">
+              <Label className="text-body3">Electrodos</Label>
+              <Select
+                value={draft.signal.electrode}
+                onValueChange={(electrode) => setSignal({ electrode: electrode as ElectrodeKind })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(ELECTRODE_LABEL).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-body3">Interferencia de red</Label>
+              <Select
+                value={draft.signal.environment}
+                onValueChange={(environment) =>
+                  setSignal({ environment: environment as MainsEnvironment })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(ENVIRONMENT_LABEL).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-body3 text-gray-600">
+                Es lo que más mueve la compresión: más red, más tramas por hora.
+              </span>
+            </div>
             <NumberField
-              label="Derivaciones"
-              value={draft.signal.nChannels}
-              min={1}
-              max={2}
-              onChange={(nChannels) => setSignal({ nChannels })}
-            />
-            <NumberField
-              label="FC base (lpm)"
+              label="FC de reposo (lpm)"
               value={draft.signal.baseBpm}
               min={30}
               max={200}
               onChange={(baseBpm) => setSignal({ baseBpm })}
             />
             <NumberField
-              label="Variabilidad FC (±lpm)"
-              value={draft.signal.bpmVariability}
-              min={0}
-              max={40}
-              onChange={(bpmVariability) => setSignal({ bpmVariability })}
-            />
-            <NumberField
-              label="Amplitud QRS (µV)"
-              value={draft.signal.qrsAmplitudeUV}
-              min={100}
-              max={5000}
+              label="Amplitud de R (µV)"
+              value={draft.signal.rAmplitudeUV}
+              min={300}
+              max={4000}
               step={50}
-              onChange={(qrsAmplitudeUV) => setSignal({ qrsAmplitudeUV })}
+              onChange={(rAmplitudeUV) => setSignal({ rAmplitudeUV })}
             />
             <NumberField
-              label="Ruido (µV RMS)"
-              value={draft.signal.noiseUV}
-              min={0}
-              max={500}
-              onChange={(noiseUV) => setSignal({ noiseUV })}
+              label="Respiraciones por minuto"
+              value={draft.signal.respirationPerMin}
+              min={6}
+              max={40}
+              onChange={(respirationPerMin) => setSignal({ respirationPerMin })}
+              hint="Modulan el RR (arritmia sinusal) y la línea de base."
             />
             <NumberField
               label="Offset de continua (µV)"
-              value={draft.signal.baselineOffsetUV}
+              value={draft.signal.dcOffsetUV}
               min={-300000}
               max={300000}
-              step={10000}
-              onChange={(baselineOffsetUV) => setSignal({ baselineOffsetUV })}
-              hint="Hasta ±300 mV es normal: el front-end es DC-acoplado."
+              step={1000}
+              onChange={(dcOffsetUV) => setSignal({ dcOffsetUV })}
+              hint="Con el chaleco puesto la entrada se para en ~40-50 mV: es DC-acoplada."
+            />
+            <Toggle
+              label="Ritmo circadiano"
+              checked={draft.signal.circadian}
+              onChange={(circadian) => setSignal({ circadian })}
+              hint="La FC baja de madrugada y sube a la tarde, según la hora de la muestra."
             />
             <NumberField
               label="Semilla"
               value={draft.signal.seed}
               onChange={(seed) => setSignal({ seed })}
-              hint="Misma semilla, mismos bytes."
+              hint="Misma semilla, misma señal."
             />
           </Section>
 
           <Section
-            title="Anomalías de señal"
-            hint="Por muestra. Son las que después aparecen como eventos en el portal."
+            title="Episodios"
+            hint="Arritmias y artefactos agendados por lote de la corrida. Quedan en el trazado y los mide el backend."
           >
-            <SpanField
-              label="Lead-off (RA/LL suelto)"
-              spans={draft.signal.leadOffSpans}
-              onChange={(leadOffSpans) => setSignal({ leadOffSpans })}
-            />
-            <SpanField
-              label="RLD off (tierra suelta)"
-              spans={draft.signal.rldOffSpans}
-              onChange={(rldOffSpans) => setSignal({ rldOffSpans })}
-            />
-            <SpanField
-              label="Saturación del ADC"
-              spans={draft.signal.saturatedSpans}
-              onChange={(saturatedSpans) => setSignal({ saturatedSpans })}
-            />
-            <SpanField
-              label="Tramo no analizable (SQI 1)"
-              spans={draft.signal.unanalyzableSpans}
-              onChange={(unanalyzableSpans) => setSignal({ unanalyzableSpans })}
-            />
-            <div className="flex flex-col gap-1 sm:col-span-2">
-              <Label className="text-body3">Marcas de síntoma (segundos, separados por coma)</Label>
-              <Input
-                value={draft.signal.symptomMarkersSec.join(', ')}
-                placeholder="30, 120"
-                onChange={(event) =>
-                  setSignal({
-                    symptomMarkersSec: event.target.value
-                      .split(',')
-                      .map((piece) => Number(piece.trim()))
-                      .filter((value) => Number.isFinite(value) && value >= 0),
-                  })
-                }
-              />
-            </div>
-          </Section>
-
-          <Section
-            title="Arritmias"
-            hint="Lo que ejercita el motor de detección: morfología atípica, pausas y cambios de ritmo."
-          >
-            <SpanField
-              label="Foco ectópico"
-              spans={draft.signal.ectopicSpans}
-              onChange={(spans) =>
-                setSignal({
-                  ectopicSpans: spans.map((span, index) => ({
-                    ...ECTOPIC_DEFAULTS,
-                    ...draft.signal.ectopicSpans[index],
-                    ...span,
-                  })),
-                })
-              }
-            />
-            <NumberField
-              label="Un ectópico cada N latidos"
-              value={draft.signal.ectopicSpans[0]?.everyNBeats ?? ECTOPIC_DEFAULTS.everyNBeats}
-              min={2}
-              max={60}
-              onChange={(everyNBeats) =>
-                setSignal({
-                  ectopicSpans: draft.signal.ectopicSpans.map((span) => ({
-                    ...span,
-                    everyNBeats,
-                  })),
-                })
-              }
-              hint="2 = bigeminismo. 12 ≈ 8 % de carga ectópica."
-            />
-            <SpanField
-              label="Pausa (se saltea un latido)"
-              spans={draft.signal.pauseSpans}
-              onChange={(pauseSpans) => setSignal({ pauseSpans })}
-            />
-            <SpanField
-              label="Cambio de frecuencia"
-              spans={draft.signal.rateSpans}
-              onChange={(spans) =>
-                setSignal({
-                  rateSpans: spans.map((span, index) => ({
-                    bpm: draft.signal.rateSpans[index]?.bpm ?? 130,
-                    ...span,
-                  })),
-                })
-              }
-            />
-            <NumberField
-              label="FC del tramo (lpm)"
-              value={draft.signal.rateSpans[0]?.bpm ?? 130}
-              min={30}
-              max={220}
-              onChange={(bpm) =>
-                setSignal({ rateSpans: draft.signal.rateSpans.map((span) => ({ ...span, bpm })) })
-              }
-              hint="Sobre 100 dispara taquicardia; bajo 50, bradicardia."
+            <EpisodesEditor
+              episodes={draft.episodes}
+              batchCount={draft.batchCount}
+              batchMinutes={draft.batchMinutes}
+              onChange={(episodes) => setDraft((current) => ({ ...current, episodes }))}
             />
           </Section>
 
@@ -532,14 +441,14 @@ export function ScenarioForm({
               value={draft.frames.dropPct}
               max={100}
               onChange={(dropPct) => setFrames({ dropPct })}
-              hint="Se pierden en el primer envío y el ACK se corta ahí. Quedan en la SD: el equipo las retransmite en el ciclo siguiente y el estudio se completa igual, con retraso."
+              hint="Se pierden en el primer envío y el ACK se corta ahí. Quedan en la flash: el equipo las retransmite en el POST siguiente y el estudio se completa igual."
             />
             <NumberField
               label="Reinicio en el lote nº"
               value={draft.frames.rebootAtBatch}
               max={48}
               onChange={(rebootAtBatch) => setFrames({ rebootAtBatch })}
-              hint="0 = nunca. Cambia el bootId, t0Ms vuelve a 0 y se vacía la SD."
+              hint="0 = nunca. Cambia el bootId y t0Ms vuelve a 0; lo pendiente en la flash sale después con la hora del arranque anterior."
             />
             <Toggle
               label="Enviar las tramas desordenadas"
@@ -555,7 +464,32 @@ export function ScenarioForm({
             />
           </Section>
 
-          <Section title="Red y credenciales">
+          <Section
+            title="Puente WiFi y red"
+            hint="Como el ESP32-C3: POSTs chicos, reintento ante 5xx durante la gracia, y backoff de ventanas 10 → 20 → 40 min."
+          >
+            <NumberField
+              label="Tramas por POST"
+              value={draft.network.postFrames}
+              min={1}
+              max={12000}
+              onChange={(postFrames) => setNetwork({ postFrames })}
+              hint="El puente real manda 48. Subilo para acelerar contra una API lenta."
+            />
+            <NumberField
+              label="Gracia ante 5xx (s)"
+              value={draft.network.graceSeconds}
+              max={600}
+              onChange={(graceSeconds) => setNetwork({ graceSeconds })}
+              hint="El mismo POST se reintenta mientras dure. 0 = no reintentar."
+            />
+            <NumberField
+              label="RSSI (dBm)"
+              value={draft.network.rssiDbm}
+              min={-127}
+              max={0}
+              onChange={(rssiDbm) => setNetwork({ rssiDbm })}
+            />
             <NumberField
               label="Cortar el cuerpo al (%)"
               value={draft.network.truncateBodyPct}
@@ -563,11 +497,17 @@ export function ScenarioForm({
               onChange={(truncateBodyPct) => setNetwork({ truncateBodyPct })}
               hint="0 = no cortar."
             />
-            <NumberField
-              label="Reintentos ante 5xx"
-              value={draft.network.maxRetries}
-              max={5}
-              onChange={(maxRetries) => setNetwork({ maxRetries })}
+            <Toggle
+              label="Puente sin SNTP"
+              checked={draft.network.noSntp}
+              onChange={(noSntp) => setNetwork({ noSntp })}
+              hint="La hora sale del Date de GET /health: fuente none, ±1 s."
+            />
+            <Toggle
+              label="Puente sin tabla de arranques"
+              checked={draft.network.lostBootTable}
+              onChange={(lostBootTable) => setNetwork({ lostBootTable })}
+              hint="El backlog de un arranque anterior sale con la hora del actual: el backend lo fecha como no verificado."
             />
             <Toggle
               label="Usar una API key inválida"

@@ -12,6 +12,11 @@ interface ECGZoomControlsProps {
   className?: string
 }
 
+// Flotan sobre la traza: translúcidos para no tapar lo que hay debajo, y
+// opacos al pasar el mouse para que se lean cuando se los va a usar.
+const OVERLAY_BUTTON =
+  'border border-border/60 bg-card/60 text-fg shadow-sm backdrop-blur-sm hover:bg-card/95'
+
 /**
  * Controles de zoom para el `<ECGViewer />`. Stateless — el padre conecta los
  * callbacks contra la API imperativa del viewer (typ. `zoomToRange`) y el
@@ -34,6 +39,7 @@ export function ECGZoomControls({
         <Button
           variant="secondary"
           size="icon"
+          className={OVERLAY_BUTTON}
           onClick={onZoomOut}
           aria-label="Zoom out"
           title="Zoom out"
@@ -43,6 +49,7 @@ export function ECGZoomControls({
         <Button
           variant="secondary"
           size="icon"
+          className={OVERLAY_BUTTON}
           onClick={onZoomIn}
           aria-label="Zoom in"
           title="Zoom in"
@@ -53,6 +60,7 @@ export function ECGZoomControls({
           <Button
             variant="secondary"
             size="icon"
+            className={OVERLAY_BUTTON}
             onClick={onFullscreen}
             aria-label="Abrir en pantalla completa"
             title="Pantalla completa"
@@ -64,6 +72,7 @@ export function ECGZoomControls({
           <Button
             variant="secondary"
             size="icon"
+            className={OVERLAY_BUTTON}
             onClick={onMinimize}
             aria-label="Minimizar"
             title="Minimizar"

@@ -117,8 +117,18 @@ def ml_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def ml_engine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prende el motor para este test."""
+    """Prende el motor para este test.
+
+    Sin el tope de tiempo por pasada: es reloj de pared, y con la máquina
+    cargada cortaba la pasada después del primer bloque, así que los tests que
+    esperan varios bloques en una pasada dependían de la velocidad del equipo.
+    El tope se prueba aparte, con un reloj falso
+    (`test_la_pasada_se_corta_antes_del_bloque_que_pasaria_el_presupuesto`).
+    """
+    from app.modules.ingest import processing
+
     monkeypatch.setattr(settings, "ml_enabled", True)
+    monkeypatch.setattr(processing, "ML_PASS_BUDGET_SECONDS", float("inf"))
 
 
 @pytest.fixture(scope="session")

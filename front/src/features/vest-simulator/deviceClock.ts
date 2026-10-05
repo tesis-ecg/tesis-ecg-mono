@@ -1,77 +1,113 @@
 /**
- * Reloj, cursor y almacenamiento de un chaleco simulado.
+ * Reloj, cursor y flash de un chaleco simulado.
  *
  * Vive fuera de la corrida a propósito. `seq` no es un número de orden
  * decorativo: es la identidad de la trama, y el backend descarta como duplicado
  * todo lo que llegue con un `seq` ya confirmado (`_ack_window` en
- * `ingest_service.py`). Ese dedupe existe porque el firmware libera la SD recién
- * con el ACK: si el ACK se pierde en el camino, el equipo reenvía un lote que el
- * backend ya guardó, y sin dedupe esa hora de señal entraría dos veces en el
+ * `ingest_service.py`). Ese dedupe existe porque el firmware libera la flash
+ * recién con el ACK: si el ACK se pierde en el camino, el equipo reenvía un lote
+ * que el backend ya guardó, y sin dedupe esa señal entraría dos veces en el
  * estudio.
  *
- * De ahí las dos reglas que sostienen este módulo:
+ * Las reglas que sostienen este módulo:
  *
- * 1. **El cursor no se reinicia entre corridas.** Un equipo real vuelve a cero
- *    solo cuando se reinicia, y ahí cambia el `bootId`. Empezar de nuevo en
- *    `seq = 0` con el mismo `bootId` es un estado que el hardware no puede
- *    producir, y el backend solo lo puede leer como lo que parece: el mismo lote
- *    otra vez, que se confirma sin guardarse.
+ * 1. **El cursor no se reinicia entre corridas.** Un equipo real vuelve a
+ *    `t0 = 0` solo cuando se reinicia, y ahí cambia el `bootId`; la `seq` sigue.
  *
- * 2. **Grabar y transmitir son cosas distintas.** El equipo graba en la SD con o
- *    sin WiFi, y una trama se borra de la SD **recién cuando el backend la
- *    confirma** (`INTEGRACION.md` §4.6: ventana deslizante go-back-N, se reenvía
- *    desde la más vieja sin confirmar). Por eso `nextSeq` avanza con la
- *    generación pero el cuerpo del POST sale de `pending`, no del último lote.
- *    Antes esto no era así: el cursor avanzaba las tramas generadas y las que el
- *    backend no había aceptado no se reenviaban nunca, así que un solo hueco
- *    dejaba el estudio congelado para siempre.
+ * 2. **Grabar y transmitir son cosas distintas.** El equipo graba en la flash
+ *    con o sin WiFi, y una trama se borra recién cuando el backend la confirma
+ *    (`INTEGRACION.md` §4.6: go-back-N desde la más vieja sin confirmar). La
+ *    flash sobrevive al reinicio: lo pendiente de un arranque anterior sale
+ *    después, con la hora de **ese** arranque.
+ *
+ * 3. **La hora del puente es la hora real.** El equipo manda siempre el epoch
+ *    actual del puente con el `uptime` del mismo instante, y la antigüedad de
+ *    cada trama sale de su `t0Ms`: `UTC = (epoch − uptime) + t0`
+ *    (`docs/integracion-ingesta-con-horario.md` §3). Antes el simulador mandaba
+ *    `arranque + uptime simulado`, un uptime que avanzaba un lote por envío sin
+ *    mirar el reloj: después de unas horas sin usar el chaleco, o de muchos
+ *    lotes instantáneos, el epoch quedaba a más de 6 h de la hora del servidor y
+ *    el backend contestaba `422 DEVICE_TIME_INVALID`.
  */
 
-import { BOOTID_MODULO, FRAME_BYTES, STEP_MS } from './codec/frame'
-import type { VestConfig } from './types'
+import { BOOTID_MODULO, FRAME_BYTES, STEP_MS, readHeader } from './codec/frame'
+import type { GeneratorState } from './codec/signal'
+import type { BackoffState, DiagAccumulator, PlacementState } from './transmission'
+import { EMPTY_DIAG, INITIAL_BACKOFF, INITIAL_PLACEMENT } from './transmission'
+import type { Cadence, VestConfig } from './types'
+
+/** Slots de la flash de 16 MB (`FLASH_LOG_FRAME_SLOTS`, `config.h:2276-2286`). */
+export const MAX_BACKLOG_FRAMES = 65_504
+
+/** El desborde expulsa por sector de 4 KB: 16 tramas de una vez. */
+export const FLASH_SECTOR_FRAMES = 16
 
 /**
- * Tope del backlog en tramas. Con ~8.600 tramas por hora de señal son unas 5 h
- * de desconexión antes de empezar a perder, y 12 MB en memoria.
- */
-export const MAX_BACKLOG_FRAMES = 48_000
-
-/**
- * Tope de tramas distintas por request. Con `duplicatePct` al 100 % el cuerpo se
- * duplica, así que el peor caso son 24.000 × 256 B = 6,1 MB, por debajo del
+ * Tope de tramas por request. Con `duplicatePct` al 100 % el cuerpo se duplica,
+ * así que el peor caso son 24.000 × 256 B = 6,1 MB, por debajo del
  * `ingest_max_batch_bytes` de 8 MB del backend.
  */
 export const MAX_FRAMES_PER_REQUEST = 12_000
+
+/** Lo que manda el puente real: la ventana en vuelo del equipo (`BRIDGE_LOTE_OBJETIVO`). */
+export const BRIDGE_POST_FRAMES = 48
+
+/** Cuánto venía prendido el equipo antes de la primera muestra de un chaleco nuevo. */
+export const WARMUP_MS = 30_000
+
+/** Lo que tarda en volver a grabar después de un reinicio. */
+export const BOOT_DELAY_MS = 3_000
+
+/**
+ * Tolerancia del backend entre el epoch del puente y su hora
+ * (`ingest_time_sync_max_skew_seconds`, 6 h por defecto).
+ */
+export const BACKEND_TIME_SKEW_MS = 6 * 3_600_000
+
+/**
+ * Cuánto se deja adelantar el reloj del chaleco. Pasa cuando se manda señal más
+ * rápido que el tiempo real: los datos ya alcanzaron la hora actual y siguen.
+ * Se corta 10 min antes de la tolerancia del backend para que el simulador lo
+ * diga en vez de recibir un 422.
+ */
+export const MAX_FUTURE_SKEW_MS = BACKEND_TIME_SKEW_MS - 10 * 60_000
+
+/** Batería de 1800 mAh, ~10 días de autonomía. */
+const BATTERY_DRAIN_PCT_PER_HOUR = 100 / 240
 
 export interface DeviceClock {
   bootId: number
   /** Próxima `seq` a **grabar**. Solo avanza al generar señal. */
   nextSeq: number
-  t0Ms: number
-  uptimeMs: number
   /**
-   * Instante UTC en que el `millis()` simulado valía cero, fijo durante todo el
-   * arranque. Es lo que hace que el epoch que manda el puente simulado y el
-   * `uptimeMs` que lo acompaña describan **el mismo instante**, que es la única
-   * regla que el backend no puede verificar por su cuenta
-   * (`docs/integracion-ingesta-con-horario.md` §3).
-   *
-   * Mandar `Date.now()` en su lugar parecía equivalente y no lo es: el reloj del
-   * chaleco simulado corre acelerado —`uptimeMs` avanza `batchMinutes` por lote,
-   * o sea media hora por segundo real— así que `Date.now() − uptimeMs` retrocedía
-   * media hora en cada envío y el backend veía el arranque del equipo moverse
-   * hacia atrás. La línea de tiempo salía partida en un tramo por lote.
+   * `millis()` de la próxima muestra a grabar, **sin** la vuelta de 32 bits: la
+   * trama lo escribe módulo 2³², acá hace falta para ubicar la muestra en la
+   * hora de pared.
    */
+  t0Ms: number
+  /** Hora UTC en que `millis()` valía cero en este arranque. */
   bootEpochMs: number
+  /**
+   * `bootId → bootEpochMs` de cada arranque visto, como la tabla `porBoot` del
+   * puente (`BridgeTimeSync.h:490-547`). Es lo que permite mandar el backlog de
+   * un arranque anterior con la hora de ese arranque.
+   */
+  bootAnchors: Record<string, number>
   batteryPct: number
+  /** Estado del generador de señal; `null` hasta el primer lote. */
+  genState: GeneratorState | null
+  /**
+   * Todavía no grabó nada. La primera corrida lo re-ancla para que la señal
+   * termine en la hora actual en vez de arrancar en ella.
+   */
+  fresh: boolean
+  backoff: BackoffState
+  /** Acumulador de las cabeceras `X-Device-*`, como el `BridgeDiagAcc` del puente. */
+  diag: DiagAccumulator
+  placement: PlacementState
 }
 
-/** El epoch que leería el puente WiFi en este instante del reloj simulado. */
-export function bridgeEpochMs(clock: DeviceClock): number {
-  return clock.bootEpochMs + clock.uptimeMs
-}
-
-/** Una trama en la SD: grabada, todavía sin confirmar. */
+/** Una trama en la flash: grabada, todavía sin confirmar. */
 export interface PendingFrame {
   seq: number
   bytes: Uint8Array
@@ -98,38 +134,41 @@ export interface DeviceRuntime {
 /** Registro por chaleco. El `id` es el del `VestConfig`. */
 export type ClockRegistry = Map<string, DeviceRuntime>
 
-export function initialClock(config: VestConfig): DeviceClock {
-  const uptimeMs = config.batchMinutes * 60_000
+/** Un equipo nunca usado: anclado a ahora, hasta que la primera corrida lo re-ancle. */
+export function initialClock(now = Date.now()): DeviceClock {
+  const bootEpochMs = now - WARMUP_MS
   return {
     bootId: 0,
     nextSeq: 0,
-    t0Ms: 0,
-    // Arranca con horas de encendido, como un equipo real que ya venía prendido.
-    uptimeMs,
-    // De modo que el primer envío quede fechado ahora mismo.
-    bootEpochMs: Date.now() - uptimeMs,
+    t0Ms: WARMUP_MS,
+    bootEpochMs,
+    bootAnchors: { 0: bootEpochMs },
     batteryPct: 96,
+    genState: null,
+    fresh: true,
+    backoff: { ...INITIAL_BACKOFF },
+    diag: { ...EMPTY_DIAG },
+    placement: { ...INITIAL_PLACEMENT },
   }
 }
 
 /**
  * El equipo, retomado donde quedó. Devuelve siempre la **misma** instancia para
  * el mismo `id`: quien la tiene la muta en el lugar, así que un `stop` a mitad de
- * corrida deja el cursor y la SD en el último lote efectivamente enviado.
+ * corrida deja el cursor y la flash en el último lote efectivamente enviado.
  *
- * `restored` permite sembrar el reloj desde `localStorage`. La SD nunca se
- * restaura: son megabytes de binario y no entran en el storage del navegador.
+ * `restored` permite sembrar el reloj desde `localStorage`. La flash se hidrata
+ * aparte, desde IndexedDB (`flashStore.ts`).
  */
 export function acquireDevice(
   registry: ClockRegistry,
   id: string,
-  config: VestConfig,
   restored?: DeviceClock,
 ): DeviceRuntime {
   const existing = registry.get(id)
   if (existing) return existing
   const device: DeviceRuntime = {
-    clock: restored ?? initialClock(config),
+    clock: restored ?? initialClock(),
     sd: { pending: [], overflowed: 0 },
   }
   registry.set(id, device)
@@ -141,36 +180,184 @@ export function forgetClock(registry: ClockRegistry, id: string): void {
   registry.delete(id)
 }
 
-/**
- * Reinicio del equipo: `bootId` avanza y el reloj vuelve a cero.
- *
- * El `seq` sigue corriendo. El backend nombra los objetos del estudio en S3 con
- * el `first_seq` del lote (`segment_key`, `envelope_key`), sin el `bootId`, así
- * que rebobinarlo pisaría los segmentos del boot anterior.
- *
- * La SD se vacía. En el equipo real sobreviviría al corte, pero acá las tramas
- * ya tienen el `bootId` viejo escrito en la cabecera y el backend procesa un solo
- * `bootId` por request: reenviarlas mezclaría dos boots bajo una sola ancla
- * temporal. Lo que quedaba sin confirmar cuenta como pérdida del boot anterior,
- * que es exactamente lo que el backend registra como hueco.
- */
-export function reboot(device: DeviceRuntime): number {
-  const lost = device.sd.pending.length
-  device.clock.bootId = (device.clock.bootId + 1) % BOOTID_MODULO
-  device.clock.t0Ms = 0
-  device.clock.uptimeMs = 0
-  // Arranque nuevo, ancla nueva: es exactamente lo que hace el equipo real, y lo
-  // que le dice al backend que abra un tramo con su propia hora.
-  device.clock.bootEpochMs = Date.now()
-  device.sd.pending = []
-  device.sd.overflowed = 0
-  return lost
+/** Hora de pared de la próxima muestra a grabar. */
+export function dataCursorEpochMs(clock: DeviceClock): number {
+  return clock.bootEpochMs + clock.t0Ms
+}
+
+/** Factor de la cadencia: cuántas veces más rápido que el tiempo real salen los lotes. */
+function cadenceFactor(cadence: Cadence): number {
+  switch (cadence.kind) {
+    case 'instant':
+      return Number.POSITIVE_INFINITY
+    case 'accelerated':
+      return Math.max(1, cadence.factor)
+    case 'realtime':
+      return 1
+  }
 }
 
 /**
- * Guarda en la SD las tramas recién grabadas. Devuelve cuántas se perdieron por
- * desborde del buffer, que se descartan por el frente: lo más viejo es lo que el
- * equipo ya no puede sostener.
+ * Cuánto antes de ahora arranca la señal de la primera corrida.
+ *
+ * Se elige para que **ningún lote quede en el futuro en el momento de
+ * enviarse**: el lote `k` sale `k·B/f` después de arrancar y termina `(k+1)·B`
+ * después del inicio de la señal. Despejando para el último lote da
+ * `B + (N−1)·B·(1 − 1/f)`. En modo instantáneo es la corrida entera
+ * (`[ahora − N·B, ahora]`), en tiempo real es un solo lote: el primero termina
+ * justo cuando se manda, y los demás a medida que pasa el tiempo.
+ */
+export function firstRunLeadMs(
+  config: Pick<VestConfig, 'batchMinutes' | 'batchCount' | 'cadence'>,
+) {
+  const batchMs = config.batchMinutes * 60_000
+  const f = cadenceFactor(config.cadence)
+  return batchMs + (config.batchCount - 1) * batchMs * (1 - 1 / f)
+}
+
+/**
+ * Ancla la primera corrida de un chaleco nuevo para que su señal termine en la
+ * hora actual. No hace nada si el equipo ya grabó: lo que sigue continúa desde
+ * el último dato, haya pasado el tiempo que haya pasado.
+ */
+export function anchorFirstRun(
+  clock: DeviceClock,
+  config: Pick<VestConfig, 'batchMinutes' | 'batchCount' | 'cadence'>,
+  now = Date.now(),
+): boolean {
+  if (!clock.fresh) return false
+  const start = now - firstRunLeadMs(config)
+  clock.bootEpochMs = start - WARMUP_MS
+  clock.t0Ms = WARMUP_MS
+  clock.bootAnchors = { ...clock.bootAnchors, [clock.bootId]: clock.bootEpochMs }
+  clock.fresh = false
+  return true
+}
+
+/** `bootId` escrito en la cabecera de la trama (byte 3, bits 4-7). */
+export function frameBootId(frame: Uint8Array): number {
+  return (frame[3] & 0xf0) >> 4
+}
+
+export type TimeSyncSource = 'ntp' | 'none'
+
+export interface BridgeTime {
+  epochMs: number
+  uptimeMs: number
+  /** El arranque al que pertenece el par epoch/uptime (`X-Device-Boot-Id`). */
+  bootId: number
+  source: TimeSyncSource
+  uncertaintyMs: number
+  /** Cuánto se adelantó el epoch respecto de la hora real para cubrir datos futuros. */
+  aheadMs: number
+}
+
+export interface BridgeTimeFaults {
+  /** El puente no consiguió SNTP y tomó la hora del `Date` de `GET /health`. */
+  noSntp: boolean
+  /** El puente perdió la tabla de arranques: el backlog viejo sale con el par actual. */
+  lostBootTable: boolean
+}
+
+const NO_FAULTS: BridgeTimeFaults = { noSntp: false, lostBootTable: false }
+
+/** Incertidumbre del SNTP recién sincronizado (`BRIDGE_TIME_FRESH_SYNC_UNCERTAINTY_MS`). */
+const NTP_UNCERTAINTY_MS = 200
+/** `Date` por HTTP: 1 s de resolución más medio RTT (`BRIDGE_TIME_HTTP_DATE_UNCERTAINTY_MS`). */
+const HTTP_DATE_UNCERTAINTY_MS = 1000 + 40
+
+/** `t0Ms` de la trama sin la vuelta de 32 bits, tomando como referencia el cursor. */
+function unwrapT0(t0: number, referenceMs: number): number {
+  const wrap = 0x1_0000_0000
+  if (referenceMs < wrap) return t0
+  return t0 + wrap * Math.floor((referenceMs - t0) / wrap)
+}
+
+/**
+ * Hora que pondría el puente en un POST con estas tramas: el port de
+ * `bridgeHoraParaLote()` (`BridgeTimeSync.h:527-547`).
+ *
+ * - El epoch es la hora actual. Si los datos del POST quedaron adelante de la
+ *   hora real (se mandó señal más rápido que el tiempo), se adelanta lo justo
+ *   para que el uptime cubra la última muestra; el backend fecha esas muestras
+ *   por recepción y las marca como hora no verificada.
+ * - El uptime es el del arranque **de las tramas**, y `X-Device-Boot-Id` lo dice:
+ *   el backlog de un arranque anterior viaja con la hora de ese arranque.
+ */
+export function bridgeTimeForPost(
+  clock: DeviceClock,
+  frames: PendingFrame[],
+  now = Date.now(),
+  faults: BridgeTimeFaults = NO_FAULTS,
+): BridgeTime {
+  const source: TimeSyncSource = faults.noSntp ? 'none' : 'ntp'
+  const uncertaintyMs = faults.noSntp ? HTTP_DATE_UNCERTAINTY_MS : NTP_UNCERTAINTY_MS
+  if (frames.length === 0) return bridgeTimeNow(clock, now, faults)
+
+  const framesBoot = frameBootId(frames[0].bytes)
+  const isCurrent = framesBoot === clock.bootId
+  const framesAnchor = isCurrent ? clock.bootEpochMs : clock.bootAnchors[framesBoot]
+  const last = readHeader(frames[frames.length - 1].bytes)
+  const lastT0 = isCurrent ? unwrapT0(last.t0Ms, clock.t0Ms) : last.t0Ms
+  const dataEndMs =
+    framesAnchor === undefined ? now : framesAnchor + lastT0 + last.durationMs + STEP_MS
+  const epochMs = Math.max(now, dataEndMs)
+
+  // Sin la entrada en la tabla, el puente manda el par del arranque actual.
+  const useOwnBoot = !isCurrent && framesAnchor !== undefined && !faults.lostBootTable
+  const bootId = useOwnBoot ? framesBoot : clock.bootId
+  const anchor = useOwnBoot ? framesAnchor : clock.bootEpochMs
+
+  return {
+    epochMs,
+    uptimeMs: Math.max(0, epochMs - anchor),
+    bootId,
+    source,
+    uncertaintyMs,
+    aheadMs: epochMs - now,
+  }
+}
+
+/** Hora del puente fuera de un lote (`/ingest/device-status`): el par del arranque actual. */
+export function bridgeTimeNow(
+  clock: DeviceClock,
+  now = Date.now(),
+  faults: BridgeTimeFaults = NO_FAULTS,
+): BridgeTime {
+  const epochMs = Math.max(now, dataCursorEpochMs(clock))
+  return {
+    epochMs,
+    uptimeMs: Math.max(0, epochMs - clock.bootEpochMs),
+    bootId: clock.bootId,
+    source: faults.noSntp ? 'none' : 'ntp',
+    uncertaintyMs: faults.noSntp ? HTTP_DATE_UNCERTAINTY_MS : NTP_UNCERTAINTY_MS,
+    aheadMs: epochMs - now,
+  }
+}
+
+/**
+ * Reinicio del equipo: `bootId` avanza y el reloj vuelve a cero. La `seq` **no**
+ * rebobina: los segmentos del estudio se nombran en S3 con el `first_seq` del
+ * lote, y volver a 0 pisaría los ya archivados.
+ *
+ * **La flash no se toca**: sobrevive al corte de energía. Lo que quedaba sin
+ * confirmar sale en POST propios, cortados en el cambio de arranque y con la
+ * hora del arranque viejo, que el puente tiene en su tabla.
+ */
+export function reboot(device: DeviceRuntime): void {
+  const clock = device.clock
+  const restartAt = dataCursorEpochMs(clock) + BOOT_DELAY_MS
+  clock.bootId = (clock.bootId + 1) % BOOTID_MODULO
+  clock.t0Ms = 0
+  clock.bootEpochMs = restartAt
+  clock.bootAnchors = { ...clock.bootAnchors, [clock.bootId]: restartAt }
+  clock.fresh = false
+}
+
+/**
+ * Guarda en la flash las tramas recién grabadas. Devuelve cuántas se perdieron
+ * por desborde: se expulsan por sector desde el frente, porque lo más viejo es
+ * lo que el equipo ya no puede sostener.
  */
 export function recordFrames(sd: DeviceStorage, frames: Uint8Array[], firstSeq: number): number {
   for (let i = 0; i < frames.length; i++) {
@@ -178,23 +365,19 @@ export function recordFrames(sd: DeviceStorage, frames: Uint8Array[], firstSeq: 
   }
   const excess = sd.pending.length - MAX_BACKLOG_FRAMES
   if (excess <= 0) return 0
-  sd.pending.splice(0, excess)
-  sd.overflowed += excess
-  return excess
+  const evicted = Math.min(
+    sd.pending.length,
+    Math.ceil(excess / FLASH_SECTOR_FRAMES) * FLASH_SECTOR_FRAMES,
+  )
+  sd.pending.splice(0, evicted)
+  sd.overflowed += evicted
+  return evicted
 }
 
 /**
- * Ventana a transmitir: desde la trama más vieja sin confirmar, acotada por lo
- * que entra en un request.
- */
-export function takeWindow(sd: DeviceStorage): PendingFrame[] {
-  return sd.pending.slice(0, MAX_FRAMES_PER_REQUEST)
-}
-
-/**
- * Libera la SD hasta la `seq` que el backend confirmó, y solo hasta ahí: lo que
- * quedó después del hueco se retransmite en el ciclo siguiente. Devuelve cuántas
- * tramas se liberaron.
+ * Libera la flash hasta la `seq` que el backend confirmó, y solo hasta ahí: lo
+ * que quedó después del hueco se retransmite. Devuelve cuántas tramas se
+ * liberaron.
  */
 export function ackUpTo(sd: DeviceStorage, lastAcceptedSeq: number | null): number {
   if (lastAcceptedSeq === null) return 0
@@ -204,23 +387,29 @@ export function ackUpTo(sd: DeviceStorage, lastAcceptedSeq: number | null): numb
   return freed
 }
 
-/** Bytes que ocupa el backlog. Para mostrarlo en la tarjeta. */
+/** Bytes que ocupa el backlog. */
 export function backlogBytes(sd: DeviceStorage): number {
   return sd.pending.length * FRAME_BYTES
 }
 
 /**
  * Avanza el reloj un lote **grabado**. Corre aunque el envío falle: el firmware
- * sigue grabando en la SD con o sin WiFi. Lo que se transmite lo decide la SD,
- * no este cursor.
+ * sigue grabando en la flash con o sin WiFi.
  */
 export function advanceClock(
   clock: DeviceClock,
   batch: { lastSeq: number; sampleCount: number },
-  batchMinutes: number,
 ): void {
   clock.nextSeq = batch.lastSeq + 1
-  clock.t0Ms = (clock.t0Ms + batch.sampleCount * STEP_MS) >>> 0
-  clock.uptimeMs += batchMinutes * 60_000
-  clock.batteryPct = Math.max(5, clock.batteryPct - 0.4)
+  clock.t0Ms += batch.sampleCount * STEP_MS
+  const hours = (batch.sampleCount * STEP_MS) / 3_600_000
+  clock.batteryPct = Math.max(3, clock.batteryPct - hours * BATTERY_DRAIN_PCT_PER_HOUR)
+}
+
+/** `batteryFlags` del STATUS: 0x01 medida, 0x02 baja, 0x04 crítica. */
+export function batteryFlags(batteryPct: number): number {
+  let flags = 0x01
+  if (batteryPct <= 15) flags |= 0x02
+  if (batteryPct <= 5) flags |= 0x04
+  return flags
 }

@@ -4,7 +4,7 @@ import { applyChannel, makeRng } from './channel'
 import { buildBatch, splitFrames } from './batchBuilder'
 import { decodeFrame } from './riceDecoder'
 import { FRAME_BYTES, readHeader } from './frame'
-import { DEFAULT_SIGNAL_CONFIG } from './signal'
+import { batchRequest } from './testSignals'
 import type { PendingFrame } from '../deviceClock'
 import type { FrameAnomalies } from '../types'
 
@@ -17,16 +17,9 @@ const CLEAN: FrameAnomalies = {
   shuffle: false,
 }
 
-/** Una SD con las tramas de 20 s de señal, todas sin intentar. */
+/** Una flash con las tramas de 20 s de señal, todas sin intentar. */
 function pending(firstSeq = 100): PendingFrame[] {
-  const batch = buildBatch({
-    requestId: 1,
-    signal: { ...DEFAULT_SIGNAL_CONFIG, durationSec: 20, seed: 5 },
-    firstSeq,
-    bootId: 3,
-    t0Ms: 0,
-    simulated: true,
-  })
+  const batch = buildBatch(batchRequest({ firstSeq }))
   return splitFrames(batch.body).map((bytes, i) => ({ seq: firstSeq + i, bytes, attempts: 0 }))
 }
 

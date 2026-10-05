@@ -9,7 +9,7 @@
  */
 
 import { encodeSamples } from './riceEncoder'
-import { DEFAULT_SIGNAL_CONFIG, generateSignal, type SignalConfig } from './signal'
+import { DEFAULT_SIGNAL_CONFIG, generateSignal, type SignalConfig } from './legacySignal'
 
 export const GOLDEN_CONFIG: SignalConfig = {
   ...DEFAULT_SIGNAL_CONFIG,

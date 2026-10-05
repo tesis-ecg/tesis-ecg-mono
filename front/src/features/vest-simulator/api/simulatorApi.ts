@@ -20,48 +20,52 @@ export interface IngestAck {
   serverTime: string
 }
 
+/** Versión del firmware del equipo (`config.h:358-360`), como la manda el puente. */
+export const FIRMWARE_VERSION = '2.1.0'
+
 export interface IngestHeaders {
   serial: string
   apiKey: string
+  /** `null` solo para simular la falla de omitirlo. */
   uptimeMs: number | null
   /**
-   * Epoch UTC del puente, leído en el MISMO instante que `uptimeMs`. Sale de
-   * `bridgeEpochMs(clock)`, no de `Date.now()`: el reloj del chaleco simulado
-   * corre acelerado y las dos cifras tienen que venir del mismo reloj.
+   * Epoch UTC del puente, leído en el MISMO instante que `uptimeMs` y del mismo
+   * arranque (`bootId`). Sale de `bridgeTimeForPost`: es la hora real, y el
+   * uptime es el de ese arranque a esta hora.
    */
-  bridgeEpochMs: number | null
+  bridgeEpochMs: number
+  /** Arranque al que pertenece el par epoch/uptime (`X-Device-Boot-Id`). */
+  bootId: number
+  timeSource: 'ntp' | 'none'
+  timeUncertaintyMs: number
   firmwareVersion: string
+  /** Solo si la batería está medida; si no, el puente no la manda. */
   batteryPct: number | null
+  /** Cabeceras `X-Device-*` ya armadas (`diagHeaders`). */
+  diag: Record<string, string>
 }
 
 /**
- * Cabeceras de hora del puente WiFi, iguales a las que manda el ESP32-C3 real
- * (`docs/integracion-ingesta-con-horario.md`).
- *
- * El simulador las manda siempre. Es el banco de pruebas del equipo, así que si
- * no las mandara dejaría de poder ingerir en cuanto se prenda el modo estricto,
- * justo cuando más falta hace poder reproducir el comportamiento nuevo.
- *
- * La regla que importa es la misma que para el firmware (§3): el epoch y el
- * uptime tienen que describir **el mismo instante**. Los dos salen del reloj
- * simulado del chaleco, así que la resta da su arranque exacto y estable.
- *
- * Nota para corridas largas: el reloj simulado avanza `batchMinutes` por lote,
- * mucho más rápido que el real, así que el epoch se va al futuro. Pasadas unas
- * horas simuladas cruza `ingest_time_sync_max_skew_seconds` y el backend contesta
- * `422 DEVICE_TIME_INVALID`. Es visible en el panel y se corre subiendo ese
- * ajuste; taparlo acá mandando la hora real volvería a desalinear el ancla.
+ * Las cabeceras que manda el ESP32-C3 real (`addIngestHeaders`,
+ * `esp32_wifi_bridge.cpp:1013-1143`), iguales para la ingesta y para el canal
+ * corto. La regla que importa es la de la hora (§3 de
+ * `docs/integracion-ingesta-con-horario.md`): epoch y uptime describen el mismo
+ * instante del mismo arranque, así que su resta da el arranque exacto.
  */
-function timeSyncHeaders(
-  uptimeMs: number | null,
-  bridgeEpochMs: number | null,
-): Record<string, string> {
-  if (uptimeMs === null || bridgeEpochMs === null) return {}
-  return {
-    'X-Bridge-Epoch-Ms': String(Math.round(bridgeEpochMs)),
-    'X-Time-Sync-Source': 'ntp',
-    'X-Time-Sync-Uncertainty-Ms': '50',
+function deviceHeaders(headers: IngestHeaders, contentType: string): Record<string, string> {
+  const out: Record<string, string> = {
+    'Content-Type': contentType,
+    Authorization: `Bearer ${headers.apiKey}`,
+    'X-Device-Serial': headers.serial,
+    'X-Device-Boot-Id': String(headers.bootId),
+    'X-Bridge-Epoch-Ms': String(Math.round(headers.bridgeEpochMs)),
+    'X-Time-Sync-Source': headers.timeSource,
+    'X-Time-Sync-Uncertainty-Ms': String(Math.round(headers.timeUncertaintyMs)),
+    'X-Firmware-Version': headers.firmwareVersion,
   }
+  if (headers.uptimeMs !== null) out['X-Device-Uptime-Ms'] = String(Math.round(headers.uptimeMs))
+  if (headers.batteryPct !== null) out['X-Battery-Pct'] = String(Math.round(headers.batteryPct))
+  return { ...out, ...headers.diag }
 }
 
 export interface IngestResult {
@@ -92,23 +96,9 @@ export async function postFrames(
   headers: IngestHeaders,
   signal?: AbortSignal,
 ): Promise<IngestResult> {
-  const requestHeaders: Record<string, string> = {
-    'Content-Type': 'application/octet-stream',
-    Authorization: `Bearer ${headers.apiKey}`,
-    'X-Device-Serial': headers.serial,
-    'X-Firmware-Version': headers.firmwareVersion,
-  }
-  if (headers.uptimeMs !== null) {
-    requestHeaders['X-Device-Uptime-Ms'] = String(Math.round(headers.uptimeMs))
-  }
-  if (headers.batteryPct !== null) {
-    requestHeaders['X-Battery-Pct'] = String(Math.round(headers.batteryPct))
-  }
-  Object.assign(requestHeaders, timeSyncHeaders(headers.uptimeMs, headers.bridgeEpochMs))
-
   const response = await fetch('/api/ingest/ecg-frames', {
     method: 'POST',
-    headers: requestHeaders,
+    headers: deviceHeaders(headers, 'application/octet-stream'),
     body: body as BodyInit,
     signal,
   })
@@ -123,25 +113,43 @@ export async function postFrames(
       errorMessage: null,
     }
   }
+  // El backend manda los errores como `detail: {code, message}`; algunos
+  // proxies los aplanan. Se aceptan las dos formas.
+  const detail = (payload?.detail ?? payload) as { code?: string; message?: string } | null
   return {
     ok: false,
     status: response.status,
     ack: null,
-    errorCode: (payload?.code as string) ?? null,
-    errorMessage: (payload?.message as string) ?? `HTTP ${response.status}`,
+    errorCode: detail?.code ?? null,
+    errorMessage: detail?.message ?? `HTTP ${response.status}`,
   }
 }
 
-/** Reintenta únicamente fallas transitorias; los aborts nunca se absorben. */
-export async function uploadWithRetries(
+/** `BRIDGE_BACKEND_GRACIA_MS`: cuánto insiste el puente ante un 5xx o un timeout. */
+export const BRIDGE_GRACE_MS = 60_000
+
+/** Pausa mínima entre reintentos. El puente reintenta en la vuelta siguiente del loop. */
+const RETRY_PAUSE_MS = 250
+
+/**
+ * Manda un POST como el puente: un 5xx o una falla de red es pasajera y el
+ * mismo lote se reintenta enseguida, mientras la racha —medida desde el inicio
+ * del primer intento fallido— no pase la gracia. Un 3xx/4xx es permanente y
+ * vuelve al toque (`bridgeFalloEsPasajero`, `esp32_wifi_bridge.cpp:278-311`).
+ *
+ * Los aborts nunca se absorben.
+ */
+export async function uploadWithGrace(
   body: Uint8Array,
   headers: IngestHeaders,
-  maxRetries: number,
+  graceMs: number,
   signal: AbortSignal,
   onRetry: (message: string) => void,
 ): Promise<IngestResult> {
+  let streakStart: number | null = null
   let attempt = 0
   for (;;) {
+    const startedAt = Date.now()
     let result: IngestResult
     try {
       result = await postFrames(body, headers, signal)
@@ -158,19 +166,22 @@ export async function uploadWithRetries(
       }
     }
 
-    const retriable = !result.ok && (result.status === 0 || result.status >= 500)
-    if (result.ok || !retriable || attempt >= maxRetries) return result
+    const transient = !result.ok && (result.status === 0 || result.status >= 500)
+    if (result.ok || !transient) return result
+    streakStart ??= startedAt
+    if (Date.now() - streakStart >= graceMs) return result
 
     attempt++
-    const backoffMs = Math.min(8000, 250 * 2 ** attempt)
     const reason = result.status === 0 ? 'error de red' : `HTTP ${result.status}`
-    onRetry(`Reintento ${attempt}/${maxRetries} en ${backoffMs} ms (${reason})`)
-    await wait(backoffMs, signal)
+    onRetry(
+      `Reintento ${attempt} del mismo POST (${reason}); gracia de ${Math.round(graceMs / 1000)} s`,
+    )
+    await wait(RETRY_PAUSE_MS, signal)
   }
 }
 
 /** Lo que el chaleco puede reportar fuera del ciclo de envío. */
-export type VestStatusEvent = 'signal_quality_bad' | 'lead_off' | 'signal_recovered'
+export type VestStatusEvent = 'signal_quality_bad' | 'lead_off' | 'signal_recovered' | 'alive'
 
 export interface DeviceStatusAck {
   notified: boolean
@@ -182,40 +193,32 @@ export interface DeviceStatusAck {
  * Canal corto del chaleco: `POST /ingest/device-status`.
  *
  * Va por `fetch` y con credencial de equipo por el mismo motivo que
- * `postFrames`: es lo que va a mandar el co-procesador WiFi, sin cookie de por
- * medio. Lo único distinto es el `Content-Type`, que acá es JSON.
+ * `postFrames`: es lo que manda el co-procesador WiFi, sin cookie de por medio.
+ * El cuerpo es el del puente (`BridgeUplink.h:432-451, 625-649`): batería y SQI
+ * solo cuando se conocen.
  */
 export async function postDeviceStatus(
   event: VestStatusEvent,
   headers: IngestHeaders,
   durationSeconds: number,
+  extra: { sqi?: number | null } = {},
   signal?: AbortSignal,
 ): Promise<DeviceStatusAck> {
-  const requestHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${headers.apiKey}`,
-    'X-Device-Serial': headers.serial,
-    'X-Firmware-Version': headers.firmwareVersion,
-  }
-  if (headers.uptimeMs !== null) {
-    requestHeaders['X-Device-Uptime-Ms'] = String(Math.round(headers.uptimeMs))
-  }
-  if (headers.batteryPct !== null) {
-    requestHeaders['X-Battery-Pct'] = String(Math.round(headers.batteryPct))
-  }
-  Object.assign(requestHeaders, timeSyncHeaders(headers.uptimeMs, headers.bridgeEpochMs))
+  const body: Record<string, number | string> = { event, durationSeconds }
+  if (headers.batteryPct !== null) body.batteryPct = Math.min(100, Math.round(headers.batteryPct))
+  if (extra.sqi && extra.sqi >= 1 && extra.sqi <= 3) body.sqi = extra.sqi
 
   const response = await fetch('/api/ingest/device-status', {
     method: 'POST',
-    headers: requestHeaders,
-    body: JSON.stringify({ event, durationSeconds }),
+    headers: deviceHeaders(headers, 'application/json'),
+    body: JSON.stringify(body),
     signal,
   })
 
   const payload = await response.json().catch(() => null)
   if (!response.ok) {
-    const message = (payload?.message as string) ?? `HTTP ${response.status}`
-    throw new Error(message)
+    const detail = (payload?.detail ?? payload) as { message?: string } | null
+    throw new Error(detail?.message ?? `HTTP ${response.status}`)
   }
   return payload as DeviceStatusAck
 }

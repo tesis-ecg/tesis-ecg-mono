@@ -305,22 +305,10 @@ export function StudyDetail() {
                         </span>
                       )}
                     </div>
-                    <ECGZoomControls
-                      onZoomIn={handleZoomIn}
-                      onZoomOut={handleZoomOut}
-                      onFullscreen={handleFullscreen}
-                    />
                   </div>
                   {ecgQ.data.metadata?.startTimeVerified === false && (
                     <p className="text-body3 text-amber-700">
                       Hora de pared no verificada: faltó un ancla del mismo arranque del Holter.
-                    </p>
-                  )}
-                  {(ecgQ.data.metadata?.processedSampleCount ??
-                    ecgQ.data.metadata?.sampleCount ??
-                    0) < (ecgQ.data.metadata?.sampleCount ?? 0) && (
-                    <p className="text-body3 text-amber-700">
-                      Sin datos procesados en el tramo final.
                     </p>
                   )}
                   <ECGPaperControls
@@ -353,6 +341,13 @@ export function StudyDetail() {
                     selectedAnnotationId={selectedAnnotationId}
                     onAnnotationSelect={handleAnnotationSelect}
                     showAnnotations={showAnnotationsOnChart}
+                    toolbar={
+                      <ECGZoomControls
+                        onZoomIn={handleZoomIn}
+                        onZoomOut={handleZoomOut}
+                        onFullscreen={handleFullscreen}
+                      />
+                    }
                   />
                   <p className="text-body3 mt-10 text-gray-500">
                     Zoom:{' '}

@@ -35,6 +35,7 @@ from app.modules.studies.annotations import (
     EventView,
     WallClockResolver,
     event_view,
+    merge_continuous_episodes,
     segment_epoch_ms,
     wall_clock_resolver,
 )
@@ -223,11 +224,11 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
     # caería al lado de la banda en cuanto el estudio tenga un hueco.
     runs = await repo.list_timeline_segments(db, study.id)
     to_epoch_ms = wall_clock_resolver(study, runs)
-    views = [
-        view
-        for view in (event_view(event, study, to_epoch_ms) for event in events)
-        if view is not None
-    ]
+    # Un electrodo suelto partido en una docena de lotes es un episodio en el
+    # visor; la lista tiene que mostrar el mismo, no doce filas.
+    views, _ = merge_continuous_episodes(
+        [view for view in (event_view(event, study, to_epoch_ms) for event in events) if view]
+    )
 
     grouped: dict[str, list[EventView]] = {}
     ungrouped: list[EventView] = []

@@ -1,44 +1,35 @@
 /**
  * Orquesta N chalecos simulados en paralelo.
  *
- * Cada chaleco tiene su propio worker, su propio cursor de `seq`, su propia SD,
- * su propio reloj simulado y su propio estado de red. No comparten nada: eso es
+ * Cada chaleco tiene su propio worker, su propio cursor de `seq`, su propia
+ * flash, su propio reloj y su propio estado de red. No comparten nada: eso es
  * lo que permite tener uno mandando backlog acelerado mientras otro falla la
  * autenticación, que es el punto de poder simular una flota.
  *
  * El ciclo por lote es el del equipo real: **grabar, transmitir, confirmar**.
- * Grabar avanza el cursor y llena la SD; transmitir manda la ventana más vieja
- * sin confirmar; confirmar libera de la SD solo lo que el backend aceptó. Lo que
- * quedó del otro lado de un hueco vuelve a salir en el ciclo siguiente
- * (`INTEGRACION.md` §4.6). Antes el cursor avanzaba con lo generado y nada se
- * retransmitía nunca: el primer hueco congelaba el estudio para siempre.
+ *
+ * - Grabar avanza el cursor y llena la flash.
+ * - Transmitir es una ventana del puente: POSTs de hasta 48 tramas desde la más
+ *   vieja sin confirmar, cortados en cada cambio de arranque, mientras haya
+ *   avance (`INTEGRACION.md` §4.6).
+ * - Confirmar libera de la flash solo lo que el backend aceptó. Lo que quedó del
+ *   otro lado de un hueco vuelve a salir en el POST siguiente.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { unwrapError } from '@/lib/api'
 
 import {
+  FIRMWARE_VERSION,
   postDeviceStatus,
   simulateAnomaly as postSimulatedAnomaly,
-  uploadWithRetries,
+  uploadWithGrace,
+  type IngestHeaders,
   type SimulateAnomalyBody,
+  type SimulatedAnomalyType,
+  type VestStatusEvent,
 } from '../api/simulatorApi'
-import {
-  ackUpTo,
-  acquireDevice,
-  advanceClock,
-  bridgeEpochMs,
-  forgetClock,
-  reboot,
-  recordFrames,
-  takeWindow,
-  type ClockRegistry,
-  type DeviceClock,
-} from '../deviceClock'
-import { loadClocks, loadFleet, saveClocks, saveFleet } from '../storage'
-import type { LogEntry, VestConfig, VestState } from '../types'
-import { EMPTY_STATS } from '../types'
 import { applyChannel, makeRng } from '../codec/channel'
 import {
   buildBatch,
@@ -46,15 +37,64 @@ import {
   type VestWorkerRequest,
   type VestWorkerResponse,
 } from '../codec/batchBuilder'
+import { FRAME_BYTES } from '../codec/frame'
+import {
+  EPISODE_META,
+  initialGeneratorState,
+  type Episode,
+  type EpisodeKind,
+  type ResolvedEpisode,
+} from '../codec/signal'
+import { makeEpisode } from '../defaults'
+import {
+  MAX_FRAMES_PER_REQUEST,
+  MAX_FUTURE_SKEW_MS,
+  acquireDevice,
+  advanceClock,
+  anchorFirstRun,
+  batteryFlags,
+  bridgeTimeForPost,
+  bridgeTimeNow,
+  dataCursorEpochMs,
+  forgetClock,
+  reboot,
+  recordFrames,
+  type BridgeTime,
+  type ClockRegistry,
+  type DeviceClock,
+  type DeviceRuntime,
+} from '../deviceClock'
+import { defaultFlashStore, type FlashStore } from '../flashStore'
+import { loadClocks, loadFleet, saveClocks, saveFleet } from '../storage'
+import {
+  EMPTY_DIAG,
+  STATUS_FLAG_BACKLOG_OVERFLOW,
+  STATUS_FLAG_UPLINK_DOWN,
+  accumulateDiag,
+  applyAck,
+  backlogSeconds,
+  diagHeaders,
+  evaluatePlacement,
+  nextPostFrames,
+  onWindowFailed,
+  onWindowOk,
+  responseStoredData,
+  type PlacementNotice,
+} from '../transmission'
+import type { LogEntry, VestConfig, VestState, VestStats } from '../types'
+import { EMPTY_STATS } from '../types'
 
-const MAX_LOG_ENTRIES = 60
+const MAX_LOG_ENTRIES = 80
 
 /**
- * Ciclos extra de retransmisión al terminar los lotes. Sin esto, lo que se
- * perdió en el último envío queda colgado en la SD y el estudio termina corto
- * justo por la cantidad de señal que el usuario pidió simular.
+ * Ventanas extra al terminar los lotes. Sin esto, lo que se perdió en el último
+ * envío queda colgado en la flash y el estudio termina corto justo por la
+ * cantidad de señal que el usuario pidió simular.
  */
 const MAX_DRAIN_CYCLES = 4
+
+/** Respuestas inexplicables seguidas antes de dar la ventana por fallida (`BRIDGE_INEXPLICABLES_AVISAR`). */
+const MAX_INEXPLICABLE = 3
 
 function cadenceDelayMs(config: VestConfig): number {
   const batchMs = config.batchMinutes * 60_000
@@ -109,17 +149,92 @@ function toState(config: VestConfig): VestState {
   return { config, phase: 'idle', stats: { ...EMPTY_STATS }, log: [] }
 }
 
+/** Episodios de un lote de la corrida, con los tiempos relativos a su inicio. */
+export function resolveEpisodes(episodes: Episode[], batchNumber: number): ResolvedEpisode[] {
+  return episodes
+    .filter((episode) => episode.batch === batchNumber)
+    .map((episode) => ({
+      kind: episode.kind,
+      startSec: Math.max(0, episode.startSec),
+      endSec:
+        Math.max(0, episode.startSec) +
+        (EPISODE_META[episode.kind].instant ? 0 : Math.max(0, episode.durationSec)),
+      value: episode.value,
+    }))
+}
+
+function formatWhen(epochMs: number): string {
+  return new Date(epochMs).toLocaleString('es-AR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatHours(ms: number): string {
+  return ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : `${Math.round(ms / 60_000)} min`
+}
+
+/** Lo que la tarjeta muestra del equipo, leído del reloj y la flash. */
+function deviceStats(device: DeviceRuntime, now: number): Partial<VestStats> {
+  const { clock, sd } = device
+  return {
+    bootId: clock.bootId,
+    uptimeMs: Math.max(0, now - clock.bootEpochMs),
+    dataCursorEpochMs: clock.fresh ? null : dataCursorEpochMs(clock),
+    clockAheadMs: clock.fresh ? 0 : Math.max(0, dataCursorEpochMs(clock) - now),
+    backoffWindows: clock.backoff.skipWindows,
+    batteryPct: clock.batteryPct,
+    framesPending: sd.pending.length,
+    framesLost: sd.overflowed,
+  }
+}
+
+function ingestHeaders(config: VestConfig, clock: DeviceClock, time: BridgeTime): IngestHeaders {
+  // El RSSI se mide en cada POST; acá oscila unos dBm alrededor del configurado.
+  const rssi = config.network.rssiDbm + Math.round((Math.random() - 0.5) * 6)
+  return {
+    serial: config.network.unknownSerial ? 'HOL-NO-EXISTE' : config.serial,
+    apiKey: config.network.invalidApiKey ? 'clave-invalida' : config.apiKey,
+    uptimeMs: config.network.omitUptime ? null : time.uptimeMs,
+    bridgeEpochMs: time.epochMs,
+    bootId: time.bootId,
+    timeSource: time.source,
+    timeUncertaintyMs: time.uncertaintyMs,
+    firmwareVersion: FIRMWARE_VERSION,
+    batteryPct: clock.batteryPct,
+    diag: diagHeaders(clock.diag, Math.max(-127, Math.min(0, rssi))),
+  }
+}
+
+export interface VestFleetOptions {
+  /** Dónde vive la flash. Por defecto IndexedDB, con respaldo en memoria. */
+  flashStore?: FlashStore
+  /** Reloj de pared. Inyectable para los tests. */
+  now?: () => number
+}
+
 /**
  * @param initial configs de arranque. Si no se pasan, la flota se hidrata desde
  * `localStorage` — es lo que hace que la API key sobreviva a un F5.
  */
-export function useVestFleet(initial?: VestConfig[]) {
+export function useVestFleet(initial?: VestConfig[], options: VestFleetOptions = {}) {
   const [vests, setVests] = useState<VestState[]>(() => (initial ?? loadFleet()).map(toState))
+  // Las corridas son largas y leen la config en vivo (las inyecciones del panel
+  // pueden llegar a mitad de camino).
+  const vestsRef = useRef(vests)
+  useLayoutEffect(() => {
+    vestsRef.current = vests
+  }, [vests])
   const controllers = useRef(new Map<string, AbortController>())
   const clocks = useRef<ClockRegistry>(new Map())
   // Relojes de sesiones anteriores. Se consumen al adquirir el equipo por
-  // primera vez; la SD no se restaura porque no entra en `localStorage`.
+  // primera vez.
   const restoredClocks = useRef<Record<string, DeviceClock>>(loadClocks())
+  const [flashStore] = useState<FlashStore>(() => options.flashStore ?? defaultFlashStore())
+  const hydrated = useRef(new Set<string>())
+  const [now] = useState<() => number>(() => options.now ?? Date.now)
 
   // Se persiste ante cualquier cambio de config —agregar, quitar, editar,
   // rotar la key— y no solo al guardar el formulario: el objetivo es que no
@@ -138,16 +253,50 @@ export function useVestFleet(initial?: VestConfig[]) {
   }, [])
 
   const persistClocks = useCallback(() => {
-    const snapshot: Record<string, DeviceClock> = {}
+    const snapshot: Record<string, DeviceClock> = { ...restoredClocks.current }
     clocks.current.forEach((device, id) => {
       snapshot[id] = { ...device.clock }
     })
     saveClocks(snapshot)
   }, [])
 
+  const persistFlash = useCallback(
+    async (id: string, device: DeviceRuntime) => {
+      await flashStore.save(id, device.sd)
+    },
+    [flashStore],
+  )
+
+  /** El equipo, con su flash hidratada desde IndexedDB la primera vez. */
+  const getDevice = useCallback(
+    async (id: string): Promise<DeviceRuntime> => {
+      const device = acquireDevice(clocks.current, id, restoredClocks.current[id])
+      if (!hydrated.current.has(id)) {
+        hydrated.current.add(id)
+        const stored = await flashStore.load(id)
+        if (stored && device.sd.pending.length === 0) device.sd = stored
+      }
+      return device
+    },
+    [flashStore],
+  )
+
   const patch = useCallback((id: string, update: (state: VestState) => VestState) => {
     setVests((current) => current.map((vest) => (vest.config.id === id ? update(vest) : vest)))
   }, [])
+
+  const patchStats = useCallback(
+    (id: string, update: Partial<VestStats> | ((stats: VestStats) => Partial<VestStats>)) => {
+      patch(id, (vest) => ({
+        ...vest,
+        stats: {
+          ...vest.stats,
+          ...(typeof update === 'function' ? update(vest.stats) : update),
+        },
+      }))
+    },
+    [patch],
+  )
 
   const log = useCallback(
     (id: string, level: LogEntry['level'], message: string) => {
@@ -169,10 +318,12 @@ export function useVestFleet(initial?: VestConfig[]) {
       controllers.current.delete(id)
       forgetClock(clocks.current, id)
       delete restoredClocks.current[id]
+      hydrated.current.delete(id)
+      void flashStore.remove(id)
       persistClocks()
       setVests((current) => current.filter((vest) => vest.config.id !== id))
     },
-    [persistClocks],
+    [persistClocks, flashStore],
   )
 
   const updateVest = useCallback(
@@ -193,105 +344,112 @@ export function useVestFleet(initial?: VestConfig[]) {
   }, [])
 
   /**
-   * Ciclo de energía del equipo. Es la salida del callejón sin salida que deja
-   * un F5 a mitad de corrida: el reloj se restaura pero la SD no, así que el
-   * backend queda esperando tramas que ya no existen. Con el `bootId` nuevo el
-   * backend acepta desde donde arranque el próximo lote y el estudio vuelve a
-   * crecer, con el hueco temporal registrado.
+   * Manda un aviso por el canal corto con la hora del arranque actual. Devuelve
+   * el ACK, o `null` si falló (y lo deja en el log).
+   */
+  const sendStatus = useCallback(
+    async (
+      id: string,
+      config: VestConfig,
+      device: DeviceRuntime,
+      event: VestStatusEvent,
+      durationSeconds: number,
+      signal?: AbortSignal,
+    ) => {
+      const time = bridgeTimeNow(device.clock, now(), config.network)
+      try {
+        return await postDeviceStatus(
+          event,
+          ingestHeaders(config, device.clock, time),
+          durationSeconds,
+          { sqi: device.clock.diag.worstSqi || null },
+          signal,
+        )
+      } catch (error) {
+        if (signal?.aborted) throw error
+        log(id, 'error', `No se pudo mandar el aviso "${event}": ${(error as Error).message}`)
+        return null
+      }
+    },
+    [log, now],
+  )
+
+  /**
+   * Ciclo de energía del equipo. La flash sobrevive: lo pendiente sale después,
+   * en POST propios y con la hora del arranque anterior.
    */
   const rebootVest = useCallback(
-    (id: string) => {
-      const target = vests.find((vest) => vest.config.id === id)
-      if (!target) return
-      const device = acquireDevice(clocks.current, id, target.config, restoredClocks.current[id])
-      const lost = reboot(device)
+    async (id: string) => {
+      const device = await getDevice(id)
+      reboot(device)
       persistClocks()
-      patch(id, (vest) => ({
-        ...vest,
-        stats: {
-          ...vest.stats,
-          bootId: device.clock.bootId,
-          uptimeMs: device.clock.uptimeMs,
-          framesPending: 0,
-          framesLost: vest.stats.framesLost + lost,
-        },
-      }))
+      patchStats(id, deviceStats(device, now()))
+      const pending = device.sd.pending.length
       log(
         id,
         'warn',
         `Reinicio del equipo: bootId ${device.clock.bootId}, t0Ms vuelve a 0` +
-          (lost > 0 ? `, se pierden ${lost} tramas sin confirmar de la SD` : ''),
+          (pending > 0
+            ? `. Quedan ${pending} tramas en la flash: salen con la hora del arranque anterior.`
+            : '.'),
       )
     },
-    [vests, patch, log, persistClocks],
+    [getDevice, patchStats, log, persistClocks, now],
   )
 
   /**
-   * Prende y apaga la colocación del chaleco por el canal corto del equipo.
+   * Prende y apaga la colocación del chaleco por el canal corto del equipo, a
+   * mano. El equipo también lo hace solo cuando la señal grabada lo amerita
+   * (ver `run`).
    *
-   * No pasa por el worker ni por el ciclo de lotes a propósito: el equipo real
-   * reporta esto **fuera** del ciclo de envío, justamente para que el paciente
-   * no se entere una hora después. Por eso también anda con el chaleco
-   * detenido, que es como se va a usar para probar.
-   *
-   * El estado se guarda en la config aunque el POST falle no: si el backend no
-   * lo registró, la pantalla no puede decir que sí.
+   * El estado se guarda en la config solo si el POST salió: si el backend no lo
+   * registró, la pantalla no puede decir que sí.
    */
   const setPlacement = useCallback(
     async (id: string, ok: boolean) => {
-      const target = vests.find((vest) => vest.config.id === id)
+      const target = vestsRef.current.find((vest) => vest.config.id === id)
       if (!target) return
       const { config } = target
       if (!config.serial || !config.apiKey) return
 
-      const device = acquireDevice(clocks.current, id, config, restoredClocks.current[id])
-      try {
-        const ack = await postDeviceStatus(
-          ok ? 'signal_recovered' : 'lead_off',
-          {
-            serial: config.serial,
-            apiKey: config.apiKey,
-            uptimeMs: device.clock.uptimeMs,
-            bridgeEpochMs: bridgeEpochMs(device.clock),
-            firmwareVersion: '1.4.2',
-            batteryPct: device.clock.batteryPct,
-          },
-          // Por encima del dT del requerimiento: lo que se está simulando es un
-          // electrodo suelto sostenido, no un rebote de medio segundo.
-          ok ? 0 : 180,
+      const device = await getDevice(id)
+      // Por encima del dT del requerimiento: lo que se está simulando es un
+      // electrodo suelto sostenido, no un rebote de medio segundo.
+      const ack = await sendStatus(
+        id,
+        config,
+        device,
+        ok ? 'signal_recovered' : 'lead_off',
+        ok ? 0 : 180,
+      )
+      if (!ack) return
+      updateVest(id, { placementOk: ok })
+      if (ok) {
+        log(id, 'info', 'Chaleco bien colocado: se cerró el episodio, sin aviso al paciente.')
+      } else if (ack.notified) {
+        log(id, 'warn', `Chaleco mal colocado: aviso enviado (alerta ${ack.alertId}).`)
+      } else {
+        // `notified: false` con el chaleco mal puesto tiene dos causas y las
+        // dos se depuran distinto; decir solo "no se notificó" no alcanza.
+        log(
+          id,
+          'warn',
+          'Chaleco mal colocado, pero no se notificó: el equipo no tiene paciente asignado ' +
+            'o el aviso cayó dentro del debounce del episodio anterior.',
         )
-        updateVest(id, { placementOk: ok })
-        if (ok) {
-          log(id, 'info', 'Chaleco bien colocado: se cerró el episodio, sin aviso al paciente.')
-        } else if (ack.notified) {
-          log(id, 'warn', `Chaleco mal colocado: aviso enviado (alerta ${ack.alertId}).`)
-        } else {
-          // `notified: false` con el chaleco mal puesto tiene dos causas y las
-          // dos se depuran distinto; decir solo "no se notificó" no alcanza.
-          log(
-            id,
-            'warn',
-            'Chaleco mal colocado, pero no se notificó: el equipo no tiene paciente asignado ' +
-              'o el aviso cayó dentro del debounce del episodio anterior.',
-          )
-        }
-      } catch (error) {
-        log(id, 'error', `No se pudo reportar la colocación: ${(error as Error).message}`)
       }
     },
-    [vests, updateVest, log],
+    [getDevice, sendStatus, updateVest, log],
   )
 
   /**
-   * Fabrica un hallazgo clínico sobre la señal ya subida.
-   *
-   * Necesita `studyId`, es decir un lote ya ingerido: el hallazgo se ancla
-   * dentro de la grabación para que la respuesta del paciente sea ubicable en
-   * el gráfico, y sin muestras no hay dónde anclarlo.
+   * Fabrica un hallazgo clínico sobre la señal ya subida, del lado del backend.
+   * Sirve para probar la notificación al paciente; para que la arritmia esté de
+   * verdad en el trazado está `injectAnomaly`.
    */
   const simulateAnomaly = useCallback(
     async (id: string, body: SimulateAnomalyBody) => {
-      const target = vests.find((vest) => vest.config.id === id)
+      const target = vestsRef.current.find((vest) => vest.config.id === id)
       const studyId = target?.stats.studyId
       if (!studyId) return
 
@@ -307,12 +465,34 @@ export function useVestFleet(initial?: VestConfig[]) {
         log(id, 'error', `No se pudo simular la anomalía: ${unwrapError(error)}`)
       }
     },
-    [vests, log],
+    [log],
+  )
+
+  /**
+   * Encola una arritmia para el **próximo lote** que grabe el chaleco: queda
+   * en el ECG, la ve el visor y la mide el backend.
+   */
+  const injectAnomaly = useCallback(
+    (id: string, type: SimulatedAnomalyType) => {
+      const target = vestsRef.current.find((vest) => vest.config.id === id)
+      if (!target) return
+      const kind: EpisodeKind = type
+      const batchSec = target.config.batchMinutes * 60
+      const meta = EPISODE_META[kind]
+      const startSec = Math.round(batchSec / 3)
+      const episode = makeEpisode(kind, {
+        startSec,
+        durationSec: Math.min(meta.defaultDurationSec, Math.max(10, batchSec - startSec)),
+      })
+      updateVest(id, { pendingInjections: [...target.config.pendingInjections, episode] })
+      log(id, 'info', `${meta.label} inyectada: va a estar en el próximo lote grabado.`)
+    },
+    [updateVest, log],
   )
 
   const run = useCallback(
     async (id: string) => {
-      const target = vests.find((vest) => vest.config.id === id)
+      const target = vestsRef.current.find((vest) => vest.config.id === id)
       if (!target) return
       const config = target.config
 
@@ -320,165 +500,256 @@ export function useVestFleet(initial?: VestConfig[]) {
       const controller = new AbortController()
       controllers.current.set(id, controller)
 
-      // El chaleco sigue siendo el mismo entre corridas: retoma su reloj donde
-      // lo dejó. Se muta en el lugar, así que un `stop` a mitad de camino deja
-      // el cursor y la SD en el último lote efectivamente enviado.
-      const device = acquireDevice(clocks.current, id, config, restoredClocks.current[id])
+      // El chaleco sigue siendo el mismo entre corridas: retoma su reloj y su
+      // flash donde los dejó. Se mutan en el lugar, así que un `stop` a mitad
+      // de camino deja el cursor y la flash en el último lote grabado.
+      const device = await getDevice(id)
       const clock = device.clock
+
+      if (anchorFirstRun(clock, config, now())) {
+        log(
+          id,
+          'info',
+          `Primer envío del equipo: la señal arranca el ${formatWhen(dataCursorEpochMs(clock))} ` +
+            'y termina ahora, como un equipo que ya venía grabando.',
+        )
+      } else {
+        const behind = now() - dataCursorEpochMs(clock)
+        if (behind > 60_000) {
+          log(
+            id,
+            'info',
+            `La señal continúa desde el último dato grabado (${formatWhen(dataCursorEpochMs(clock))}, ` +
+              `hace ${formatHours(behind)}). El puente manda la hora actual.`,
+          )
+        }
+      }
 
       patch(id, (vest) => ({
         ...vest,
         phase: 'generating',
         // Los contadores son de la corrida; el estado del equipo (cursor, boot,
-        // uptime, SD, estudio) no, porque no se reinició nada.
+        // flash, estudio) no, porque no se reinició nada.
         stats: {
           ...EMPTY_STATS,
           lastSeq: vest.stats.lastSeq,
-          bootId: clock.bootId,
-          uptimeMs: clock.uptimeMs,
-          framesPending: device.sd.pending.length,
           studyId: vest.stats.studyId,
+          ...deviceStats(device, now()),
         },
       }))
 
       let cycle = 0
+      let blocked: string | null = null
+
+      const faults = { noSntp: config.network.noSntp, lostBootTable: config.network.lostBootTable }
+      const postLimit = Math.min(MAX_FRAMES_PER_REQUEST, Math.max(1, config.network.postFrames))
+      const graceMs = Math.max(0, config.network.graceSeconds) * 1000
 
       /**
-       * Un intento de transmisión: ventana más vieja sin confirmar → canal →
-       * POST → ACK → liberar la SD. Devuelve cuántas tramas confirmó el backend,
-       * que es la única medida de si el estudio creció.
+       * Una ventana de envío del puente: POSTs desde la trama más vieja sin
+       * confirmar mientras haya avance. Devuelve si falló y si el corte es
+       * irrecuperable (un 4xx o un hueco que nadie puede llenar).
        */
-      const transmit = async (
+      const sendWindow = async (
         label: string,
-      ): Promise<{ freed: number; irrecoverable: boolean }> => {
-        const window = takeWindow(device.sd)
-        if (window.length === 0) return { freed: 0, irrecoverable: false }
-
-        const firstPendingSeq = window[0].seq
-        const channel = applyChannel(
-          window,
-          config.frames,
-          makeRng(config.signal.seed + cycle * 7919 + firstPendingSeq),
-        )
-        cycle++
-
-        if (channel.droppedSeqs.length) {
-          log(
-            id,
-            'warn',
-            `${channel.droppedSeqs.length} tramas perdidas en el envío ` +
-              '(quedan en la SD y se retransmiten en el próximo ciclo)',
-          )
-        }
-        if (channel.corruptedSeqs.length) {
-          log(id, 'warn', `${channel.corruptedSeqs.length} tramas con CRC roto`)
+      ): Promise<{ failed: boolean; irrecoverable: boolean; blocked: boolean }> => {
+        if (device.sd.pending.length === 0) {
+          // Ventana sin nada para mandar: el latido neutro "estoy encendido".
+          await sendStatus(id, config, device, 'alive', 0, controller.signal)
+          return { failed: false, irrecoverable: false, blocked: false }
         }
 
-        if (channel.body.length === 0) {
-          log(id, 'warn', `${label}: no salió ninguna trama al aire, se reintenta`)
-          return { freed: 0, irrecoverable: false }
-        }
-
-        let body = channel.body
-        if (config.network.truncateBodyPct > 0) {
-          // Corte a mitad del upload: el cuerpo llega incompleto y, si no cae
-          // en un múltiplo de 256, el backend lo rechaza entero.
-          const keep = Math.floor((body.length * (100 - config.network.truncateBodyPct)) / 100)
-          body = body.slice(0, keep)
-          log(id, 'warn', `Cuerpo truncado a ${body.length} B`)
-        }
-
-        patch(id, (vest) => ({ ...vest, phase: 'uploading' }))
-
-        const result = await uploadWithRetries(
-          body,
-          {
-            serial: config.network.unknownSerial ? 'HOL-NO-EXISTE' : config.serial,
-            apiKey: config.network.invalidApiKey ? 'clave-invalida' : config.apiKey,
-            uptimeMs: config.network.omitUptime ? null : clock.uptimeMs,
-            bridgeEpochMs: bridgeEpochMs(clock),
-            firmwareVersion: '1.4.2',
-            batteryPct: clock.batteryPct,
-          },
-          config.network.maxRetries,
-          controller.signal,
-          (message) => log(id, 'warn', message),
-        )
-
-        // La SD se libera **solo** hasta lo que el backend confirmó: lo que
-        // quedó del otro lado del hueco vuelve a salir en el ciclo siguiente.
-        const freed = result.ack ? ackUpTo(device.sd, result.ack.lastAcceptedSeq) : 0
-
-        patch(id, (vest) => ({
-          ...vest,
-          stats: {
-            ...vest.stats,
-            framesSent: vest.stats.framesSent + Math.floor(body.length / 256),
-            bytesSent: vest.stats.bytesSent + body.length,
-            framesAccepted: vest.stats.framesAccepted + (result.ack?.framesAccepted ?? 0),
-            framesRejected: vest.stats.framesRejected + (result.ack?.framesRejected ?? 0),
-            framesDuplicate: vest.stats.framesDuplicate + (result.ack?.framesDuplicate ?? 0),
-            framesPending: device.sd.pending.length,
-            framesLost: device.sd.overflowed,
-            lastSeq: result.ack?.lastAcceptedSeq ?? vest.stats.lastSeq,
-            studyId: result.ack?.studyId ?? vest.stats.studyId,
-            lastStatus: result.status,
-            lastError: result.errorMessage,
-          },
-        }))
-
-        if (!result.ok || !result.ack) {
-          log(
-            id,
-            'error',
-            `HTTP ${result.status} ${result.errorCode ?? ''} — ${result.errorMessage}`,
-          )
-          return {
-            freed: 0,
-            irrecoverable: result.status >= 400 && result.status < 500,
-          }
-        }
-
-        const ack = result.ack
-        log(
-          id,
-          'info',
-          `${label}: ${ack.framesAccepted} aceptadas, ${ack.framesRejected} rechazadas, ` +
-            `${ack.framesDuplicate} duplicadas · ${device.sd.pending.length} tramas en la SD`,
-        )
-
+        let posts = 0
+        let accepted = 0
+        let duplicate = 0
+        let rejected = 0
+        let dropped = 0
+        let corrupted = 0
+        let noProgress = 0
+        let inexplicable = 0
+        let failed = false
         let irrecoverable = false
-        if (freed === 0) {
-          const expected = (ack.lastAcceptedSeq ?? -1) + 1
-          const oldest = device.sd.pending[0]?.seq
-          if (oldest !== undefined && oldest > expected) {
-            irrecoverable = true
-            // El caso del F5: el reloj se restauró pero la SD no, así que las
-            // tramas que llenaban el hueco ya no existen y el backend las va a
-            // esperar para siempre.
+
+        while (device.sd.pending.length > 0) {
+          controller.signal.throwIfAborted()
+          const frames = nextPostFrames(device.sd.pending, postLimit)
+          const channel = applyChannel(
+            frames,
+            config.frames,
+            makeRng(config.signal.seed + cycle * 7919 + frames[0].seq),
+          )
+          cycle++
+          dropped += channel.droppedSeqs.length
+          corrupted += channel.corruptedSeqs.length
+          // Todo se perdió en el aire: las tramas ya cuentan como intentadas y
+          // la próxima vuelta salen intactas.
+          if (channel.body.length === 0) continue
+
+          let body = channel.body
+          if (config.network.truncateBodyPct > 0) {
+            // Corte a mitad del upload: si no cae en un múltiplo de 256, el
+            // backend rechaza el cuerpo entero.
+            const keep = Math.floor((body.length * (100 - config.network.truncateBodyPct)) / 100)
+            body = body.slice(0, keep)
+          }
+
+          const time = bridgeTimeForPost(clock, frames, now(), faults)
+          if (time.aheadMs > MAX_FUTURE_SKEW_MS) {
+            blocked =
+              `El reloj del chaleco iría ${formatHours(time.aheadMs)} adelantado, más que la ` +
+              'tolerancia del backend. Esperá a que la hora real alcance a la señal, o subí ' +
+              '`INGEST_TIME_SYNC_MAX_SKEW_SECONDS` en el backend.'
+            log(id, 'error', blocked)
+            return { failed: true, irrecoverable: true, blocked: true }
+          }
+
+          patch(id, (vest) => ({ ...vest, phase: 'uploading' }))
+          const result = await uploadWithGrace(
+            body,
+            ingestHeaders(config, clock, time),
+            graceMs,
+            controller.signal,
+            (message) => log(id, 'warn', message),
+          )
+          posts++
+
+          if (!result.ok || !result.ack) {
+            patchStats(id, (stats) => ({
+              postsSent: stats.postsSent + 1,
+              bytesSent: stats.bytesSent + body.length,
+              lastStatus: result.status,
+              lastError: result.errorMessage,
+            }))
             log(
               id,
               'error',
-              `Hueco irrecuperable: el backend espera seq ${expected} y la SD arranca en ` +
-                `${oldest}. Esas tramas se perdieron (probablemente al recargar la página). ` +
-                'Reiniciá el equipo para reanudar el estudio desde acá.',
+              `HTTP ${result.status} ${result.errorCode ?? ''} — ${result.errorMessage}`,
             )
-          } else if (ack.framesDuplicate > 0) {
-            log(
-              id,
-              'warn',
-              `El estudio no crece: las tramas ya estaban confirmadas para bootId ${clock.bootId}.`,
-            )
-          } else {
-            log(
-              id,
-              'warn',
-              'El estudio no crece con este envío: se retransmite en el próximo ciclo.',
-            )
+            failed = true
+            irrecoverable = result.status >= 300 && result.status < 500
+            break
           }
+
+          const ack = result.ack
+          const outcome = applyAck(device.sd, frames, ack.lastAcceptedSeq)
+          if (responseStoredData(ack)) clock.diag = { ...EMPTY_DIAG }
+          accepted += ack.framesAccepted
+          duplicate += ack.framesDuplicate
+          rejected += ack.framesRejected
+
+          patchStats(id, (stats) => ({
+            postsSent: stats.postsSent + 1,
+            framesSent: stats.framesSent + Math.floor(body.length / FRAME_BYTES),
+            bytesSent: stats.bytesSent + body.length,
+            framesAccepted: stats.framesAccepted + ack.framesAccepted,
+            framesRejected: stats.framesRejected + ack.framesRejected,
+            framesDuplicate: stats.framesDuplicate + ack.framesDuplicate,
+            lastSeq: ack.lastAcceptedSeq ?? stats.lastSeq,
+            studyId: ack.studyId ?? stats.studyId,
+            lastStatus: result.status,
+            lastError: null,
+            clockAheadMs: time.aheadMs,
+            ...deviceStats(device, now()),
+          }))
+
+          if (outcome.inexplicable) {
+            inexplicable++
+            log(
+              id,
+              'warn',
+              `ACK inexplicable: lastAcceptedSeq ${ack.lastAcceptedSeq} confirma tramas que nunca salieron.`,
+            )
+            if (inexplicable >= MAX_INEXPLICABLE) {
+              failed = true
+              break
+            }
+            continue
+          }
+          inexplicable = 0
+
+          if (outcome.freed > 0) {
+            noProgress = 0
+            continue
+          }
+
+          noProgress++
+          const expected = (ack.lastAcceptedSeq ?? -1) + 1
+          const oldest = device.sd.pending[0]?.seq
+          if (oldest !== undefined && ack.lastAcceptedSeq !== null && oldest > expected) {
+            // Las tramas que llenaban el hueco ya no están en la flash (se
+            // borró el almacenamiento del navegador, o se desbordó).
+            irrecoverable = true
+            log(
+              id,
+              'error',
+              `Hueco irrecuperable: el backend espera seq ${expected} y la flash arranca en ` +
+                `${oldest}. Esas tramas ya no existen. Reiniciá el equipo para reanudar el ` +
+                'estudio desde acá.',
+            )
+            break
+          }
+          if (noProgress >= 2) break
         }
 
-        return { freed, irrecoverable }
+        const parts = [`${posts} POST`, `${accepted} aceptadas`]
+        if (duplicate) parts.push(`${duplicate} duplicadas`)
+        if (rejected) parts.push(`${rejected} rechazadas`)
+        if (dropped) parts.push(`${dropped} perdidas en el aire (se retransmiten)`)
+        if (corrupted) parts.push(`${corrupted} con CRC roto`)
+        log(
+          id,
+          failed ? 'error' : dropped || corrupted ? 'warn' : 'info',
+          `${label}: ${parts.join(', ')} · ${device.sd.pending.length} tramas en la flash`,
+        )
+
+        if (failed) {
+          clock.backoff = onWindowFailed(
+            clock.backoff,
+            device.sd.pending.length,
+            config.batchMinutes,
+          )
+          clock.diag = accumulateDiag(clock.diag, { statusFlags: STATUS_FLAG_UPLINK_DOWN })
+          if (clock.backoff.skipWindows > 0) {
+            log(
+              id,
+              'warn',
+              `Ventana fallida (${clock.backoff.failures} seguidas): la próxima se saltea ` +
+                `${clock.backoff.skipWindows} lote(s), como el backoff del equipo.`,
+            )
+          }
+        } else {
+          clock.backoff = onWindowOk()
+        }
+        patchStats(id, deviceStats(device, now()))
+        return { failed, irrecoverable, blocked: false }
+      }
+
+      /** Manda los avisos de colocación que decidió el equipo, antes de las tramas. */
+      const sendPlacementNotices = async (notices: PlacementNotice[]) => {
+        for (const notice of notices) {
+          const ack = await sendStatus(
+            id,
+            config,
+            device,
+            notice.event,
+            notice.durationSeconds,
+            controller.signal,
+          )
+          if (!ack) continue
+          const ok = notice.event === 'signal_recovered'
+          updateVest(id, { placementOk: ok })
+          log(
+            id,
+            ok ? 'info' : 'warn',
+            ok
+              ? `El equipo detectó la señal recuperada (${notice.durationSeconds} s buenos): cerró el aviso.`
+              : `El equipo detectó ${notice.event === 'lead_off' ? 'el electrodo suelto' : 'la calidad mala'} ` +
+                  `por ${notice.durationSeconds} s y mandó el aviso` +
+                  (ack.notified
+                    ? ` (alerta ${ack.alertId}).`
+                    : ', sin notificar (debounce o sin paciente).'),
+          )
+        }
       }
 
       try {
@@ -486,56 +757,110 @@ export function useVestFleet(initial?: VestConfig[]) {
           controller.signal.throwIfAborted()
 
           if (config.frames.rebootAtBatch > 0 && batch + 1 === config.frames.rebootAtBatch) {
-            const lost = reboot(device)
+            reboot(device)
             log(
               id,
               'warn',
-              `Reinicio del equipo: bootId ${clock.bootId}, t0Ms vuelve a 0` +
-                (lost > 0 ? `, se pierden ${lost} tramas sin confirmar de la SD` : ''),
+              `Reinicio del equipo: bootId ${clock.bootId}, t0Ms vuelve a 0. ` +
+                `${device.sd.pending.length} tramas siguen en la flash.`,
             )
           }
 
+          const batchMs = config.batchMinutes * 60_000
+          const ahead = dataCursorEpochMs(clock) + batchMs - now()
+          if (ahead > MAX_FUTURE_SKEW_MS) {
+            blocked =
+              `La señal ya va ${formatHours(Math.max(0, dataCursorEpochMs(clock) - now()))} ` +
+              'adelantada a la hora real: otro lote pasaría la tolerancia de hora del backend ' +
+              '(6 h). Esperá a que la hora real la alcance o subí ' +
+              '`INGEST_TIME_SYNC_MAX_SKEW_SECONDS`.'
+            log(id, 'error', blocked)
+            break
+          }
+
+          // Inyecciones del panel: se leen en vivo, pueden haber llegado
+          // durante la corrida.
+          const live = vestsRef.current.find((vest) => vest.config.id === id)?.config
+          const injections = live?.pendingInjections ?? []
+          if (injections.length) updateVest(id, { pendingInjections: [] })
+          const episodes = [
+            ...resolveEpisodes(config.episodes, batch + 1),
+            ...resolveEpisodes(
+              injections.map((episode) => ({ ...episode, batch: 1 })),
+              1,
+            ),
+          ]
+
           patch(id, (vest) => ({ ...vest, phase: 'generating' }))
           const firstSeq = clock.nextSeq
+          const startEpochMs = dataCursorEpochMs(clock)
           const built = await generateBatch({
             requestId: batch,
-            signal: { ...config.signal, durationSec: config.batchMinutes * 60 },
+            profile: config.signal,
+            durationSec: config.batchMinutes * 60,
+            episodes,
+            genState: clock.genState ?? initialGeneratorState(config.signal),
             firstSeq,
             bootId: clock.bootId,
             t0Ms: clock.t0Ms,
+            wallStartEpochMs: startEpochMs,
             simulated: config.frames.simulated,
           })
 
-          // Grabar: entra en la SD y el cursor avanza, haya o no WiFi.
+          // Grabar: entra en la flash y el cursor avanza, haya o no WiFi.
+          clock.genState = built.genState
           const overflowed = recordFrames(device.sd, splitFrames(built.body), firstSeq)
-          advanceClock(clock, built, config.batchMinutes)
+          advanceClock(clock, built)
+          const framesPerSecond = built.framesGenerated / (config.batchMinutes * 60)
+          clock.diag = accumulateDiag(clock.diag, {
+            leadFlags: built.leadFlags,
+            worstSqi: built.worstSqi,
+            statusFlags: overflowed > 0 ? STATUS_FLAG_BACKLOG_OVERFLOW : 0,
+            batteryFlags: batteryFlags(clock.batteryPct),
+            backlogSeconds: backlogSeconds(device.sd.pending.length, framesPerSecond),
+          })
+          const placement = evaluatePlacement(clock.placement, built.secondStatus, startEpochMs)
+          clock.placement = placement.state
           persistClocks()
+          await persistFlash(id, device)
 
           if (overflowed > 0) {
             log(
               id,
               'error',
-              `Backlog desbordado: ${overflowed} tramas se perdieron definitivamente ` +
-                '(la SD no da abasto con la desconexión).',
+              `Flash desbordada: ${overflowed} tramas se perdieron definitivamente ` +
+                '(la desconexión duró más de lo que entra en 16 MB).',
+            )
+          }
+          if (episodes.length) {
+            log(
+              id,
+              'info',
+              `Lote ${batch + 1}: ${episodes.map((e) => EPISODE_META[e.kind].label).join(', ')}.`,
             )
           }
 
-          patch(id, (vest) => ({
-            ...vest,
-            stats: {
-              ...vest.stats,
-              batchesSent: vest.stats.batchesSent + 1,
-              framesGenerated: vest.stats.framesGenerated + built.framesGenerated,
-              uncompressedBytes: vest.stats.uncompressedBytes + built.uncompressedBytes,
-              framesPending: device.sd.pending.length,
-              framesLost: device.sd.overflowed,
-              bootId: clock.bootId,
-              uptimeMs: clock.uptimeMs,
-            },
+          patchStats(id, (stats) => ({
+            batchesSent: stats.batchesSent + 1,
+            framesGenerated: stats.framesGenerated + built.framesGenerated,
+            uncompressedBytes: stats.uncompressedBytes + built.uncompressedBytes,
+            ...deviceStats(device, now()),
           }))
 
-          await transmit(`Lote ${batch + 1}/${config.batchCount}`)
+          if (clock.backoff.skipWindows > 0) {
+            clock.backoff = { ...clock.backoff, skipWindows: clock.backoff.skipWindows - 1 }
+            log(
+              id,
+              'warn',
+              `Lote ${batch + 1}: ventana pospuesta por backoff; la señal queda en la flash.`,
+            )
+          } else {
+            await sendPlacementNotices(placement.notices)
+            const outcome = await sendWindow(`Lote ${batch + 1}/${config.batchCount}`)
+            if (outcome.blocked) break
+          }
           persistClocks()
+          await persistFlash(id, device)
 
           if (batch + 1 < config.batchCount) {
             patch(id, (vest) => ({ ...vest, phase: 'waiting' }))
@@ -543,30 +868,38 @@ export function useVestFleet(initial?: VestConfig[]) {
           }
         }
 
-        // Drenado: lo que se perdió en el último envío todavía está en la SD y
-        // sin esto el estudio quedaría corto justo por esas tramas.
-        for (let attempt = 0; attempt < MAX_DRAIN_CYCLES; attempt++) {
+        // Drenado: lo que se perdió en el último envío todavía está en la flash
+        // y sin esto el estudio quedaría corto justo por esas tramas.
+        for (let attempt = 0; attempt < MAX_DRAIN_CYCLES && !blocked; attempt++) {
           if (device.sd.pending.length === 0) break
           controller.signal.throwIfAborted()
-          if (attempt === 0) {
-            log(id, 'info', `Retransmitiendo ${device.sd.pending.length} tramas sin confirmar`)
-          }
-          const outcome = await transmit(`Retransmisión ${attempt + 1}/${MAX_DRAIN_CYCLES}`)
+          const outcome = await sendWindow(`Retransmisión ${attempt + 1}/${MAX_DRAIN_CYCLES}`)
           if (outcome.irrecoverable) break
         }
         persistClocks()
+        await persistFlash(id, device)
 
         if (device.sd.pending.length > 0) {
           log(
             id,
             'warn',
-            `Quedan ${device.sd.pending.length} tramas sin confirmar en la SD. ` +
-              'Volver a enviar las retransmite antes de grabar señal nueva.',
+            `Quedan ${device.sd.pending.length} tramas sin confirmar en la flash. ` +
+              'Volver a enviar las retransmite antes que la señal nueva.',
           )
         }
-        patch(id, (vest) => ({ ...vest, phase: 'done' }))
+        const stoppedBy = blocked
+        patch(id, (vest) => ({
+          ...vest,
+          phase: stoppedBy ? 'error' : 'done',
+          stats: {
+            ...vest.stats,
+            ...deviceStats(device, now()),
+            ...(stoppedBy ? { lastError: stoppedBy, lastStatus: null } : {}),
+          },
+        }))
       } catch (error) {
         persistClocks()
+        await persistFlash(id, device)
         if (controller.signal.aborted) {
           patch(id, (vest) => ({ ...vest, phase: 'idle' }))
           log(id, 'info', 'Detenido')
@@ -582,12 +915,12 @@ export function useVestFleet(initial?: VestConfig[]) {
         controllers.current.delete(id)
       }
     },
-    [vests, patch, log, persistClocks],
+    [getDevice, patch, patchStats, log, persistClocks, persistFlash, sendStatus, updateVest, now],
   )
 
   const runAll = useCallback(() => {
-    vests.forEach((vest) => void run(vest.config.id))
-  }, [vests, run])
+    vestsRef.current.forEach((vest) => void run(vest.config.id))
+  }, [run])
 
   return {
     vests,
@@ -599,6 +932,7 @@ export function useVestFleet(initial?: VestConfig[]) {
     rebootVest,
     setPlacement,
     simulateAnomaly,
+    injectAnomaly,
     stop,
     stopAll,
   }

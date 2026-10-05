@@ -45,9 +45,10 @@ from app.modules.patient_app import patient_app_service
 from app.modules.patient_app.catalogs import activity_label, symptom_label
 from app.modules.studies import studies_repository as repo
 from app.modules.studies.annotations import (
+    EventSpan,
     ReportPlacement,
     WallClockResolver,
-    drawable_event_views,
+    drawable_event_episodes,
     event_offset_map,
     finite_number,
     report_placements,
@@ -249,14 +250,15 @@ def _report_annotations(
 
 def _event_annotations(
     study: Study, events: list[ECGEvent], to_epoch_ms: WallClockResolver
-) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, tuple[int, int]]]:
-    """Los hallazgos dibujables, con sus offsets indexados por id de evento.
+) -> tuple[list[StudyEcgAnnotationOut], dict[uuid.UUID, EventSpan]]:
+    """Los hallazgos dibujables, con dónde cae cada evento indexado por su id.
 
-    Qué es dibujable y dónde cae lo decide `annotations.drawable_event_views`
-    —el mismo criterio que `event_offset_map` usa para la solapa de registros—;
-    acá solo se serializa al contrato del manifest.
+    Qué es dibujable, dónde cae y qué tramos continuos forman un solo episodio
+    lo decide `annotations.drawable_event_episodes` —el mismo cálculo que
+    `event_offset_map` hace para la solapa de registros—; acá solo se serializa
+    al contrato del manifest.
     """
-    views = drawable_event_views(study, events, to_epoch_ms)
+    views, spans_by_event = drawable_event_episodes(study, events, to_epoch_ms)
     annotations = [
         StudyEcgAnnotationOut(
             id=view.id,
@@ -271,7 +273,7 @@ def _event_annotations(
         )
         for view in views
     ]
-    return annotations, {view.id: (view.start_ms, view.end_ms) for view in views}
+    return annotations, spans_by_event
 
 
 def _study_annotations(
@@ -1216,10 +1218,9 @@ async def list_study_patient_reports(
     # Los mismos offsets que el manifest: si la solapa dijera "visible" y el
     # visor no pintara la marca, el botón "Ver en el ECG" no llevaría a ningún
     # lado. La ubicación de un registro se decide en un solo lugar.
-    event_offsets = event_offset_map(study, await repo.list_ecg_events(db, study.id))
-    placements = report_placements(
-        study, reports, event_offsets, await repo.list_timeline_segments(db, study.id)
-    )
+    segments = await repo.list_timeline_segments(db, study.id)
+    event_offsets = event_offset_map(study, await repo.list_ecg_events(db, study.id), segments)
+    placements = report_placements(study, reports, event_offsets, segments)
 
     items: list[StudyPatientReportOut] = []
     pending = 0

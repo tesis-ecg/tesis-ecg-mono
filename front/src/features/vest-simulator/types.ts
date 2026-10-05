@@ -1,14 +1,14 @@
-import type { AnomalySpan, SignalConfig } from './codec/signal'
+import type { Episode, EpisodeKind, SignalProfile } from './codec/signal'
 
-export type { AnomalySpan, SignalConfig }
+export type { Episode, EpisodeKind, SignalProfile }
 
 /** Cómo se espacian los envíos de lotes. */
 export type Cadence =
   /** Todos los lotes uno atrás de otro, sin esperar. */
   | { kind: 'instant' }
-  /** Tiempo real acelerado: un lote de 1 h cada `3600/factor` segundos. */
+  /** Tiempo real acelerado: un lote de B min cada `B·60/factor` segundos. */
   | { kind: 'accelerated'; factor: number }
-  /** Un lote por hora, como el equipo real. */
+  /** Un lote cada B minutos reales, como el equipo (cada 10 min). */
   | { kind: 'realtime' }
 
 /** Anomalías que se aplican a nivel trama, no a nivel muestra. */
@@ -23,7 +23,10 @@ export interface FrameAnomalies {
    * vez viajan intactas: la pérdida es transitoria, no borra la grabación.
    */
   dropPct: number
-  /** Número de lote en el que el equipo se reinicia (0 = nunca). */
+  /**
+   * Número de lote en el que el equipo se reinicia (0 = nunca). La flash
+   * sobrevive: lo pendiente sale después con la hora del arranque anterior.
+   */
   rebootAtBatch: number
   /** `hdrFlags` bit 3. Apagarlo simula datos "clínicos". */
   simulated: boolean
@@ -31,8 +34,17 @@ export interface FrameAnomalies {
   shuffle: boolean
 }
 
-/** Fallos del canal de red y de las credenciales. */
+/** El puente WiFi: cómo transmite y qué le puede fallar. */
 export interface NetworkFaults {
+  /**
+   * Tramas por POST. El puente real manda 48, la ventana en vuelo del equipo;
+   * subirlo acelera las pruebas contra una API lenta.
+   */
+  postFrames: number
+  /** Gracia ante 5xx o falla de red, en segundos (`BRIDGE_BACKEND_GRACIA_MS`). */
+  graceSeconds: number
+  /** RSSI del WiFi que reporta el puente, en dBm. */
+  rssiDbm: number
   /** Corta el cuerpo al X % antes de mandarlo (0 = no cortar). */
   truncateBodyPct: number
   /** Usa una API key inválida. */
@@ -41,8 +53,14 @@ export interface NetworkFaults {
   unknownSerial: boolean
   /** Omite el header de uptime. */
   omitUptime: boolean
-  /** Reintentos automáticos ante error, con backoff. */
-  maxRetries: number
+  /** Sin SNTP: la hora sale del `Date` de `GET /health`, fuente `none`. */
+  noSntp: boolean
+  /**
+   * El puente perdió su tabla de arranques (se quedó sin energía): el backlog
+   * de un arranque anterior sale con el par de hora del actual, y el backend lo
+   * fecha como hora no verificada (pendientes 26 y 28 de `INTEGRACION.md`).
+   */
+  lostBootTable: boolean
 }
 
 export interface VestConfig {
@@ -51,12 +69,20 @@ export interface VestConfig {
   deviceId: string
   serial: string
   apiKey: string
-  /** Minutos de señal por lote. El equipo real manda 60. */
+  /** Minutos de señal por lote. El equipo abre una ventana de envío cada 10. */
   batchMinutes: number
   /** Cuántos lotes enviar en esta corrida. */
   batchCount: number
   cadence: Cadence
-  signal: SignalConfig
+  /** El paciente y el chaleco: de qué está hecha la señal. */
+  signal: SignalProfile
+  /** Episodios agendados por lote de la corrida. */
+  episodes: Episode[]
+  /**
+   * Episodios inyectados desde el panel para el **próximo** lote generado,
+   * sea de la corrida que sea. Se consumen al grabarlo.
+   */
+  pendingInjections: Episode[]
   frames: FrameAnomalies
   network: NetworkFaults
   /**
@@ -81,7 +107,7 @@ export interface VestStats {
   framesAccepted: number
   framesRejected: number
   framesDuplicate: number
-  /** Tramas grabadas y todavía sin confirmar: lo que queda en la SD del equipo. */
+  /** Tramas grabadas y todavía sin confirmar: lo que queda en la flash del equipo. */
   framesPending: number
   /** Tramas que se cayeron del backlog por desborde. Pérdida real de señal. */
   framesLost: number
@@ -89,7 +115,16 @@ export interface VestStats {
   uncompressedBytes: number
   lastSeq: number
   bootId: number
+  /** Uptime real del arranque actual. */
   uptimeMs: number
+  /** Hora de pared de la próxima muestra a grabar; `null` si nunca grabó. */
+  dataCursorEpochMs: number | null
+  /** Cuánto se adelantó el reloj del puente para cubrir señal futura. */
+  clockAheadMs: number
+  /** Ventanas que quedan por saltear por backoff. */
+  backoffWindows: number
+  batteryPct: number | null
+  postsSent: number
   studyId: string | null
   lastStatus: number | null
   lastError: string | null
@@ -122,6 +157,11 @@ export const EMPTY_STATS: VestStats = {
   lastSeq: -1,
   bootId: 0,
   uptimeMs: 0,
+  dataCursorEpochMs: null,
+  clockAheadMs: 0,
+  backoffWindows: 0,
+  batteryPct: null,
+  postsSent: 0,
   studyId: null,
   lastStatus: null,
   lastError: null,

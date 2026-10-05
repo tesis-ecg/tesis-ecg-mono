@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 export type ECGAnnotationSeverity = 'low' | 'medium' | 'high' | 'critical'
 
 export type ECGAnnotationCategory = 'signal_quality' | 'clinical' | 'patient_marker' | 'technical'
@@ -88,12 +90,6 @@ export interface ECGSignal {
     /** Tamaño del bucket de la vista descargada; null si la señal es cruda. */
     overviewSamplesPerBucket: number | null
     processedSampleCount?: number
-    /**
-     * Hora de pared donde termina la señal procesada, solo si queda un tramo
-     * final sin procesar. Ahí el visor dice "Sin datos procesados" en vez de
-     * dejar el hueco vacío o anclarse al último punto dibujado.
-     */
-    processedEndMs?: number
     startTimeVerified?: boolean
     viewKind?: 'raw' | 'filtered_visualization'
   }
@@ -149,6 +145,12 @@ export interface ECGViewerProps {
   onAnnotationSelect?: (annotation: ECGAnnotation) => void
   /** Dibuja bandas y rótulos de avisos sobre la traza. Default true. */
   showAnnotations?: boolean
+  /**
+   * Controles que flotan arriba a la derecha del área de trazado (zoom,
+   * pantalla completa). Van dentro del visor y no en el encabezado para que
+   * queden pegados a lo que controlan.
+   */
+  toolbar?: ReactNode
 }
 
 /**

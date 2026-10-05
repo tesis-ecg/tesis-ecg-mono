@@ -1,6 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { postDeviceStatus, postFrames, uploadWithRetries } from './simulatorApi'
+import {
+  FIRMWARE_VERSION,
+  postDeviceStatus,
+  postFrames,
+  uploadWithGrace,
+  type IngestHeaders,
+} from './simulatorApi'
+
+const headers: IngestHeaders = {
+  serial: 'HOL-1',
+  apiKey: 'k',
+  uptimeMs: 1000,
+  bridgeEpochMs: 1_757_000_000_000,
+  bootId: 4,
+  timeSource: 'ntp',
+  timeUncertaintyMs: 200,
+  firmwareVersion: FIRMWARE_VERSION,
+  batteryPct: 90,
+  diag: { 'X-Device-Rssi': '-60', 'X-Device-Sqi': '3' },
+}
+
+const ACCEPTED = {
+  framesReceived: 1,
+  framesAccepted: 1,
+  framesRejected: 0,
+  framesDuplicate: 0,
+  lastAcceptedSeq: 0,
+  batchId: 'batch',
+  studyId: 'study',
+  serverTime: '2026-01-01T00:00:00Z',
+}
+
+function lastInit(): RequestInit & { headers: Record<string, string> } {
+  const calls = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+  return calls[calls.length - 1][1]
+}
 
 describe('subida al endpoint de ingesta', () => {
   const originalFetch = globalThis.fetch
@@ -14,84 +49,119 @@ describe('subida al endpoint de ingesta', () => {
     globalThis.fetch = originalFetch
   })
 
-  const headers = {
-    serial: 'HOL-1',
-    apiKey: 'k',
-    uptimeMs: 1000,
-    bridgeEpochMs: 1_757_000_000_000,
-    firmwareVersion: '1.0.0',
-    batteryPct: 90,
-  }
+  it('manda las cabeceras del puente real', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify(ACCEPTED), { status: 202 }),
+    ) as unknown as typeof fetch
+
+    await postFrames(new Uint8Array(256), headers)
+
+    expect(lastInit().headers).toEqual({
+      'Content-Type': 'application/octet-stream',
+      Authorization: 'Bearer k',
+      'X-Device-Serial': 'HOL-1',
+      'X-Device-Boot-Id': '4',
+      'X-Device-Uptime-Ms': '1000',
+      'X-Bridge-Epoch-Ms': '1757000000000',
+      'X-Time-Sync-Source': 'ntp',
+      'X-Time-Sync-Uncertainty-Ms': '200',
+      'X-Firmware-Version': '2.1.0',
+      'X-Battery-Pct': '90',
+      'X-Device-Rssi': '-60',
+      'X-Device-Sqi': '3',
+    })
+  })
 
   it('postFrames expone el error de un 4xx sin reintentos implícitos', async () => {
-    const calls: number[] = []
-    globalThis.fetch = vi.fn(async () => {
-      calls.push(Date.now())
-      return new Response(JSON.stringify({ code: 'DEVICE_UNASSIGNED', message: 'no' }), {
-        status: 409,
-      })
-    }) as unknown as typeof fetch
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ code: 'DEVICE_UNASSIGNED', message: 'no' }), {
+          status: 409,
+        }),
+    ) as unknown as typeof fetch
 
     const result = await postFrames(new Uint8Array(256), headers)
 
-    expect(result.ok).toBe(false)
-    expect(result.status).toBe(409)
-    expect(result.errorCode).toBe('DEVICE_UNASSIGNED')
-    expect(calls).toHaveLength(1)
+    expect(result).toMatchObject({ ok: false, status: 409, errorCode: 'DEVICE_UNASSIGNED' })
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
   })
 
-  it('reintenta 5xx y termina cuando el backend responde', async () => {
+  it('lee el error también dentro de `detail`', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ detail: { code: 'DEVICE_TIME_INVALID', message: 'a 9 h' } }),
+          { status: 422 },
+        ),
+    ) as unknown as typeof fetch
+
+    const result = await postFrames(new Uint8Array(256), headers)
+
+    expect(result).toMatchObject({ errorCode: 'DEVICE_TIME_INVALID', errorMessage: 'a 9 h' })
+  })
+
+  it('reintenta el mismo POST ante un 5xx mientras dura la gracia', async () => {
     globalThis.fetch = vi
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'caído' }), { status: 503 }))
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            framesReceived: 1,
-            framesAccepted: 1,
-            framesRejected: 0,
-            framesDuplicate: 0,
-            lastAcceptedSeq: 0,
-            batchId: 'batch',
-            studyId: 'study',
-            serverTime: '2026-01-01T00:00:00Z',
-          }),
-          { status: 202 },
-        ),
-      ) as unknown as typeof fetch
-
-    const pending = uploadWithRetries(
-      new Uint8Array(256),
-      headers,
-      2,
-      new AbortController().signal,
-      vi.fn(),
-    )
-    await vi.advanceTimersByTimeAsync(500)
-
-    await expect(pending).resolves.toMatchObject({ ok: true, status: 202 })
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
-  })
-
-  it('trata una excepción de red como transitoria', async () => {
-    globalThis.fetch = vi
-      .fn()
       .mockRejectedValueOnce(new TypeError('Failed to fetch'))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: 'NO' }), { status: 409 }),
+        new Response(JSON.stringify(ACCEPTED), { status: 202 }),
       ) as unknown as typeof fetch
+    const onRetry = vi.fn()
 
-    const pending = uploadWithRetries(
+    const pending = uploadWithGrace(
       new Uint8Array(256),
       headers,
-      1,
+      60_000,
+      new AbortController().signal,
+      onRetry,
+    )
+    await vi.advanceTimersByTimeAsync(1000)
+
+    await expect(pending).resolves.toMatchObject({ ok: true, status: 202 })
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3)
+    expect(onRetry).toHaveBeenCalledTimes(2)
+  })
+
+  it('vencida la gracia devuelve el último error', async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('sin conexión')
+    }) as unknown as typeof fetch
+
+    const pending = uploadWithGrace(
+      new Uint8Array(256),
+      headers,
+      1000,
       new AbortController().signal,
       vi.fn(),
     )
-    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(2000)
 
-    await expect(pending).resolves.toMatchObject({ ok: false, status: 409 })
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      status: 0,
+      errorCode: 'NETWORK_ERROR',
+    })
+    // 250 ms entre intentos durante 1 s de gracia.
+    expect((globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(5)
+  })
+
+  it('con gracia cero no reintenta', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response('{}', { status: 500 }),
+    ) as unknown as typeof fetch
+
+    const result = await uploadWithGrace(
+      new Uint8Array(256),
+      headers,
+      0,
+      new AbortController().signal,
+      vi.fn(),
+    )
+
+    expect(result.status).toBe(500)
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1)
   })
 
   it('no reintenta 4xx ni absorbe una cancelación', async () => {
@@ -101,40 +171,18 @@ describe('subida al endpoint de ingesta', () => {
       .mockRejectedValueOnce(new DOMException('cancelado', 'AbortError')) as unknown as typeof fetch
 
     const controller = new AbortController()
-    const invalid = await uploadWithRetries(
+    const invalid = await uploadWithGrace(
       new Uint8Array(256),
       headers,
-      3,
+      60_000,
       controller.signal,
       vi.fn(),
     )
     await expect(
-      uploadWithRetries(new Uint8Array(256), headers, 3, controller.signal, vi.fn()),
+      uploadWithGrace(new Uint8Array(256), headers, 60_000, controller.signal, vi.fn()),
     ).rejects.toMatchObject({ name: 'AbortError' })
 
     expect(invalid.status).toBe(422)
-    expect(globalThis.fetch).toHaveBeenCalledTimes(2)
-  })
-
-  it('devuelve el último error cuando agota los reintentos', async () => {
-    globalThis.fetch = vi.fn(async () => {
-      throw new TypeError('sin conexión')
-    }) as unknown as typeof fetch
-
-    const pending = uploadWithRetries(
-      new Uint8Array(256),
-      headers,
-      1,
-      new AbortController().signal,
-      vi.fn(),
-    )
-    await vi.advanceTimersByTimeAsync(500)
-
-    await expect(pending).resolves.toMatchObject({
-      ok: false,
-      status: 0,
-      errorCode: 'NETWORK_ERROR',
-    })
     expect(globalThis.fetch).toHaveBeenCalledTimes(2)
   })
 })
@@ -146,15 +194,6 @@ describe('canal corto del chaleco', () => {
     globalThis.fetch = originalFetch
   })
 
-  const headers = {
-    serial: 'HOL-1',
-    apiKey: 'k',
-    uptimeMs: 1000,
-    bridgeEpochMs: 1_757_000_000_000,
-    firmwareVersion: '1.0.0',
-    batteryPct: 90,
-  }
-
   it('manda JSON con la credencial del equipo y sin la cookie del médico', async () => {
     globalThis.fetch = vi.fn(
       async () =>
@@ -164,7 +203,7 @@ describe('canal corto del chaleco', () => {
         ),
     ) as unknown as typeof fetch
 
-    const ack = await postDeviceStatus('lead_off', headers, 180)
+    const ack = await postDeviceStatus('lead_off', headers, 180, { sqi: 1 })
 
     expect(ack).toMatchObject({ notified: true, alertId: 'a-1' })
     const [url, init] = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
@@ -174,16 +213,37 @@ describe('canal corto del chaleco', () => {
     expect(init.credentials).toBeUndefined()
     expect(init.headers['Content-Type']).toBe('application/json')
     expect(init.headers.Authorization).toBe('Bearer k')
-    expect(init.headers['X-Device-Serial']).toBe('HOL-1')
-    expect(JSON.parse(init.body)).toEqual({ event: 'lead_off', durationSeconds: 180 })
+    expect(init.headers['X-Device-Boot-Id']).toBe('4')
+    expect(JSON.parse(init.body)).toEqual({
+      event: 'lead_off',
+      durationSeconds: 180,
+      batteryPct: 90,
+      sqi: 1,
+    })
+  })
+
+  it('el latido `alive` no inventa SQI', async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ notified: false, alertId: null, serverTime: 'x' }), {
+          status: 200,
+        }),
+    ) as unknown as typeof fetch
+
+    await postDeviceStatus('alive', { ...headers, batteryPct: null }, 0)
+
+    expect(JSON.parse(lastInit().body as string)).toEqual({ event: 'alive', durationSeconds: 0 })
   })
 
   it('propaga el mensaje del backend cuando la credencial no sirve', async () => {
     globalThis.fetch = vi.fn(
       async () =>
-        new Response(JSON.stringify({ code: 'UNAUTHORIZED', message: 'Credencial inválida.' }), {
-          status: 401,
-        }),
+        new Response(
+          JSON.stringify({ code: 'DEVICE_UNAUTHORIZED', message: 'Credencial inválida.' }),
+          {
+            status: 401,
+          },
+        ),
     ) as unknown as typeof fetch
 
     await expect(postDeviceStatus('lead_off', headers, 180)).rejects.toThrow('Credencial inválida.')

@@ -1077,6 +1077,8 @@ async def test_la_pasada_se_corta_antes_del_bloque_que_pasaria_el_presupuesto(
 
     monkeypatch.setattr(processing, "_block_signal", _bloque_lento)
     monkeypatch.setattr(processing, "time", SimpleNamespace(monotonic=lambda: reloj["ahora"]))
+    # `ml_engine` lo levanta para el resto de los tests; acá es lo que se prueba.
+    monkeypatch.setattr(processing, "ML_PASS_BUDGET_SECONDS", 1.5)
     study = await _estudio(db, study.id)
 
     pasada = await append_ml_analysis(db, study, None)

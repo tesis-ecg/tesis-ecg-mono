@@ -23,14 +23,15 @@ export interface PaperGridColors {
 }
 
 /**
- * Por debajo de esto no se dibuja la retícula fina.
+ * Separación mínima, en px CSS, para dibujar cada nivel de la retícula.
  *
- * Con el zoom libre muy alejado los renglones de 1 mm caen a menos de un píxel
- * de distancia: el resultado no es una grilla sino un fondo gris uniforme que
- * tapa el trazado y no se puede contar. Cuando no se puede contar, no sirve como
- * regla y es mejor no dibujarla.
+ * Con el zoom libre alejado los renglones se juntan hasta tocarse: el resultado
+ * no es una grilla sino un fondo rojo uniforme que tapa el trazado y no se
+ * puede contar. Cuando no se puede contar no sirve como regla, y es mejor no
+ * dibujarla. La gruesa pide más aire que la fina porque su trazo es más oscuro.
  */
-const MIN_MINOR_SPACING_PX = 3
+const MIN_MINOR_SPACING_PX = 4
+const MIN_MAJOR_SPACING_PX = 8
 
 function drawLines(
   ctx: CanvasRenderingContext2D,
@@ -99,13 +100,16 @@ export function drawPaperGrid(u: uPlot, scale: PaperScale, colors: PaperGridColo
   const secPerMm = 1 / scale.paperSpeed
   const mvPerMm = 1 / scale.amplitude
 
-  const minorSpacingPx = scale.pxPerMm * ratio
-  const drawMinor = minorSpacingPx >= MIN_MINOR_SPACING_PX
-  // El eje vertical se mide aparte: en amplitud automática el rango lo pone la
-  // señal, así que 0,1 mV puede ocupar mucho menos que un milímetro.
-  const mvSpacingPx = (mv: number) => Math.abs(u.valToPos(mv, 'y', true) - u.valToPos(0, 'y', true))
-  const drawMinorY = mvSpacingPx(mvPerMm * SMALL_BOX_MM) >= MIN_MINOR_SPACING_PX
-  const drawMajorY = mvSpacingPx(mvPerMm * LARGE_BOX_MM) >= MIN_MINOR_SPACING_PX
+  // La separación se mide sobre el eje real y no sobre la escala clínica: con
+  // zoom libre un milímetro de papel puede ocupar mucho menos que un milímetro
+  // de pantalla, y en amplitud automática el rango vertical lo pone la señal.
+  const spacingPx = (axis: 'x' | 'y', step: number) =>
+    Math.abs(u.valToPos(step, axis, true) - u.valToPos(0, axis, true)) / ratio
+  const fits = (axis: 'x' | 'y', step: number, minPx: number) => spacingPx(axis, step) >= minPx
+  const minorX = fits('x', secPerMm * SMALL_BOX_MM, MIN_MINOR_SPACING_PX)
+  const majorX = fits('x', secPerMm * LARGE_BOX_MM, MIN_MAJOR_SPACING_PX)
+  const minorY = fits('y', mvPerMm * SMALL_BOX_MM, MIN_MINOR_SPACING_PX)
+  const majorY = fits('y', mvPerMm * LARGE_BOX_MM, MIN_MAJOR_SPACING_PX)
 
   const left = bbox.left
   const right = bbox.left + bbox.width
@@ -117,7 +121,7 @@ export function drawPaperGrid(u: uPlot, scale: PaperScale, colors: PaperGridColo
   ctx.rect(left, top, bbox.width, bbox.height)
   ctx.clip()
 
-  if (drawMinor) {
+  if (minorX) {
     drawLines(
       ctx,
       gridPositions(u, 'x', secPerMm * SMALL_BOX_MM, xScale.min, xScale.max),
@@ -127,29 +131,30 @@ export function drawPaperGrid(u: uPlot, scale: PaperScale, colors: PaperGridColo
       colors.minor,
       ratio,
     )
-    if (drawMinorY) {
-      drawLines(
-        ctx,
-        gridPositions(u, 'y', mvPerMm * SMALL_BOX_MM, yScale.min, yScale.max),
-        false,
-        left,
-        right,
-        colors.minor,
-        ratio,
-      )
-    }
   }
-
-  drawLines(
-    ctx,
-    gridPositions(u, 'x', secPerMm * LARGE_BOX_MM, xScale.min, xScale.max),
-    true,
-    top,
-    bottom,
-    colors.major,
-    ratio,
-  )
-  if (drawMajorY) {
+  if (minorY) {
+    drawLines(
+      ctx,
+      gridPositions(u, 'y', mvPerMm * SMALL_BOX_MM, yScale.min, yScale.max),
+      false,
+      left,
+      right,
+      colors.minor,
+      ratio,
+    )
+  }
+  if (majorX) {
+    drawLines(
+      ctx,
+      gridPositions(u, 'x', secPerMm * LARGE_BOX_MM, xScale.min, xScale.max),
+      true,
+      top,
+      bottom,
+      colors.major,
+      ratio,
+    )
+  }
+  if (majorY) {
     drawLines(
       ctx,
       gridPositions(u, 'y', mvPerMm * LARGE_BOX_MM, yScale.min, yScale.max),

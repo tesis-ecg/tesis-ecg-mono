@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, NamedTuple, Protocol
 
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
@@ -254,24 +254,121 @@ def drawable_event_views(
     return [view for view in views if view is not None and view.drawable]
 
 
-def event_offset_map(study: Study, events: list[ECGEvent]) -> dict[uuid.UUID, tuple[int, int]]:
-    """Offsets de los hallazgos **dibujables**, indexados por id de evento.
+class EventSpan(NamedTuple):
+    """Dónde se dibuja un hallazgo y qué anotación lo representa."""
 
-    Vive aparte de las anotaciones armadas porque hay dos consumidores con
-    necesidades distintas: el manifest quiere las anotaciones completas, y la
-    solapa de registros del paciente solo quiere saber dónde cayó cada hallazgo
-    para anclarle su respuesta. Que los dos usen el mismo criterio
-    (`event_offsets_ms` + alcance) es lo que garantiza que la solapa y el gráfico
-    nunca discrepen sobre dónde está una marca.
+    start_ms: int
+    end_ms: int
+    #: Id de la anotación que lo dibuja. Es el del propio evento, salvo cuando
+    #: quedó absorbido en un episodio continuo (`merge_continuous_episodes`).
+    annotation_id: uuid.UUID
+
+
+#: Estados que el chaleco informa muestra a muestra. La ingesta los deriva por
+#: lote, así que un electrodo suelto durante dos minutos llega como una docena
+#: de eventos pegados: uno por cada lote de ~9 s. Para el médico es un único
+#: episodio, y así se dibuja.
+CONTINUOUS_KINDS = frozenset({"lead_off", "sqi_unanalyzable", "adc_saturated"})
+#: Hasta cuánto pueden separarse dos tramos del mismo estado para seguir siendo
+#: el mismo episodio. Cubre el corte entre lotes (cero) y el rebote corto que
+#: `derive_events` descarta por debajo de medio segundo.
+CONTINUOUS_MERGE_GAP_MS = 1000
+#: Un tramo inanalizable cubierto por un electrodo desconectado no agrega nada:
+#: la causa ya está marcada, y repetirla duplica cada aviso en el panel.
+_REDUNDANT_UNDER = {"sqi_unanalyzable": "lead_off"}
+
+
+def merge_continuous_episodes(
+    views: list[EventView],
+) -> tuple[list[EventView], dict[uuid.UUID, EventSpan]]:
+    """Funde los tramos contiguos de un mismo estado en un único episodio.
+
+    Devuelve las vistas que se muestran —cada episodio en el lugar de su primer
+    tramo, con el final del último— y, para **todas** las de entrada, dónde
+    quedó dibujada: un registro que contesta el aviso de un tramo absorbido se
+    ancla en el episodio, no en un id que ya no viaja.
+
+    Dos tramos solo se funden si también son contiguos en hora de pared: el
+    buffer empaquetado no tiene huecos, así que un corte de grabación entre dos
+    lotes los deja pegados por offset aunque entre uno y otro haya pasado una
+    hora.
     """
-    offsets: dict[uuid.UUID, tuple[int, int]] = {}
-    for event in events:
-        if event_scope(event) == STUDY_SCOPE:
-            continue
-        resolved = event_offsets_ms(event, study)
-        if resolved is not None:
-            offsets[event.id] = resolved
-    return offsets
+    by_kind: dict[str, list[EventView]] = {}
+    for view in views:
+        if view.kind in CONTINUOUS_KINDS:
+            by_kind.setdefault(view.kind, []).append(view)
+
+    #: Id del primer tramo -> vista del episodio entero.
+    episodes: dict[uuid.UUID, EventView] = {}
+    owner: dict[uuid.UUID, uuid.UUID] = {view.id: view.id for view in views}
+    for members in by_kind.values():
+        members.sort(key=lambda view: (view.start_ms, view.end_ms))
+        current: EventView | None = None
+        for view in members:
+            if current is not None:
+                offset_gap = view.start_ms - current.end_ms
+                wall_gap = view.start_epoch_ms - current.end_epoch_ms
+                if offset_gap <= CONTINUOUS_MERGE_GAP_MS and wall_gap <= CONTINUOUS_MERGE_GAP_MS:
+                    if view.end_ms > current.end_ms:
+                        current = replace(
+                            current, end_ms=view.end_ms, end_epoch_ms=view.end_epoch_ms
+                        )
+                    owner[view.id] = current.id
+                    episodes[current.id] = current
+                    continue
+            current = view
+            episodes[view.id] = view
+
+    for kind, cause in _REDUNDANT_UNDER.items():
+        covers = [episode for episode in episodes.values() if episode.kind == cause]
+        for episode in [episode for episode in episodes.values() if episode.kind == kind]:
+            covering = next(
+                (
+                    other
+                    for other in covers
+                    if other.start_ms <= episode.start_ms and episode.end_ms <= other.end_ms
+                ),
+                None,
+            )
+            if covering is None:
+                continue
+            for event_id, annotation_id in owner.items():
+                if annotation_id == episode.id:
+                    owner[event_id] = covering.id
+
+    shown = [episodes.get(view.id, view) for view in views if owner[view.id] == view.id]
+    by_id = {view.id: view for view in shown}
+    spans = {
+        event_id: EventSpan(
+            by_id[annotation_id].start_ms, by_id[annotation_id].end_ms, annotation_id
+        )
+        for event_id, annotation_id in owner.items()
+    }
+    return shown, spans
+
+
+def drawable_event_episodes(
+    study: Study, events: list[ECGEvent], to_epoch_ms: WallClockResolver
+) -> tuple[list[EventView], dict[uuid.UUID, EventSpan]]:
+    """Los hallazgos que van sobre la traza, con los estados continuos fundidos.
+
+    Lo usan el manifest, para dibujarlos, y la solapa de registros del paciente,
+    para anclar cada respuesta en el hallazgo que contesta. Que los dos salgan
+    de acá es lo que garantiza que la solapa y el gráfico nunca discrepen sobre
+    dónde está una marca.
+    """
+    return merge_continuous_episodes(drawable_event_views(study, events, to_epoch_ms))
+
+
+def event_offset_map(
+    study: Study, events: list[ECGEvent], segments: list[StudyTimelineSegment]
+) -> dict[uuid.UUID, EventSpan]:
+    """Dónde se dibuja cada hallazgo **dibujable**, indexado por id de evento.
+
+    Para quien solo necesita ubicar los hallazgos (la solapa de registros) y no
+    las anotaciones armadas. Es el mismo cálculo que hace el manifest.
+    """
+    return drawable_event_episodes(study, events, wall_clock_resolver(study, segments))[1]
 
 
 # --- Registros del paciente ------------------------------------------------- #
@@ -331,7 +428,7 @@ def answered_event_id(report: PatientReport) -> uuid.UUID | None:
 def report_placements(
     study: Study,
     reports: list[PatientReport],
-    event_offsets: dict[uuid.UUID, tuple[int, int]],
+    event_offsets: dict[uuid.UUID, EventSpan],
     segments: list[StudyTimelineSegment],
 ) -> dict[uuid.UUID, ReportPlacement]:
     """Dónde va cada registro sobre la traza, y de qué hallazgo cuelga.
@@ -359,9 +456,13 @@ def report_placements(
     placements: dict[uuid.UUID, ReportPlacement] = {}
     for report in reports:
         event_id = answered_event_id(report)
-        offsets = event_offsets.get(event_id) if event_id is not None else None
-        if offsets is not None and event_id is not None:
-            placements[report.id] = ReportPlacement((offsets[0] + offsets[1]) // 2, event_id)
+        span = event_offsets.get(event_id) if event_id is not None else None
+        if span is not None:
+            # Se vincula con la anotación que lo dibuja: si el hallazgo quedó
+            # dentro de un episodio, su id propio no viaja en el manifest.
+            placements[report.id] = ReportPlacement(
+                (span.start_ms + span.end_ms) // 2, span.annotation_id
+            )
         else:
             placements[report.id] = ReportPlacement(report_offset_ms(report, study, segments), None)
     return placements
