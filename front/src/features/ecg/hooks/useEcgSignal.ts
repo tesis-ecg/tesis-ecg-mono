@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { getStudyEcg } from '../api/ecgApi'
+import type { ECGSignal } from '../types'
 
 /** Cada cuánto se vuelve a pedir el manifest de un estudio en curso. */
 const IN_PROGRESS_POLL_MS = 60_000
@@ -19,6 +20,11 @@ const IN_PROGRESS_POLL_MS = 60_000
  * página.
  *
  * `gcTime` corto para que el `Float32Array` se libere al desmontar.
+ *
+ * Cada respuesta trae arrays tipados nuevos, que el structural sharing de React
+ * Query no sabe comparar: sin `keepSameSignal`, cada refetch (el intervalo, o
+ * volver a la pestaña) entregaba otra referencia y el visor recreaba el gráfico
+ * aunque no hubiera llegado ni una muestra.
  */
 export function useEcgSignal(studyId: string | undefined, isInProgress = false) {
   return useQuery({
@@ -28,5 +34,21 @@ export function useEcgSignal(studyId: string | undefined, isInProgress = false) 
     staleTime: isInProgress ? 0 : Infinity,
     refetchInterval: isInProgress ? IN_PROGRESS_POLL_MS : false,
     gcTime: 60 * 1000,
+    structuralSharing: (previous, next) => keepSameSignal(previous, next),
   })
+}
+
+function keepSameSignal(previous: unknown, next: unknown): unknown {
+  const before = previous as ECGSignal | undefined
+  const after = next as ECGSignal
+  if (!before || !after) return next
+  const same =
+    before.startTimestamp === after.startTimestamp &&
+    before.durationMs === after.durationMs &&
+    before.sampleRate === after.sampleRate &&
+    before.samples.length === after.samples.length &&
+    before.timestampsMs.at(-1) === after.timestampsMs.at(-1) &&
+    JSON.stringify(before.annotations) === JSON.stringify(after.annotations) &&
+    JSON.stringify(before.metadata) === JSON.stringify(after.metadata)
+  return same ? previous : next
 }
