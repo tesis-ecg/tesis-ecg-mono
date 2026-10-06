@@ -7,7 +7,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Study, StudyClinicalReportPreview } from '@/features/studies/types'
 
 vi.mock('@/components/ui/dialog', () => ({
-  Dialog: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  Dialog: ({
+    children,
+    onOpenChange,
+  }: {
+    children: ReactNode
+    onOpenChange: (open: boolean) => void
+  }) => (
+    <div>
+      <button onClick={() => onOpenChange(false)}>Cerrar diálogo</button>
+      {children}
+    </div>
+  ),
   DialogContent: ({ children, className }: { children: ReactNode; className?: string }) => (
     <div className={className}>{children}</div>
   ),
@@ -143,8 +154,8 @@ const study: Study = {
   status: 'completed',
 }
 
-function renderDialog() {
-  return render(<ECGClinicalReportDialog open onOpenChange={vi.fn()} study={study} />)
+function renderDialog(mode: 'draft' | 'final' = 'draft') {
+  return render(<ECGClinicalReportDialog open onOpenChange={vi.fn()} study={study} mode={mode} />)
 }
 
 async function finishGeneration(worker: WorkerMock, bytes = 64) {
@@ -182,11 +193,13 @@ describe('ECGClinicalReportDialog preview', () => {
     vi.unstubAllGlobals()
   })
 
-  it('reemplaza el skeleton por el visor cuando termina la generación', async () => {
+  it('genera el borrador al abrir y recién entonces ofrece descargar e imprimir', async () => {
     renderDialog()
-    fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' }))
     await waitFor(() => expect(WorkerMock.instances).toHaveLength(1))
     expect(screen.getByTestId('clinical-report-preview-skeleton')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Descargar PDF' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Imprimir' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Generar informe final' })).toBeNull()
 
     await finishGeneration(WorkerMock.instances[0])
 
@@ -194,11 +207,23 @@ describe('ECGClinicalReportDialog preview', () => {
       'blob:report-1',
     )
     expect(screen.getByRole('button', { name: 'Regenerar borrador' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Descargar PDF' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Imprimir' })).toBeTruthy()
+    expect(WorkerMock.instances).toHaveLength(1)
+  })
+
+  it('en modo final no genera nada hasta el click y solo ofrece esa acción', () => {
+    renderDialog('final')
+
+    expect(WorkerMock.instances).toHaveLength(0)
+    expect(screen.getByText('La vista previa del PDF aparecerá acá')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Generar borrador' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Descargar PDF' })).toBeNull()
+    expect(screen.getByText(/no podrá modificarse/)).toBeTruthy()
   })
 
   it('retira el skeleton al cancelar', async () => {
     renderDialog()
-    fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' }))
     await waitFor(() => expect(WorkerMock.instances).toHaveLength(1))
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
 
@@ -206,9 +231,42 @@ describe('ECGClinicalReportDialog preview', () => {
     expect(WorkerMock.instances[0].terminate).toHaveBeenCalled()
   })
 
+  it.each(['resolve', 'reject'] as const)(
+    'conserva la generación nueva cuando la consulta anterior termina con %s',
+    async (outcome) => {
+      let finishOld!: () => void
+      refetch.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            finishOld = () =>
+              outcome === 'resolve'
+                ? resolve({ data: preview })
+                : reject(new Error('La consulta anterior falló.'))
+          }),
+      )
+      const { rerender } = renderDialog()
+      await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1))
+      fireEvent.click(screen.getByRole('button', { name: 'Cerrar diálogo' }))
+      rerender(
+        <ECGClinicalReportDialog open={false} onOpenChange={vi.fn()} study={study} mode="draft" />,
+      )
+      rerender(<ECGClinicalReportDialog open onOpenChange={vi.fn()} study={study} mode="draft" />)
+      await waitFor(() => expect(WorkerMock.instances).toHaveLength(1))
+
+      await act(async () => finishOld())
+
+      expect(screen.getByTestId('clinical-report-preview-skeleton')).toBeTruthy()
+      expect(screen.getByText('Paso 1 de 1')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Generando…' }).hasAttribute('disabled')).toBe(true)
+      expect(screen.queryByText('La consulta anterior falló.')).toBeNull()
+      expect(WorkerMock.instances).toHaveLength(1)
+      await finishGeneration(WorkerMock.instances[0])
+      expect(screen.getByTestId('clinical-report-pdf-preview')).toBeTruthy()
+    },
+  )
+
   it('genera en el hilo principal si el worker no puede iniciarse', async () => {
     renderDialog()
-    fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' }))
     await waitFor(() => expect(WorkerMock.instances).toHaveLength(1))
 
     await act(async () => {
@@ -229,7 +287,6 @@ describe('ECGClinicalReportDialog preview', () => {
     }
     vi.stubGlobal('Worker', FailingWorker)
     renderDialog()
-    fireEvent.click(screen.getByRole('button', { name: 'Generar borrador' }))
 
     expect((await screen.findByTestId('clinical-report-pdf-preview')).getAttribute('data')).toBe(
       'blob:report-1',
@@ -237,8 +294,8 @@ describe('ECGClinicalReportDialog preview', () => {
     expect(WorkerMock.instances).toHaveLength(0)
   })
 
-  it('genera el documento final y lo persiste', async () => {
-    renderDialog()
+  it('genera el documento final, lo persiste y ofrece cerrar', async () => {
+    renderDialog('final')
     fireEvent.click(screen.getByRole('button', { name: 'Generar informe final' }))
     await waitFor(() => expect(WorkerMock.instances).toHaveLength(1))
     await finishGeneration(WorkerMock.instances[0])
@@ -248,6 +305,8 @@ describe('ECGClinicalReportDialog preview', () => {
       draftRevision: 1,
       snapshotHash: 'a'.repeat(64),
     })
+    expect(await screen.findByRole('button', { name: 'Cerrar' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Generar informe final' })).toBeNull()
   })
 
   it('deshabilita la generación final ante requisitos faltantes y muestra el bloqueo', () => {
@@ -260,7 +319,7 @@ describe('ECGClinicalReportDialog preview', () => {
         severity: 'blocking',
       },
     ]
-    renderDialog()
+    renderDialog('final')
 
     expect(
       screen.getByRole('button', { name: 'Generar informe final' }).hasAttribute('disabled'),
@@ -276,7 +335,7 @@ describe('ECGClinicalReportDialog preview', () => {
         severity: 'warning',
       },
     ]
-    renderDialog()
+    renderDialog('final')
 
     expect(
       screen.getByRole('button', { name: 'Generar informe final' }).hasAttribute('disabled'),

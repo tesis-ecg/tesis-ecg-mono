@@ -209,15 +209,27 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // sample rate para evitar reallocar 900k floats en cada render.
   const xs = useMemo(() => buildXAxis(signal), [signal])
   const ys = useMemo(() => buildYSeries(signal), [signal])
-  // Ocultar los avisos no los borra: el panel los sigue listando. Pasar la
-  // lista vacía reutiliza el camino de una señal nueva por polling, que ya
-  // conserva el viewport al recrear uPlot.
+  // Ocultar los avisos no los borra: el panel los sigue listando. Viajan a
+  // uPlot por ref y solo repintan: recrear la instancia para esto le hacía
+  // perder al médico el zoom y el cursor cada vez que los alternaba.
   const annotations = showAnnotations ? signal.annotations : NO_ANNOTATIONS
   const annotationDrawOrder = useMemo(
     () => [...annotations].sort(compareAnnotationsForPainting),
     [annotations],
   )
   const annotationLinks = useMemo(() => buildAnnotationLinks(annotations), [annotations])
+  const annotationDrawOrderRef = useRef(annotationDrawOrder)
+  const annotationLinksRef = useRef(annotationLinks)
+  useEffect(() => {
+    if (
+      annotationDrawOrderRef.current === annotationDrawOrder &&
+      annotationLinksRef.current === annotationLinks
+    )
+      return
+    annotationDrawOrderRef.current = annotationDrawOrder
+    annotationLinksRef.current = annotationLinks
+    uplotRef.current?.redraw(false)
+  }, [annotationDrawOrder, annotationLinks])
 
   const annotationLabelLayouts = useMemo(() => {
     if (!overlayViewport || !plotArea) return []
@@ -374,11 +386,11 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           (u) => {
             drawAnnotationBands(
               u,
-              annotationDrawOrder,
+              annotationDrawOrderRef.current,
               startTimestamp,
               tokens.alerts,
               selectedAnnotationIdRef.current,
-              annotationLinks,
+              annotationLinksRef.current,
             )
           },
         ],
@@ -387,6 +399,12 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             if (scaleKey !== 'x') return
             const { min, max } = u.scales.x
             if (min == null || max == null) return
+            // El `_init()` de uPlot autoescala al estudio entero y avisa en una
+            // microtarea, antes del primer `ResizeObserver`. Si eso llegaba a
+            // `preservedViewportRef`, la recreación por polling "restauraba" el
+            // estudio entero: el zoom y el cursor se reiniciaban solos. El
+            // encuadre real lo pone el `ResizeObserver`, y ese sí se notifica.
+            if (isInitializingFrameRef.current) return
             const plotWidth = plotWidthPx(u)
             const isClinicalScale = matchesScale(scaleRef.current, plotWidth, max - min)
             const nextViewport = {
@@ -396,7 +414,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
               isClinicalScale,
             }
             preservedViewportRef.current = nextViewport
-            if (followLatest && !isInitializingFrameRef.current) {
+            if (followLatest) {
               // No perseguimos al médico si se fue a revisar el pasado. Volver
               // al borde derecho (incluido un zoom ahí) reactiva el seguimiento.
               followsLatestRef.current = Math.abs(max - durationSec) < 0.05
@@ -495,9 +513,29 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         // escala clínica y centra en su destino. No restaura el viewport
         // preservado: con el visor oculto, el autoescalado de uPlot y el propio
         // salto lo dejaron en el estudio entero.
+        //
+        // Siguiendo lo último que llega, el encuadre se pega al nuevo borde
+        // derecho pero **con el mismo zoom**: volver a la escala clínica por
+        // defecto le deshacía el zoom al médico en cada lote.
         const jumpTarget = pendingJumpRef.current
+        const following = jumpTarget === null && followsLatestRef.current
+        const preserved = preservedViewportRef.current
+        const endMs = startTimestamp + durationSec * 1000
         const restore =
-          jumpTarget !== null || followsLatestRef.current ? null : preservedViewportRef.current
+          jumpTarget !== null
+            ? null
+            : following && preserved
+              ? { ...preserved, startMs: endMs - (preserved.endMs - preserved.startMs), endMs }
+              : following
+                ? null
+                : preserved
+        const anchorMs = following
+          ? endMs
+          : hasCursorAnchorRef.current
+            ? cursorTimestampRef.current
+            : undefined
+        // Desde acá los cambios de escala son el encuadre de verdad y se avisan.
+        isInitializingFrameRef.current = false
         if (
           applyInitialFraming(
             inst,
@@ -506,7 +544,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             durationSec,
             restore,
             jumpTarget !== null ? undefined : initialWindowSeconds,
-            hasCursorAnchorRef.current ? cursorTimestampRef.current : undefined,
+            anchorMs,
           )
         ) {
           pendingInitialSpanRef.current = false
@@ -519,11 +557,22 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
               inst.setScale('x', { min: newMin, max: newMax })
             }
           }
-          if (followsLatestRef.current) {
+          // El cursor se queda donde lo dejó el médico mientras siga a la
+          // vista; solo se lo lleva a lo último si quedó afuera o nunca se fijó.
+          const visible = inst.scales.x
+          const cursorSec = (cursorTimestampRef.current - startTimestamp) / 1000
+          const cursorVisible =
+            visible.min != null &&
+            visible.max != null &&
+            cursorSec >= visible.min &&
+            cursorSec <= visible.max
+          if (following && (!hasCursorAnchorRef.current || !cursorVisible)) {
             cursorTimestampRef.current = latestTimestampMs(signal)
           }
           setCursorAtTimestamp(inst, cursorTimestampRef.current, startTimestamp, durationSec)
-          isInitializingFrameRef.current = false
+        } else {
+          // Sin ancho todavía: el próximo callback reintenta.
+          isInitializingFrameRef.current = true
         }
       } else if (wasOnScale && before.min != null && before.max != null) {
         applyScaleSpanAtCursor(
@@ -653,7 +702,8 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         return
       }
       const inst = uplotRef.current
-      if (!inst || annotationDrawOrder.length === 0) return
+      const drawOrder = annotationDrawOrderRef.current
+      if (!inst || drawOrder.length === 0) return
       const rect = inst.over.getBoundingClientRect()
       const x = e.clientX - rect.left
       if (x < 0 || x > rect.width) return
@@ -661,7 +711,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       const { min, max } = inst.scales.x
       const toleranceMs =
         min != null && max != null ? ((max - min) * 1000 * Math.max(8, 1)) / rect.width : 0
-      const hit = [...annotationDrawOrder]
+      const hit = [...drawOrder]
         .reverse()
         .find(
           (annotation) =>
@@ -713,17 +763,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       uplotRef.current = null
       lastViewportRef.current = null
     }
-  }, [
-    signal,
-    height,
-    xs,
-    ys,
-    annotationDrawOrder,
-    annotationLinks,
-    durationSec,
-    initialWindowSeconds,
-    followLatest,
-  ])
+  }, [signal, height, xs, ys, durationSec, initialWindowSeconds, followLatest])
 
   // Cambiar ganancia o barrido NO recrea la instancia: se actualiza la ref que
   // leen `scales.y.range` y la grilla, se reencuadra el eje de tiempo a la

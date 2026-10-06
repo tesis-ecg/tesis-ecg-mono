@@ -48,3 +48,7 @@ dist/
 nativewind-env.d.ts
 .env
 google-services.json
+
+# Builds locales de la app (eas build --local)
+*.apk
+*.aab
