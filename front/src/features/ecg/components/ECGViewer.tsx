@@ -47,6 +47,7 @@ import type {
 import { formatWallClock, formatWallClockShort } from '../utils/formatEcgTimestamp'
 import { latestTimestampMs } from '../utils/processedRange'
 import { sampleRangeForSeconds } from '../utils/sampleRange'
+import { coversRange, detailRangeFor, mergeDetail, type DetailRange } from '../utils/traceDetail'
 
 /**
  * Lee los tokens CSS del ECG desde `document.documentElement`. uPlot pinta sobre
@@ -101,6 +102,9 @@ function readAlertToken(
 }
 
 const NO_ANNOTATIONS: ECGAnnotation[] = []
+
+/** Espera tras el último zoom o desplazamiento antes de pedir muestras. */
+const DETAIL_DEBOUNCE_MS = 150
 
 /**
  * `<ECGViewer />` — renderiza una traza ECG de canal único con uPlot.
@@ -292,6 +296,84 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       )
     }
 
+    // --- Muestras de cerca ------------------------------------------------- #
+    //
+    // `signal.samples` es un resumen: un mínimo y un máximo por balde. Cuando
+    // lo visible pide más detalle que un balde por píxel, se descargan las
+    // muestras del tramo y se empalman en el lugar del resumen; al alejarse se
+    // vuelve a él. `data-trace` dice cuál de los dos está en pantalla.
+    const detail = signal.detail
+    const overviewBucket = signal.metadata?.overviewSamplesPerBucket ?? null
+    let detailLoaded: DetailRange | null = null
+    let detailTimer: number | null = null
+    let detailAbort: AbortController | null = null
+    container.dataset.trace = overviewBucket === null ? 'samples' : 'overview'
+
+    const showOverview = (inst: uPlot) => {
+      if (detailLoaded === null) return
+      detailLoaded = null
+      container.dataset.trace = 'overview'
+      inst.setData([xs, ys], false)
+      inst.redraw()
+    }
+
+    const updateDetail = () => {
+      detailTimer = null
+      const inst = uplotRef.current
+      if (!inst || !detail || overviewBucket === null) return
+      const { min, max } = inst.scales.x
+      if (min == null || max == null) return
+      // De puntos del resumen a muestras: cada par mín/máx es un balde. Un
+      // punto de más a la izquierda por el balde que asoma cortado.
+      const [fromPoint, toPoint] = sampleRangeForSeconds(signal, min, max)
+      const visible = {
+        startSample: Math.floor(Math.max(fromPoint - 1, 0) / 2) * overviewBucket,
+        endSample: Math.min(Math.ceil(toPoint / 2) * overviewBucket, detail.sampleCount),
+      }
+      const wanted = detailRangeFor({
+        visibleStartSample: visible.startSample,
+        visibleEndSample: visible.endSample,
+        plotWidthPx: plotWidthPx(inst),
+        overviewSamplesPerBucket: overviewBucket,
+        availableSamples: detail.sampleCount,
+      })
+      if (!wanted) {
+        detailAbort?.abort()
+        detailAbort = null
+        showOverview(inst)
+        return
+      }
+      if (coversRange(detailLoaded, visible)) return
+      detailAbort?.abort()
+      const controller = new AbortController()
+      detailAbort = controller
+      detail.load(wanted.startSample, wanted.endSample, controller.signal).then(
+        (loaded) => {
+          if (controller.signal.aborted || uplotRef.current !== inst) return
+          const detailXs = new Float64Array(loaded.timestampsMs.length)
+          for (let i = 0; i < detailXs.length; i++) {
+            detailXs[i] = (loaded.timestampsMs[i] - signal.startTimestamp) / 1000
+          }
+          const merged = mergeDetail(xs, ys, detailXs, loaded.samples, loaded.gapIndices)
+          detailLoaded = { startSample: loaded.startSample, endSample: loaded.endSample }
+          container.dataset.trace = 'samples'
+          inst.setData([merged.xs, merged.ys], false)
+          // `setData` sin reescalar no repinta solo.
+          inst.redraw()
+        },
+        () => {
+          // Sin las muestras queda el resumen, que es lo que ya se veía. Una
+          // descarga cancelada por otro zoom también termina acá.
+        },
+      )
+    }
+
+    const scheduleDetail = () => {
+      if (!detail) return
+      if (detailTimer != null) window.clearTimeout(detailTimer)
+      detailTimer = window.setTimeout(updateDetail, DETAIL_DEBOUNCE_MS)
+    }
+
     const opts: uPlot.Options = {
       width: initialWidth,
       height,
@@ -422,6 +504,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             const last = lastViewportRef.current
             if (last && last.min === min && last.max === max) return
             lastViewportRef.current = { min, max }
+            scheduleDetail()
             setOverlayViewport((current) =>
               current?.startMs === nextViewport.startMs && current.endMs === nextViewport.endMs
                 ? current
@@ -464,7 +547,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       },
     }
 
-    const data: uPlot.AlignedData = [xs as unknown as number[], ys as unknown as number[]]
+    const data: uPlot.AlignedData = [xs, ys]
 
     isInitializingFrameRef.current = true
     const u = new uPlot(opts, data, container)
@@ -758,6 +841,8 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       container.removeEventListener('click', handleClick)
       container.removeEventListener('keydown', handleKeyDown)
       if (suppressClickTimeout != null) window.clearTimeout(suppressClickTimeout)
+      if (detailTimer != null) window.clearTimeout(detailTimer)
+      detailAbort?.abort()
       ro.disconnect()
       uplotRef.current?.destroy()
       uplotRef.current = null

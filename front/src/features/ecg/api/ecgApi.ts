@@ -2,6 +2,7 @@ import { api } from '@/lib/api'
 import { createApiError, isApiError } from '@/lib/apiError'
 
 import type { ECGAnnotationCategory, ECGAnnotationSeverity, ECGSignal } from '../types'
+import { createEcgDetailSource, type DetailPiece } from './ecgDetail'
 
 interface EcgUrlResponse {
   url: string
@@ -205,6 +206,8 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     timestampsMs,
     gapIndices,
     timeline,
+    // Solo hace falta cuando lo descargado es un resumen.
+    detail: level ? createDetail(studyId, manifest, timeline) : undefined,
     annotations: (manifest.annotations ?? []).map((annotation) => ({
       id: annotation.id,
       kind: annotation.kind,
@@ -234,6 +237,62 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
   }
 }
 
+/**
+ * Las piezas de las que el visor saca las muestras de un tramo, siempre de la
+ * misma vista que el resumen: los segmentos del manifest ya son los de esa vista
+ * (los filtrados si el estudio tiene vista filtrada). Un estudio sin segmentos
+ * (los seedeados) tiene el crudo en un solo objeto: sirve si el resumen también
+ * es crudo y si es chico, porque se baja entero.
+ */
+function detailPieces(manifest: EcgManifest): DetailPiece[] {
+  const segments = manifest.segments ?? []
+  if (segments.length > 0) {
+    return segments.map((segment) => ({
+      url: segment.url,
+      expiresAt: segment.expiresAt,
+      byteLength: segment.byteLength,
+      sha256: segment.sha256,
+      startSampleIndex: segment.startSampleIndex,
+      sampleCount: segment.sampleCount,
+    }))
+  }
+  const raw = manifest.raw
+  if (raw && manifest.viewKind !== 'filtered_visualization' && raw.byteLength <= MAX_LEGACY_BYTES) {
+    return [{ ...raw, startSampleIndex: 0, sampleCount: Math.floor(raw.byteLength / 4) }]
+  }
+  return []
+}
+
+function createDetail(
+  studyId: string,
+  manifest: EcgManifest,
+  timeline: EcgTimelineSegment[],
+): ECGSignal['detail'] {
+  const pieces = detailPieces(manifest)
+  if (pieces.length === 0) return undefined
+  return createEcgDetailSource({
+    studyId,
+    pieces,
+    download: (piece, signal) => downloadEcgObject(piece, signal),
+    refresh: async () => {
+      const { data } = await api.get<EcgManifest>(`/studies/${studyId}/ecg/manifest`)
+      return detailPieces(data)
+    },
+    // La misma línea de tiempo que el resumen que está en pantalla, aunque el
+    // manifest renovado traiga otra: una muestra tiene que caer donde el
+    // resumen dibujó su balde.
+    timestamps: (firstSample, count) =>
+      buildTimestamps(
+        count,
+        manifest.sampleRate,
+        manifest.startTimestamp,
+        timeline,
+        null,
+        firstSample,
+      ),
+  })
+}
+
 export async function getStudyEcgReportWindows(
   studyId: string,
   windows: EcgReportWindowRequest[],
@@ -260,6 +319,7 @@ function buildTimestamps(
   fallbackStartMs: number,
   timeline: EcgTimelineSegment[],
   samplesPerBucket: number | null,
+  firstPoint = 0,
 ): { timestampsMs: Float64Array; gapIndices: number[] } {
   const timestampsMs = new Float64Array(pointCount)
   const gapIndices: number[] = []
@@ -268,15 +328,17 @@ function buildTimestamps(
   const samplesPerPoint = samplesPerBucket === null ? 1 : samplesPerBucket / 2
   if (timeline.length === 0 || sampleRate <= 0) {
     const dt = sampleRate > 0 ? (samplesPerPoint * 1000) / sampleRate : 0
-    for (let i = 0; i < pointCount; i++) timestampsMs[i] = fallbackStartMs + i * dt
+    for (let i = 0; i < pointCount; i++) timestampsMs[i] = fallbackStartMs + (firstPoint + i) * dt
     return { timestampsMs, gapIndices }
   }
 
   let cursor = 0
-  let previousOrdinal = timeline[0].ordinal
+  // Un tramo que no arranca en el primer punto no corta en su primer punto: el
+  // corte con lo anterior es asunto de quien lo empalma.
+  let previousOrdinal: number | null = firstPoint === 0 ? timeline[0].ordinal : null
   let previousMs = -Infinity
   for (let i = 0; i < pointCount; i++) {
-    const sample = i * samplesPerPoint
+    const sample = (firstPoint + i) * samplesPerPoint
     while (
       cursor + 1 < timeline.length &&
       sample >= timeline[cursor].startSampleIndex + timeline[cursor].sampleCount
@@ -298,7 +360,7 @@ function buildTimestamps(
     )
     timestampsMs[i] = previousMs
     if (segment.ordinal !== previousOrdinal) {
-      gapIndices.push(i)
+      if (previousOrdinal !== null) gapIndices.push(i)
       previousOrdinal = segment.ordinal
     }
   }

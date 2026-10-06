@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { watchForFailures } from '../support/failures'
+import { prScreenshot } from '../support/pr-screenshot'
 
 test('hiding the findings keeps the ECG zoom where it was', async ({ page }) => {
   const failures = watchForFailures(page)
@@ -23,5 +24,31 @@ test('hiding the findings keeps the ECG zoom where it was', async ({ page }) => 
 
   await expect(chart.locator('.uplot[data-e2e-instance="before"]')).toHaveCount(1)
   expect(await chart.locator('.u-legend').innerText()).toBe(legendBefore)
+  expect(failures).toEqual([])
+})
+
+test('at 25 mm/s the ECG draws the samples, and the min/max overview only from afar', async ({
+  page,
+}) => {
+  const failures = watchForFailures(page)
+  await page.goto('/studies?status=completed')
+  await page
+    .getByRole('button', { name: /^Abrir estudio de / })
+    .first()
+    .click()
+
+  // A demo study runs 9 to 14 min, so what the viewer downloads first is one
+  // min/max pair per 64 samples (128 ms). The study opens at 25 mm/s, where a
+  // bucket is wider than a pixel: the viewer has to fetch the samples.
+  const chart = page.getByLabel('Gráfico ECG interactivo')
+  await expect(chart.locator('.uplot')).toBeVisible()
+  await expect(chart).toHaveAttribute('data-trace', 'samples')
+  await prScreenshot(chart, 'ECG at 25 mm/s drawn from the samples')
+
+  // Zoomed out to the whole study a bucket is narrower than a pixel and the
+  // overview is what the samples would look like anyway.
+  const zoomOut = page.getByRole('button', { name: 'Zoom out' })
+  for (let i = 0; i < 7; i++) await zoomOut.click()
+  await expect(chart).toHaveAttribute('data-trace', 'overview')
   expect(failures).toEqual([])
 })
