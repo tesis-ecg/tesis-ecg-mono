@@ -1,0 +1,35 @@
+# EAS uses this file instead of .gitignore when packing the project for a build
+# (`npm run build:apk` in mobile/). Only mobile/ is needed; the rest of the
+# monorepo stays out (.codegraph/ holds a daemon socket that breaks the copy).
+/*
+!/mobile
+
+# Same as mobile/.gitignore, except .env and google-services.json, which the
+# build needs (EXPO_PUBLIC_API_URL and FCM for push notifications).
+mobile/node_modules
+mobile/.expo
+mobile/dist
+mobile/web-build
+mobile/expo-env.d.ts
+mobile/nativewind-env.d.ts
+mobile/.kotlin
+mobile/**/*.orig.*
+mobile/**/*.jks
+mobile/**/*.p8
+mobile/**/*.p12
+mobile/**/*.key
+mobile/**/*.mobileprovision
+mobile/**/*.pem
+mobile/.metro-health-check*
+mobile/**/*.tsbuildinfo
+mobile/.env*.local
+mobile/example
+
+# Generated native folders: EAS must run prebuild itself
+mobile/android
+mobile/ios
+
+# Build outputs
+mobile/*.apk
+mobile/*.aab
+**/.DS_Store

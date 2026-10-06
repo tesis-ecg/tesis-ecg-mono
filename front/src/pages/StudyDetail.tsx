@@ -21,7 +21,10 @@ import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
-import { ECGClinicalReportDialog } from '@/features/ecg/components/ECGClinicalReportDialog'
+import {
+  ECGClinicalReportDialog,
+  type ClinicalReportMode,
+} from '@/features/ecg/components/ECGClinicalReportDialog'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
@@ -64,6 +67,7 @@ export function StudyDetail() {
     cursorMs: number | null
   } | null>(null)
   const [printOpen, setPrintOpen] = useState(false)
+  const [reportMode, setReportMode] = useState<ClinicalReportMode>('draft')
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
   const [showAnnotationsOnChart, setShowAnnotationsOnChart] = useState(true)
   // La calibración vive acá y no adentro del visor: la comparten el gráfico de
@@ -405,7 +409,13 @@ export function StudyDetail() {
         </TabsContent>
 
         <TabsContent value="informe">
-          <StudyClinicalReportTab study={study} onPreview={() => setPrintOpen(true)} />
+          <StudyClinicalReportTab
+            study={study}
+            onPreview={(mode) => {
+              setReportMode(mode)
+              setPrintOpen(true)
+            }}
+          />
         </TabsContent>
 
         {study.canAccessDevice && (
@@ -435,7 +445,12 @@ export function StudyDetail() {
           />
         </>
       )}
-      <ECGClinicalReportDialog open={printOpen} onOpenChange={setPrintOpen} study={study} />
+      <ECGClinicalReportDialog
+        open={printOpen}
+        onOpenChange={setPrintOpen}
+        study={study}
+        mode={reportMode}
+      />
     </div>
   )
 }

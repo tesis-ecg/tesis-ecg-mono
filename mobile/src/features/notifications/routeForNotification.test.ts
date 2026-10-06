@@ -19,6 +19,26 @@ describe('routeForNotification', () => {
     })
   })
 
+  it('si el push trae la severidad, la pasa para pintar el encabezado', () => {
+    expect(
+      routeForNotification({
+        type: 'report_request',
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
+        kind: 'afib',
+        severity: 'critical',
+      }),
+    ).toEqual({
+      pathname: '/report',
+      params: {
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
+        kind: 'afib',
+        severity: 'critical',
+      },
+    })
+  })
+
   it('un aviso viejo sin tipo igual abre el formulario', () => {
     // Los pushes que ya estaban en la bandeja antes de este cambio no traen
     // `kind`. La clave no puede viajar vacía: el formulario decide con su

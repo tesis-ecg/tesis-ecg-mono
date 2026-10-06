@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { formatDateTime } from '@/lib/time'
+import type { ClinicalReportMode } from '@/features/ecg/components/ECGClinicalReportDialog'
 import { downloadStudyClinicalReport } from '@/features/studies/api/studiesApi'
 import {
   useStudyClinicalReportDraft,
@@ -79,7 +80,7 @@ function buildRequirements(preview: StudyClinicalReportPreview) {
 
 interface StudyClinicalReportTabProps {
   study: Study
-  onPreview: () => void
+  onPreview: (mode: ClinicalReportMode) => void
 }
 
 export function StudyClinicalReportTab({ study, onPreview }: StudyClinicalReportTabProps) {
@@ -209,7 +210,7 @@ function ClinicalReportForm({
   preview: StudyClinicalReportPreview | undefined
   previewState: PreviewState
   onReload: () => void
-  onPreview: () => void
+  onPreview: (mode: ClinicalReportMode) => void
 }) {
   const update = useUpdateStudyClinicalReportDraft(study.id)
   const [values, setValues] = useState({
@@ -247,9 +248,9 @@ function ClinicalReportForm({
       return false
     }
   }
-  const preview = async () => {
+  const preview = async (mode: ClinicalReportMode) => {
     if (dirty && !(await save())) return
-    onPreview()
+    onPreview(mode)
   }
   const conflict = isApiError(update.error) && update.error.code === 'CONFLICT'
   const pendingCodes = new Set(
@@ -371,7 +372,7 @@ function ClinicalReportForm({
       <div className="flex flex-wrap justify-end gap-2">
         <Button
           variant="outline"
-          onClick={() => void preview()}
+          onClick={() => void preview('draft')}
           disabled={
             update.isPending || previewState !== 'ready' || !reportPreview?.canGenerateDraft
           }
@@ -385,7 +386,7 @@ function ClinicalReportForm({
         </Button>
         <Button
           variant="secondary"
-          onClick={() => void preview()}
+          onClick={() => void preview('final')}
           disabled={update.isPending || previewState !== 'ready' || !reportPreview?.canFinalize}
         >
           <FileCheck2 className="size-4" />

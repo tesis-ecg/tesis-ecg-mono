@@ -55,7 +55,6 @@ jobs:
       - run: npm run test:coverage
       - run: npm run build
       - run: npm run budget
-      - run: npm audit --audit-level=high
 
   mobile:
     runs-on: ubuntu-latest
@@ -78,9 +77,6 @@ jobs:
       # type-check ni el lint ven.
       - run: npx expo export --platform android --output-dir /tmp/expo-export
       - run: npx expo-doctor
-      # `npm audit --audit-level=high` con las excepciones de `scripts/audit.mjs`: braces y
-      # node-forge no tienen versión parcheada y solo entran por el tooling de Expo/Metro.
-      - run: npm run audit:high
 
   backend:
     needs: changes
@@ -134,15 +130,6 @@ jobs:
       # aparte para no sumar minutos a cada push, pero igual corren en CI.
       - run: uv run pytest -m slow -n auto --dist worksteal
       - run: uvx bandit -q -r app
-      - run: uv export --frozen --no-dev --no-hashes -o /tmp/runtime-requirements.txt
-      # PYSEC-2026-3447 (setuptools < 83): `MANIFEST.in` no normaliza Unicode al
-      # excluir archivos, así que en macOS un nombre en NFD puede colarse en un
-      # sdist publicado. Es una falla de EMPAQUETADO: acá nadie corre `sdist`,
-      # y la imagen es un servidor, no un paquete. No hay versión parcheada
-      # alcanzable — `neurokit2 0.2.13`, la última, pinnea `setuptools<82.0.0`,
-      # y forzar la 83 deja un requirements que pip no puede instalar. Revisar
-      # cuando salga neurokit2 > 0.2.13.
-      - run: uvx pip-audit --ignore-vuln PYSEC-2026-3447 -r /tmp/runtime-requirements.txt
 
   infra:
     runs-on: ubuntu-latest

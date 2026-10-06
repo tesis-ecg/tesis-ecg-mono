@@ -55,7 +55,8 @@
     "typecheck": "tsc --noEmit",
     "doctor": "npx expo-doctor",
     "test": "vitest run",
-    "audit:high": "node scripts/audit.mjs"
+    "audit:high": "node scripts/audit.mjs",
+    "build:apk": "eas build --platform android --profile preview --local"
   },
   "private": true,
   "overrides": {

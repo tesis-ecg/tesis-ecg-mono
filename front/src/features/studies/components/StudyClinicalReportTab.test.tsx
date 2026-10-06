@@ -108,6 +108,14 @@ describe('StudyClinicalReportTab', () => {
 
     await waitFor(() => expect(mocks.mutateAsync).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(onPreview).toHaveBeenCalledTimes(1))
+    expect(onPreview).toHaveBeenCalledWith('draft')
+  })
+
+  it('abre el diálogo en modo final desde "Generar informe final"', async () => {
+    const onPreview = vi.fn()
+    render(<StudyClinicalReportTab study={study} onPreview={onPreview} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Generar informe final' }))
+    await waitFor(() => expect(onPreview).toHaveBeenCalledWith('final'))
   })
 
   it('resume los requisitos pendientes y lista el checklist sin bloques de alerta', () => {

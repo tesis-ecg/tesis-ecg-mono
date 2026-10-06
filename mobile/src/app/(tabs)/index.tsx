@@ -288,20 +288,26 @@ export default function Home() {
         </AnimatedView>
       )}
 
-      <AnimatedView entering={enterAt(hasAlertsBlock ? 2 : 1)}>
-        <Card className="gap-3">
-          <Heading>¿Sentís algo?</Heading>
-          <Body className="text-gray-700">
-            Anotalo apenas te pase. Tu médico lo va a ver junto al latido exacto
-            de ese momento.
-          </Body>
-          <Button
-            label="Registrar cómo me siento"
-            onPress={() => router.push("/report")}
-            className="mt-1"
-          />
-        </Card>
-      </AnimatedView>
+      {/*
+        Sin chaleco asignado no hay latido con el cual cruzar lo que el
+        paciente anote, así que la invitación a registrar no tiene sentido.
+      */}
+      {device.data?.hasDevice && (
+        <AnimatedView entering={enterAt(hasAlertsBlock ? 2 : 1)}>
+          <Card className="gap-3">
+            <Heading>¿Sentís algo?</Heading>
+            <Body className="text-gray-700">
+              Anotalo apenas te pase. Tu médico lo va a ver junto al latido
+              exacto de ese momento.
+            </Body>
+            <Button
+              label="Registrar cómo me siento"
+              onPress={() => router.push("/report")}
+              className="mt-1"
+            />
+          </Card>
+        </AnimatedView>
+      )}
     </Screen>
   );
 }

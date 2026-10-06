@@ -1805,7 +1805,12 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
     if pushable is not None and patient_id is not None:
         await notify_patient_task(
             patient_id,
-            anomaly_message(pushable.alert_id, datetime.now(UTC).isoformat(), pushable.kind),
+            anomaly_message(
+                pushable.alert_id,
+                datetime.now(UTC).isoformat(),
+                pushable.kind,
+                pushable.severity,
+            ),
         )
 
 
@@ -1911,6 +1916,7 @@ async def process_study_task(study_id: uuid.UUID, *, flush_open_tail: bool = Fal
                             ml_pass.pushable.alert_id,
                             datetime.now(UTC).isoformat(),
                             ml_pass.pushable.kind,
+                            ml_pass.pushable.severity,
                         ),
                     )
                 if not ml_pass.pending:
