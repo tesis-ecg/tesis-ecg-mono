@@ -1,7 +1,10 @@
-import type { PatientAlert } from '@/features/patient/types'
+import type { AlertSeverity, PatientAlert } from '@/features/patient/types'
 
 export type AlertRoute =
-  | { pathname: '/report'; params: { alertId: string; occurredAt: string; kind: string } }
+  | {
+      pathname: '/report'
+      params: { alertId: string; occurredAt: string; kind: string; severity: AlertSeverity }
+    }
   | { pathname: '/report-response'; params: { reportId: string } }
   | { pathname: '/(tabs)/device' }
   | null
@@ -11,9 +14,15 @@ export function routeForAlert(alert: PatientAlert): AlertRoute {
   if (alert.needsReport) {
     return {
       pathname: '/report',
-      // El `kind` sale del aviso que ya está en pantalla: entrando por acá no
-      // hace falta pedirle nada más al backend para encabezar el formulario.
-      params: { alertId: alert.id, occurredAt: alert.detectedAt, kind: alert.kind },
+      // El `kind` y la severidad salen del aviso que ya está en pantalla:
+      // entrando por acá no hace falta pedirle nada más al backend para
+      // encabezar el formulario con su nombre, su ícono y su color.
+      params: {
+        alertId: alert.id,
+        occurredAt: alert.detectedAt,
+        kind: alert.kind,
+        severity: alert.severity,
+      },
     }
   }
   if (alert.requiresResponse && alert.reportId) {

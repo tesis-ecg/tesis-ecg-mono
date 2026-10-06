@@ -10,10 +10,15 @@ import {
   type SharedValue,
 } from "react-native-reanimated";
 
-import { alertMeta } from "@/features/patient/deviceMeta";
+import {
+  alertMeta,
+  ALERT_URGENCY_INK,
+  alertUrgency,
+} from "@/features/patient/deviceMeta";
 import type { PatientAlert } from "@/features/patient/types";
+import { cn } from "@/lib/cn";
 import { formatRelativeTime } from "@/lib/format";
-import { brandGradient } from "@/lib/gradients";
+import { alertGradient } from "@/lib/gradients";
 import * as haptics from "@/lib/haptics";
 import { DURATION, usePressScale } from "@/lib/motion";
 import { AnimatedPressable, AnimatedView, Pressable, Text, View } from "@/tw";
@@ -23,7 +28,7 @@ import { Heading } from "@/components/ui/typography";
 const PEEK = 14;
 
 /** Separación entre avisos ya desplegados. */
-const GAP = 4;
+const GAP = 8;
 
 /** Cuánto se angosta cada aviso a medida que baja en la pila. */
 const SCALE_STEP = 0.05;
@@ -175,7 +180,15 @@ export function PendingAlerts({ alerts, onOpen }: PendingAlertsProps) {
         </AnimatedView>
       </Pressable>
 
-      <AnimatedView style={containerStyle}>
+      {/*
+        `overflow-hidden` porque las cards de atrás se alinean por el pie: si
+        una mide más que la de arriba —un título de dos renglones detrás de uno
+        de uno—, su techo queda por encima del de la primera y asomaba como una
+        franja sobre la pila. El contenedor arranca justo en el techo de la
+        primera, así que recortarlo ahí la esconde. Desplegada no recorta nada:
+        el alto animado ya es el de todas las cards una debajo de la otra.
+      */}
+      <AnimatedView className="overflow-hidden" style={containerStyle}>
         {alerts.map((alert, index) => (
           <StackedAlert
             key={alert.id}
@@ -225,6 +238,8 @@ function StackedAlert({
   onPress,
 }: StackedAlertProps) {
   const meta = alertMeta(alert.kind);
+  const urgency = alertUrgency(alert.kind, alert.severity);
+  const ink = ALERT_URGENCY_INK[urgency];
   const Icon = meta.icon;
   // Colapsada, solo la de arriba escucha el toque: las de atrás asoman apenas
   // unos pixeles y tocarlas por error abriría el formulario del aviso
@@ -274,27 +289,29 @@ function StackedAlert({
           con fondo propio deja de recibir toques (ver AGENTS.md).
         */}
         {/*
-          El borde del color del fondo de pantalla es lo que separa una card de
-          la siguiente cuando están apiladas: sin él, tres gradientes iguales
-          superpuestos se leían como una sola mancha azul con los bordes
-          redondeados repetidos.
+          El borde teñido es lo que separa una card de la siguiente cuando
+          están apiladas: sin él, tres fondos claros superpuestos se leían
+          como una sola mancha con los bordes redondeados repetidos.
         */}
         <View
-          className="flex-row items-center gap-4 rounded-[20px] border border-gray-50 p-5"
-          style={brandGradient}
+          className={cn(
+            "flex-row items-center gap-4 rounded-[20px] border p-5",
+            ink.border,
+          )}
+          style={alertGradient[urgency]}
         >
-          <View className="size-12 items-center justify-center rounded-full bg-white/20">
-            <Icon size={24} color="#ffffff" />
+          <View className="size-12 items-center justify-center rounded-full bg-white/70">
+            <Icon size={24} color={ink.icon} />
           </View>
           <View className="flex-1 gap-1">
-            <Text className="text-[17px] font-semibold text-white">
+            <Text className="text-[17px] font-semibold text-gray-900">
               {meta.label}
             </Text>
-            <Text className="text-[15px] text-primary-100">
+            <Text className="text-[15px] text-gray-700">
               {formatRelativeTime(alert.detectedAt)}
             </Text>
           </View>
-          <ChevronRight size={22} color="#cbcefd" />
+          <ChevronRight size={22} color="#727f87" />
         </View>
       </AnimatedPressable>
     </AnimatedView>

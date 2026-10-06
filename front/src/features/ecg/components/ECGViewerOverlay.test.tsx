@@ -35,7 +35,7 @@ vi.mock('uplot', () => {
     }
     private readonly options: MockOptions
 
-    constructor(options: MockOptions, _data: unknown, container: HTMLElement) {
+    constructor(options: MockOptions, data: ArrayLike<number>[], container: HTMLElement) {
       this.options = options
       Object.defineProperties(this.over, {
         offsetLeft: { configurable: true, value: 60 },
@@ -47,6 +47,10 @@ vi.mock('uplot', () => {
         ({ left: 0, right: 500, top: 0, bottom: 300, width: 500, height: 300 }) as DOMRect
       container.appendChild(this.over)
       uPlotMock.instances.push(this)
+      // Como el `_init()` real: autoescala x a todos los datos y avisa por el
+      // hook antes del primer `ResizeObserver` (en uPlot, en una microtarea).
+      const xs = data[0]
+      if (xs.length > 0) this.setScale('x', { min: xs[0], max: xs[xs.length - 1] })
     }
 
     setScale(scaleKey: string, limits: { min: number; max: number }) {
@@ -174,6 +178,43 @@ describe('ECGViewer annotation overlay', () => {
     rerender(<ECGViewer signal={partial} followLatest paperSpeed={50} />)
     expect(uPlotMock.instances.at(-1)).toBe(plot)
     expect(plot.scales.x).toEqual({ min: 24, max: 29 })
+  })
+
+  it('ocultar y mostrar los avisos no recrea el gráfico ni mueve el zoom', () => {
+    const ref = createRef<ECGViewerHandle>()
+    const same = signal()
+    const { rerender } = render(<ECGViewer ref={ref} signal={same} />)
+    const plot = uPlotMock.instances.at(-1) as {
+      scales: { x: { min: number; max: number } }
+    }
+    act(() => ref.current?.zoomToRange(1_700_000_020_000, 1_700_000_022_000))
+
+    rerender(<ECGViewer ref={ref} signal={same} showAnnotations={false} />)
+    rerender(<ECGViewer ref={ref} signal={same} showAnnotations />)
+
+    expect(uPlotMock.instances.at(-1)).toBe(plot)
+    expect(plot.scales.x).toEqual({ min: 20, max: 22 })
+  })
+
+  it('siguiendo lo último, un lote nuevo conserva el zoom y lo pega al final', () => {
+    const ref = createRef<ECGViewerHandle>()
+    const { rerender } = render(<ECGViewer ref={ref} signal={signal()} followLatest />)
+    // Zoom de 4 s pegado al borde derecho: sigue en modo seguimiento.
+    act(() => ref.current?.zoomToRange(1_700_000_056_000, 1_700_000_060_000))
+
+    const longer = signal()
+    longer.durationMs = 70_000
+    longer.samples = new Float32Array(70)
+    longer.timestampsMs = Float64Array.from(
+      { length: 70 },
+      (_, i) => longer.startTimestamp + i * 1_000,
+    )
+    rerender(<ECGViewer ref={ref} signal={longer} followLatest />)
+
+    const refreshedPlot = uPlotMock.instances.at(-1) as {
+      scales: { x: { min: number; max: number } }
+    }
+    expect(refreshedPlot.scales.x).toEqual({ min: 66, max: 70 })
   })
 
   it('no consume el primer click real después de un pan sin click sintético', () => {

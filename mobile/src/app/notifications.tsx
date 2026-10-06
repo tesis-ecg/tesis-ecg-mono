@@ -3,7 +3,11 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { routeForAlert } from "@/features/notifications/routeForAlert";
-import { alertMeta } from "@/features/patient/deviceMeta";
+import {
+  alertMeta,
+  alertUrgency,
+  type AlertUrgency,
+} from "@/features/patient/deviceMeta";
 import { useInfiniteAlerts } from "@/features/patient/hooks";
 import type { PatientAlert } from "@/features/patient/types";
 import { cn } from "@/lib/cn";
@@ -160,6 +164,16 @@ export default function NotificationsScreen() {
   );
 }
 
+/**
+ * El círculo del ícono, con el mismo color de urgencia que la pila de Inicio:
+ * el aviso tiene que verse igual de importante entre por donde entre.
+ */
+const URGENCY_ICON: Record<AlertUrgency, { bg: string; color: string }> = {
+  info: { bg: "bg-primary-50", color: "#0b2185" },
+  warning: { bg: "bg-warning-100", color: "#b86a16" },
+  danger: { bg: "bg-error-100", color: "#88271d" },
+};
+
 function NotificationCard({
   alert,
   onPress,
@@ -171,6 +185,7 @@ function NotificationCard({
   const meta = alertMeta(alert.kind);
   const Icon = meta.icon;
   const isDanger = meta.tone === "danger";
+  const iconTone = URGENCY_ICON[alertUrgency(alert.kind, alert.severity)];
 
   return (
     <Pressable
@@ -181,18 +196,18 @@ function NotificationCard({
     >
       <Card className="flex-row items-start gap-3">
         {/*
-          El color separa las dos cosas que puede decir un aviso: el chaleco mal
-          puesto es lo único que se arregla con las manos y mientras siga así no
-          se graba nada, así que va en rojo. Lo demás es "contanos cómo te
-          sentiste": importa, pero no es una urgencia.
+          El círculo dice qué tan importante es el aviso (azul, amarillo o
+          rojo, según `alertUrgency`). El título en rojo queda reservado al
+          chaleco mal puesto: es lo único que se arregla con las manos y
+          mientras siga así no se graba nada.
         */}
         <View
           className={cn(
             "mt-0.5 size-11 items-center justify-center rounded-full",
-            isDanger ? "bg-error-100" : "bg-primary-50",
+            iconTone.bg,
           )}
         >
-          <Icon size={22} color={isDanger ? "#88271d" : "#0b2185"} />
+          <Icon size={22} color={iconTone.color} />
         </View>
         <View className="flex-1 gap-2">
           <View className="flex-row items-start justify-between gap-2">
@@ -204,11 +219,12 @@ function NotificationCard({
             >
               {meta.label}
             </Heading>
-            {alert.requiresResponse ? (
-              <Badge
-                label={alert.needsReport ? "Pendiente" : "Respondida"}
-                tone={alert.needsReport ? "warning" : "success"}
-              />
+            {/*
+              Solo se marca lo ya respondido. "Pendiente" en todos los demás
+              era ruido: es el estado de casi toda la lista.
+            */}
+            {alert.requiresResponse && !alert.needsReport ? (
+              <Badge label="Respondida" tone="success" />
             ) : null}
           </View>
           <Body className="text-gray-700">{alert.message}</Body>

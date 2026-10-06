@@ -1,5 +1,12 @@
-import { alertMeta } from '@/features/patient/deviceMeta'
+import {
+  ALERT_URGENCY_INK,
+  alertMeta,
+  alertUrgency,
+  parseSeverity,
+} from '@/features/patient/deviceMeta'
+import { cn } from '@/lib/cn'
 import { formatDateTime } from '@/lib/format'
+import { alertGradient } from '@/lib/gradients'
 import { Card } from '@/components/ui/Card'
 import { Body, Caption, Heading } from '@/components/ui/typography'
 import { Text, View } from '@/tw'
@@ -7,6 +14,8 @@ import { Text, View } from '@/tw'
 interface DetectedBannerProps {
   /** Tipo de hallazgo. Un push viejo puede no traerlo; ahí cae en la etiqueta genérica. */
   kind?: string
+  /** Severidad del aviso, como llega en la ruta. Sin ella se pinta por el tipo. */
+  severity?: string
   /** Instante del hallazgo, en ISO. */
   occurredAt?: string
 }
@@ -24,18 +33,23 @@ interface DetectedBannerProps {
  * Con el día y la hora enfrente, la pregunta pasa a ser contestable: a las 15:40
  * de un jueves estaba subiendo la escalera, y eso sí se acuerda.
  *
- * Azul suave y no el gradiente de marca: el call-to-action de esta pantalla es
- * "Enviar a mi médico" y un bloque de color pleno arriba de todo se lo comería.
+ * Lleva el mismo color, ícono y borde que el aviso en la pila de Inicio: el
+ * paciente tocó una card amarilla y tiene que reconocerla acá arriba. Y es un
+ * fondo claro y no un color pleno: el call-to-action de esta pantalla es
+ * "Enviar a mi médico" y un bloque de color fuerte arriba de todo se lo comería.
  */
-export function DetectedBanner({ kind, occurredAt }: DetectedBannerProps) {
-  const meta = alertMeta(kind ?? 'other')
+export function DetectedBanner({ kind, severity, occurredAt }: DetectedBannerProps) {
+  const alertKind = kind ?? 'other'
+  const meta = alertMeta(alertKind)
+  const urgency = alertUrgency(alertKind, parseSeverity(severity))
+  const ink = ALERT_URGENCY_INK[urgency]
   const Icon = meta.icon
 
   return (
-    <Card className="gap-3 bg-primary-50">
+    <Card className={cn('gap-3 border', ink.border)} style={alertGradient[urgency]}>
       <View className="flex-row items-center gap-3">
         <View className="size-11 items-center justify-center rounded-full bg-white">
-          <Icon size={22} color="#0b2185" />
+          <Icon size={22} color={ink.icon} />
         </View>
         <View className="flex-1 gap-0.5">
           <Caption>Esto detectamos</Caption>

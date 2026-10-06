@@ -168,7 +168,11 @@ export function Login() {
       </section>
 
       <aside aria-hidden className="relative hidden overflow-hidden bg-gray-50 lg:block">
-        <img src={loginBanner} alt="" className="absolute inset-0 h-full w-full object-cover" />
+        <img
+          src={loginBanner}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover object-[center_25%]"
+        />
         <div className="absolute inset-0 bg-gradient-to-tr from-primary-900/70 via-primary-700/35 to-transparent" />
         <div className="absolute inset-x-0 bottom-0 flex flex-col gap-2 px-12 pb-12 text-white">
           <p className="text-h4 font-semibold">Holter wearable</p>

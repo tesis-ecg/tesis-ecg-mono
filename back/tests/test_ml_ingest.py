@@ -306,6 +306,8 @@ async def test_una_pausa_del_motor_notifica_con_su_kind(
     assert mensaje.data["alertId"] == str(alerta.id)
     assert mensaje.data["kind"] == "pause"
     assert mensaje.title == anomaly_title("pause")
+    # La misma severidad que la alerta: la app pinta el formulario con su color.
+    assert mensaje.data["severity"] == alerta.severity.value.lower()
 
 
 async def test_con_el_motor_apagado_la_ingesta_sigue_funcionando(

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import {
   CircleAlert,
+  CircleCheck,
   Download,
   FileCheck2,
   FileText,
+  Lock,
   Printer,
   RotateCcw,
   TriangleAlert,
@@ -26,7 +28,6 @@ import {
 } from '@/features/studies/hooks/useStudyClinicalReport'
 import type { Study, StudyClinicalReportPreview } from '@/features/studies/types'
 import { unwrapError } from '@/lib/api'
-import { cn } from '@/lib/utils'
 
 import {
   getStudyEcgReportWindows,
@@ -35,16 +36,21 @@ import {
 } from '../api/ecgApi'
 import type { ClinicalReportInput } from '../clinicalReportTypes'
 
+export type ClinicalReportMode = 'draft' | 'final'
+
 interface ECGClinicalReportDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   study: Study
+  /** Qué abrió el diálogo: el borrador se genera solo, el final pide confirmación. */
+  mode: ClinicalReportMode
 }
 
 export function ECGClinicalReportDialog({
   open,
   onOpenChange,
   study,
+  mode,
 }: ECGClinicalReportDialogProps) {
   const { user } = useAuth()
   const previewQ = useStudyClinicalReportPreview(study.id, open)
@@ -63,8 +69,21 @@ export function ECGClinicalReportDialog({
     }
   }, [pdfUrl])
 
+  const autoStartedRef = useRef(false)
+
   const close = (next: boolean) => {
-    if (!next) abortRef.current?.abort()
+    if (!next) {
+      abortRef.current?.abort()
+      abortRef.current = null
+      setIsGenerating(false)
+      // Al volver a abrir (quizás en el otro modo) no tiene que quedar el PDF anterior.
+      autoStartedRef.current = false
+      setPdfUrl(null)
+      setPdfVersion(null)
+      setDocumentStatus(null)
+      setError(null)
+      setProgress(null)
+    }
     onOpenChange(next)
   }
 
@@ -88,6 +107,7 @@ export function ECGClinicalReportDialog({
     setPdfVersion(null)
     try {
       const refreshed = await previewQ.refetch()
+      if (controller.signal.aborted) return null
       if (!refreshed.data) throw refreshed.error ?? new Error('No se pudo preparar el informe.')
       const preview = refreshed.data
       if (status === 'final' && !preview.canFinalize) {
@@ -103,6 +123,7 @@ export function ECGClinicalReportDialog({
           requests.slice(index, index + 25),
           controller.signal,
         )
+        if (controller.signal.aborted) return null
         detailWindows.push(...batch)
         setProgress({ completed: Math.floor(index / 25) + 1, total: batchTotal + 1 })
       }
@@ -131,10 +152,24 @@ export function ECGClinicalReportDialog({
       if (!controller.signal.aborted) setError(unwrapError(cause))
       return null
     } finally {
-      setIsGenerating(false)
-      if (controller.signal.aborted) setProgress(null)
+      // Una generación cerrada no debe limpiar el estado de la que la reemplazó.
+      if (abortRef.current === controller) {
+        abortRef.current = null
+        setIsGenerating(false)
+        if (controller.signal.aborted) setProgress(null)
+      }
     }
   }
+
+  // Generar un borrador no tiene consecuencias: arranca solo al abrir. El final
+  // guarda una versión inmutable y siempre espera el click.
+  const startDraft = useEffectEvent(() => void build('draft'))
+  const canAutoStart = open && mode === 'draft' && Boolean(previewQ.data?.canGenerateDraft)
+  useEffect(() => {
+    if (!canAutoStart || autoStartedRef.current) return
+    autoStartedRef.current = true
+    startDraft()
+  }, [canAutoStart])
 
   const finalize = async () => {
     const result = await build('final')
@@ -175,110 +210,145 @@ export function ECGClinicalReportDialog({
   }
 
   const busy = isGenerating || finalizeReport.isPending
+  const report = previewQ.data
+  const isFinal = mode === 'final'
+  const finalized = isFinal && documentStatus === 'final' && !finalizeReport.isPending && !error
   return (
     <Dialog open={open} onOpenChange={close}>
-      <DialogContent
-        className={cn(
-          'flex max-h-[90vh] flex-col gap-4',
-          busy || pdfUrl ? 'h-[90vh] max-w-6xl overflow-hidden' : 'max-w-3xl overflow-y-auto',
-        )}
-      >
-        <DialogHeader>
-          <DialogTitle>Informe clínico Holter</DialogTitle>
-          <DialogDescription>
-            Genera un PDF con el resumen clínico y únicamente las tiras de los hallazgos
-            seleccionados.
-          </DialogDescription>
-        </DialogHeader>
+      <DialogContent className="flex h-[90vh] max-h-[90vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl lg:grid lg:grid-cols-[minmax(18rem,22rem)_1fr]">
+        <div className="flex min-h-0 flex-col gap-5 overflow-y-auto border-b border-border p-6 lg:border-r lg:border-b-0">
+          <DialogHeader className="pr-6">
+            <DialogTitle>{isFinal ? 'Informe final' : 'Borrador del informe'}</DialogTitle>
+            <DialogDescription>
+              {isFinal
+                ? 'Genera la versión definitiva del informe Holter y la guarda en el historial del estudio.'
+                : 'Vista previa del informe Holter con el resumen clínico y las tiras de los hallazgos seleccionados.'}
+            </DialogDescription>
+          </DialogHeader>
 
-        {previewQ.isLoading ? (
-          <p className="rounded-md border bg-muted p-3 text-sm text-muted-foreground">
-            Preparando los datos clínicos del informe…
-          </p>
-        ) : previewQ.isError ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            <p>{unwrapError(previewQ.error)}</p>
-            <Button
-              className="mt-3"
-              variant="outline"
-              size="sm"
-              onClick={() => void previewQ.refetch()}
-            >
-              Reintentar
-            </Button>
-          </div>
-        ) : previewQ.data ? (
-          <div className="rounded-md border bg-muted/50 p-3 text-sm text-muted-foreground">
-            <p>
-              Versión prevista: {previewQ.data.nextVersion} · Tiras: {previewQ.data.windows.length}
+          {previewQ.isLoading ? (
+            <div className="flex flex-col gap-2" aria-label="Preparando los datos del informe">
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+          ) : previewQ.isError ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              <p>{unwrapError(previewQ.error)}</p>
+              <Button
+                className="mt-3"
+                variant="outline"
+                size="sm"
+                onClick={() => void previewQ.refetch()}
+              >
+                Reintentar
+              </Button>
+            </div>
+          ) : report ? (
+            <div className="rounded-md border border-border bg-muted/40 p-4 text-sm">
+              <dl className="grid grid-cols-2 gap-3">
+                <div>
+                  <dt className="text-body3 text-gray-500">Versión prevista</dt>
+                  <dd className="mt-0.5 font-medium text-gray-900">{report.nextVersion}</dd>
+                </div>
+                <div>
+                  <dt className="text-body3 text-gray-500">Tiras de ECG</dt>
+                  <dd className="mt-0.5 font-medium text-gray-900">{report.windows.length}</dd>
+                </div>
+              </dl>
+              {report.windows.length === 0 && (
+                <p className="mt-3 text-muted-foreground">
+                  No hay hallazgos elegibles: el PDF no agregará páginas ECG.
+                </p>
+              )}
+              <ReportIssues issues={report.issues} canGenerateDraft={report.canGenerateDraft} />
+            </div>
+          ) : null}
+
+          {isFinal && report && !finalized && (
+            <p className="flex gap-2.5 rounded-md border border-warning-300 bg-warning-100 p-3 text-sm text-warning-700">
+              <Lock className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>
+                Se guardará como versión {report.nextVersion} y no podrá modificarse después.
+              </span>
             </p>
-            {previewQ.data.windows.length === 0 && (
-              <p className="mt-1">No hay hallazgos elegibles: el PDF no agregará páginas ECG.</p>
-            )}
-            <ReportIssues
-              issues={previewQ.data.issues}
-              canGenerateDraft={previewQ.data.canGenerateDraft}
-            />
-          </div>
-        ) : null}
-
-        {error && (
-          <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            {error}
-          </p>
-        )}
-        {busy && progress && (
-          <p className="text-sm text-muted-foreground" aria-live="polite">
-            Generando informe: {progress.completed} de {progress.total} pasos completos.
-          </p>
-        )}
-        {documentStatus === 'final' && !finalizeReport.isPending && !error && (
-          <p className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900">
-            La versión final quedó almacenada y ya está disponible en el historial.
-          </p>
-        )}
-
-        <div className="flex flex-wrap justify-end gap-2">
-          {isGenerating && (
-            <Button variant="outline" onClick={() => abortRef.current?.abort()}>
-              <X className="size-4" />
-              Cancelar
-            </Button>
           )}
-          <Button
-            onClick={() => void build('draft')}
-            disabled={!previewQ.data?.canGenerateDraft || busy}
-          >
-            {pdfUrl ? <RotateCcw className="size-4" /> : <FileText className="size-4" />}
-            {isGenerating ? 'Generando…' : pdfUrl ? 'Regenerar borrador' : 'Generar borrador'}
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => void finalize()}
-            disabled={!previewQ.data?.canFinalize || busy}
-          >
-            <FileCheck2 className="size-4" />
-            {finalizeReport.isPending ? 'Finalizando…' : 'Generar informe final'}
-          </Button>
-          <Button variant="secondary" onClick={download} disabled={!pdfUrl}>
-            <Download className="size-4" />
-            Descargar PDF
-          </Button>
-          <Button variant="secondary" onClick={print} disabled={!pdfUrl}>
-            <Printer className="size-4" />
-            Imprimir
-          </Button>
+
+          {error && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          {finalized && (
+            <p className="flex gap-2.5 rounded-md border border-success-200 bg-success-100 p-3 text-sm text-success-700">
+              <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>La versión final quedó guardada y ya está disponible en el historial.</span>
+            </p>
+          )}
+
+          <div className="mt-auto flex flex-col gap-3 pt-2">
+            {busy && progress && (
+              <div className="flex flex-col gap-1.5" aria-live="polite">
+                <div className="flex justify-between text-body3 text-gray-500">
+                  <span>{finalizeReport.isPending ? 'Guardando versión…' : 'Generando PDF…'}</span>
+                  <span>
+                    Paso {Math.min(progress.completed + 1, progress.total)} de {progress.total}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-300"
+                    style={{ width: `${(progress.completed / progress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="flex gap-2">
+              {isGenerating && (
+                <Button variant="outline" onClick={() => abortRef.current?.abort()}>
+                  <X className="size-4" />
+                  Cancelar
+                </Button>
+              )}
+              {finalized ? (
+                <Button className="flex-1" variant="outline" onClick={() => close(false)}>
+                  Cerrar
+                </Button>
+              ) : isFinal ? (
+                <Button
+                  className="flex-1"
+                  onClick={() => void finalize()}
+                  disabled={!report?.canFinalize || busy}
+                >
+                  <FileCheck2 className="size-4" />
+                  {finalizeReport.isPending
+                    ? 'Guardando…'
+                    : isGenerating
+                      ? 'Generando…'
+                      : 'Generar informe final'}
+                </Button>
+              ) : (
+                <Button
+                  className="flex-1"
+                  onClick={() => void build('draft')}
+                  disabled={!report?.canGenerateDraft || busy}
+                >
+                  {pdfUrl ? <RotateCcw className="size-4" /> : <FileText className="size-4" />}
+                  {isGenerating ? 'Generando…' : pdfUrl ? 'Regenerar borrador' : 'Generar borrador'}
+                </Button>
+              )}
+            </div>
+          </div>
         </div>
 
-        {(busy || pdfUrl) && (
-          <section
-            className="min-h-72 flex-1 overflow-hidden rounded-lg border border-border bg-muted/40"
-            aria-label="Vista previa del informe clínico ECG"
-            aria-busy={busy}
-          >
+        <section
+          className="flex min-h-80 flex-1 flex-col gap-3 bg-muted/40 p-4 lg:min-h-0 lg:p-6 lg:pt-12"
+          aria-label="Vista previa del informe clínico ECG"
+          aria-busy={busy}
+        >
+          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-background">
             {busy ? (
               <div
-                className="flex h-full min-h-72 items-start justify-center overflow-hidden p-4 sm:p-6"
+                className="flex h-full items-start justify-center overflow-hidden p-4 sm:p-6"
                 role="status"
                 aria-label="Preparando vista previa del informe"
                 data-testid="clinical-report-preview-skeleton"
@@ -297,23 +367,56 @@ export function ECGClinicalReportDialog({
               <object
                 data={pdfUrl}
                 type="application/pdf"
-                className="h-full min-h-72 w-full bg-background"
+                className="h-full w-full bg-background"
                 aria-label="Vista previa del informe clínico ECG en PDF"
                 data-testid="clinical-report-pdf-preview"
               >
-                <div className="flex h-full min-h-72 flex-col items-center justify-center gap-3 p-6 text-center">
+                <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
                   <p className="text-sm text-muted-foreground">
-                    Este navegador no puede mostrar el PDF dentro de la aplicación.
+                    Este navegador no puede mostrar el PDF dentro de la aplicación. Podés
+                    descargarlo con el botón de abajo.
                   </p>
-                  <Button variant="secondary" onClick={download}>
-                    <Download className="size-4" />
-                    Descargar PDF
-                  </Button>
                 </div>
               </object>
-            ) : null}
-          </section>
-        )}
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                <span className="flex size-12 items-center justify-center rounded-full bg-primary-50 text-primary">
+                  <FileText className="size-6" aria-hidden />
+                </span>
+                <div>
+                  <p className="text-body2 font-medium text-gray-900">
+                    La vista previa del PDF aparecerá acá
+                  </p>
+                  <p className="mt-1 text-body3 text-gray-500">
+                    {isFinal
+                      ? 'Generá el informe final para verlo, descargarlo o imprimirlo.'
+                      : 'Generá el borrador para verlo, descargarlo o imprimirlo.'}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {pdfUrl && !busy && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-body3 text-gray-500">
+                {documentStatus === 'final'
+                  ? `Versión final ${pdfVersion ?? ''}`.trim()
+                  : 'Borrador'}
+              </p>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={print}>
+                  <Printer className="size-4" />
+                  Imprimir
+                </Button>
+                <Button onClick={download}>
+                  <Download className="size-4" />
+                  Descargar PDF
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
       </DialogContent>
     </Dialog>
   )
