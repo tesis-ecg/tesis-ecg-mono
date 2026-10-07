@@ -33,7 +33,8 @@ from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User, UserRole
 from app.db.session import async_session_factory
-from app.scripts.seed_demo import PYRAMID_BUCKETS, EventSpec, synth_ecg
+from app.modules.ingest.processing import PYRAMID_BUCKETS
+from app.scripts.seed_demo import EventSpec, synth_ecg
 
 SHOWCASE_MRN = "SHOWCASE-ECG-ALERTS"
 SHOWCASE_SERIAL = "HOLTER-SHOWCASE-ECG"
