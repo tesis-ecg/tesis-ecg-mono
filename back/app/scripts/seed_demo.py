@@ -3,7 +3,9 @@
 El ECG se sintetiza (P-QRS-T + ruido + arritmias inyectadas) y se sube a S3
 como float32 little-endian crudo, que es exactamente lo que espera el visor del
 front (`front/src/features/ecg/api/ecgApi.ts`: `new Float32Array(buffer)` con
-`sampleCount * 4` bytes).
+`sampleCount * 4` bytes). La pirámide min/max de la vista general se arma con
+el mismo código de la ingesta (`_write_pyramid`), así que el manifest sirve los
+niveles de un estudio de demo igual que los de uno ingestado.
 
 Todo lo que crea queda marcado con el prefijo `DEMO-` (historia clínica de los
 pacientes) y `HOLTER-DEMO-` (serial de los dispositivos), así que `--reset`
@@ -12,7 +14,7 @@ puede borrarlo sin tocar datos reales.
 Uso (con el stack de docker compose levantado, desde la raíz del repo):
 
     docker compose exec back python -m app.scripts.seed_demo
-    docker compose exec back python -m app.scripts.seed_demo --reset
+    docker compose exec back python -m app.scripts.seed_demo --reset --confirm-reset
 
 Fuera de Docker (requiere que DATABASE_URL y S3_ENDPOINT_URL apunten al host):
 
@@ -47,6 +49,7 @@ from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
 from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User, UserRole
 from app.db.session import async_session_factory
+from app.modules.ingest.processing import append_level_chunks, build_envelope, envelope_key
 
 MRN_PREFIX = "DEMO-"
 SERIAL_PREFIX = "HOLTER-DEMO-"
@@ -54,7 +57,6 @@ SAMPLE_RATE = 250
 SD_TOTAL_MB = 128
 
 NOW = datetime.now(UTC).replace(microsecond=0)
-PYRAMID_BUCKETS = (16, 64, 256, 1024, 4096, 16384)
 
 
 # --------------------------------------------------------------------------- #
@@ -409,6 +411,27 @@ def _put(client: Any, key: str, payload: bytes) -> None:
     put_object(key, payload)
 
 
+def _write_pyramid(client: Any, study: Study, signal: np.ndarray) -> None:
+    """Pirámide min/max de la vista general, con el código y el formato de la ingesta.
+
+    Equivale a ingerir la señal entera en un único lote que arranca en la
+    muestra 0: la envolvente base (bucket 16) va a `envelopes/` y cada nivel
+    grueso queda con un solo chunk. Antes la seed armaba cada nivel acá, como
+    un objeto sin `chunks`; el manifest dejó de leer esa forma y los estudios
+    de demo se veían vacíos.
+
+    Igual que en la ingesta, cada nivel cubre solo buckets completos: la cola
+    que no llena uno queda en el carry y no entra en la vista general.
+    `samples_count` tiene que estar fijado antes, porque `append_level_chunks`
+    descarta con él los niveles que no comprimen.
+    """
+    envelope, remainder = build_envelope(signal)
+    if envelope.size:
+        _put(client, envelope_key(study.id, 0), envelope.tobytes())
+    study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
+    study.ecg_pyramid_levels = append_level_chunks(study, envelope, 0)
+
+
 # --------------------------------------------------------------------------- #
 # Seed
 # --------------------------------------------------------------------------- #
@@ -578,31 +601,7 @@ async def _seed_study(
     study.ecg_byte_length = len(raw_bytes)
     study.ecg_sha256 = hashlib.sha256(raw_bytes).hexdigest()
     _put(client, study.ecg_s3_key, raw_bytes)
-    pyramid_levels: list[dict[str, int | str]] = []
-    for bucket_size in PYRAMID_BUCKETS:
-        bucket_count = (raw_signal.size + bucket_size - 1) // bucket_size
-        if bucket_count * 2 >= raw_signal.size:
-            continue
-        envelope = np.empty(bucket_count * 2, dtype="<f4")
-        for bucket_index in range(bucket_count):
-            bucket = raw_signal[
-                bucket_index * bucket_size : min((bucket_index + 1) * bucket_size, raw_signal.size)
-            ]
-            envelope[bucket_index * 2] = bucket.min()
-            envelope[bucket_index * 2 + 1] = bucket.max()
-        level_bytes = envelope.tobytes()
-        level_key = f"studies/{study.id}/ecg.minmax.{bucket_size}.f32"
-        _put(client, level_key, level_bytes)
-        pyramid_levels.append(
-            {
-                "key": level_key,
-                "samplesPerBucket": bucket_size,
-                "pointCount": int(envelope.size),
-                "byteLength": len(level_bytes),
-                "sha256": hashlib.sha256(level_bytes).hexdigest(),
-            }
-        )
-    study.ecg_pyramid_levels = pyramid_levels
+    _write_pyramid(client, study, raw_signal)
 
     # Un `ecg_batch` por cada tramo que el dispositivo habría subido.
     chunk = int(batch_minutes * 60 * SAMPLE_RATE)

@@ -123,18 +123,23 @@ Convención de nombres: `001_initial`, `002_add_alert_seen_at`, `003_...` — un
 `app/scripts/seed_demo.py` carga un dataset de demo completo: 8 pacientes con distintos
 sexos, edades y estados de estudio, 13 Holters (asignados, disponibles, en mantenimiento,
 retirado), 9 estudios (en curso, completados, agendado, cancelado) con su señal de ECG
-sintética subida a S3, más los `ecg_batch`, `ecg_event` y `alert` correspondientes.
+sintética subida a S3, más los `ecg_batch`, `ecg_event` y `alert` correspondientes. La
+pirámide min/max de cada estudio se arma con el mismo código de la ingesta, así que el
+visor la recibe en el mismo formato (niveles por `chunks`) que la de un estudio ingestado.
 
 ```bash
 # Desde la raíz del repo, con el stack levantado
 docker compose exec back python -m app.scripts.seed_demo
 
-# Regenerar desde cero (borra solo los datos de demo)
-docker compose exec back python -m app.scripts.seed_demo --reset
+# Regenerar desde cero (borra solo los datos de demo; solo en development/test)
+docker compose exec back python -m app.scripts.seed_demo --reset --confirm-reset
 
 # Colgar los pacientes de otro médico
-docker compose exec back python -m app.scripts.seed_demo --reset --doctor-email medico@example.com
+docker compose exec back python -m app.scripts.seed_demo --reset --confirm-reset --doctor-email medico@example.com
 ```
+
+Una base seedeada antes de que la seed escribiera los niveles por `chunks` muestra los
+estudios de demo vacíos en el visor: hay que regenerarla con `--reset --confirm-reset`.
 
 Fuera de Docker: `cd back && uv run python -m app.scripts.seed_demo` (requiere que
 `DATABASE_URL` y `S3_ENDPOINT_URL` apunten a los puertos publicados en el host).
