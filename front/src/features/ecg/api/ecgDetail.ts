@@ -27,11 +27,21 @@ interface DetailSourceOptions {
     firstSample: number,
     count: number,
   ) => { timestampsMs: Float64Array; gapIndices: number[] }
+  /** Cuándo llegó el manifest de `pieces`, con el reloj del navegador. */
+  receivedAt?: number
   now?: () => number
 }
 
 /** Una URL que vence en menos que esto se renueva antes de usarla. */
 const EXPIRY_MARGIN_MS = 30_000
+/**
+ * Lo menos que pasa entre dos pedidos del manifest. Una URL recién firmada vale
+ * minutos, así que un 403 antes de esto no es un vencimiento sino otra cosa (un
+ * objeto que falta), y renovar no lo arregla. Sin este piso, cada zoom cerca de
+ * esa pieza volvía a pedir el manifest, que firma todo de nuevo y le cuesta CPU
+ * a la API.
+ */
+const REFRESH_COOLDOWN_MS = 60_000
 /** Descargas simultáneas: cada una decodifica en su propio worker. */
 const MAX_PARALLEL_DOWNLOADS = 4
 /** ~16 MB de float32, compartidos entre todos los visores abiertos. */
@@ -82,26 +92,49 @@ export function clearDetailCache(): void {
 export function createEcgDetailSource(options: DetailSourceOptions): ECGDetailSource {
   const now = options.now ?? Date.now
   let pieces = sortPieces(options.pieces)
+  // Todo con el reloj del navegador: cuándo llegaron las URLs de `pieces`, y
+  // cuándo se pidió el manifest por última vez.
+  let receivedAt = options.receivedAt ?? now()
+  let lastRefreshAt = receivedAt
   let refreshing: Promise<void> | null = null
+
+  const canRefresh = () => refreshing !== null || now() - lastRefreshAt >= REFRESH_COOLDOWN_MS
 
   const refresh = (): Promise<void> => {
     // Un solo pedido aunque varias piezas venzan juntas. Sin la señal de
     // cancelación de quien lo disparó: lo esperan también los demás.
-    refreshing ??= options
-      .refresh()
-      .then((fresh) => {
-        pieces = sortPieces(fresh)
-      })
-      .finally(() => {
-        refreshing = null
-      })
+    if (!refreshing) {
+      lastRefreshAt = now()
+      refreshing = options
+        .refresh()
+        .then((fresh) => {
+          pieces = sortPieces(fresh)
+          receivedAt = now()
+        })
+        .finally(() => {
+          refreshing = null
+        })
+    }
     return refreshing
   }
 
+  // Cuándo vence una URL, en hora del navegador. La firma dice cuánto vale
+  // (`X-Amz-Expires`), contado desde que llegó. El `expiresAt` del manifest es
+  // hora del servidor: contra `Date.now()`, una PC con el reloj adelantado daba
+  // por vencidas URLs recién firmadas y cada pieza nueva volvía a pedir el
+  // manifest. Queda como respaldo para una URL que no traiga el dato.
+  const deadline = (piece: DetailPiece) => {
+    const lifetime = signedLifetimeMs(piece.url)
+    return lifetime === null ? Date.parse(piece.expiresAt) : receivedAt + lifetime
+  }
+
   const isExpiring = (piece: DetailPiece) => {
-    const expiresAt = Date.parse(piece.expiresAt)
+    const expiresAt = deadline(piece)
     return Number.isFinite(expiresAt) && expiresAt - now() < EXPIRY_MARGIN_MS
   }
+
+  const current = (piece: DetailPiece) =>
+    pieces.find((candidate) => samePiece(candidate, piece)) ?? piece
 
   const fetchPiece = async (piece: DetailPiece, signal?: AbortSignal): Promise<Float32Array> => {
     const key = cacheKey(options.studyId, piece)
@@ -111,10 +144,16 @@ export function createEcgDetailSource(options: DetailSourceOptions): ECGDetailSo
     try {
       samples = await options.download(piece, signal)
     } catch (error) {
-      // Una URL vencida contesta 403. Se renueva una vez; lo demás es un error.
+      // Una URL vencida contesta 403. Se reintenta una vez con una renovada:
+      // la que ya trajo otra renovación mientras esta bajaba, o una pedida
+      // ahora si el último manifest no es de hace un rato. Lo demás es un error.
       if (!isApiError(error) || error.status !== 403) throw error
-      await refresh()
-      const renewed = pieces.find((candidate) => samePiece(candidate, piece)) ?? piece
+      let renewed = current(piece)
+      if (renewed.url === piece.url) {
+        if (!canRefresh()) throw error
+        await refresh()
+        renewed = current(piece)
+      }
       samples = await options.download(renewed, signal)
     }
     cachePut(key, samples)
@@ -135,7 +174,7 @@ export function createEcgDetailSource(options: DetailSourceOptions): ECGDetailSo
       let end = Math.min(sampleCount(), Math.ceil(endSample))
       let needed = overlapping(pieces, start, end)
       const missing = needed.filter((piece) => !cache.has(cacheKey(options.studyId, piece)))
-      if (missing.some(isExpiring)) {
+      if (missing.some(isExpiring) && canRefresh()) {
         await refresh()
         signal?.throwIfAborted()
         needed = overlapping(pieces, start, end)
@@ -171,6 +210,17 @@ export function createEcgDetailSource(options: DetailSourceOptions): ECGDetailSo
       return { startSample: start, endSample: end, samples, timestampsMs, gapIndices }
     },
   }
+}
+
+/** Cuánto vale una URL firmada con SigV4, según ella misma; `null` si no lo dice. */
+function signedLifetimeMs(url: string): number | null {
+  let seconds: number
+  try {
+    seconds = Number(new URL(url).searchParams.get('X-Amz-Expires') ?? Number.NaN)
+  } catch {
+    return null
+  }
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null
 }
 
 function sortPieces(pieces: DetailPiece[]): DetailPiece[] {

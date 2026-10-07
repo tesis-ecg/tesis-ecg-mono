@@ -116,9 +116,13 @@ const MAX_LEGACY_BYTES = 5 * 1024 * 1024
 
 export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promise<ECGSignal> {
   let manifest: EcgManifest
+  // Las URLs firmadas del manifest valen desde acá, no desde que termine de
+  // bajar el resumen.
+  let receivedAt: number
   try {
     const response = await api.get<EcgManifest>(`/studies/${studyId}/ecg/manifest`, { signal })
     manifest = response.data
+    receivedAt = Date.now()
   } catch (error) {
     const isMissingManifestRoute =
       isApiError(error) &&
@@ -207,7 +211,7 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     gapIndices,
     timeline,
     // Solo hace falta cuando lo descargado es un resumen.
-    detail: level ? createDetail(studyId, manifest, timeline) : undefined,
+    detail: level ? createDetail(studyId, manifest, timeline, receivedAt) : undefined,
     annotations: (manifest.annotations ?? []).map((annotation) => ({
       id: annotation.id,
       kind: annotation.kind,
@@ -267,12 +271,14 @@ function createDetail(
   studyId: string,
   manifest: EcgManifest,
   timeline: EcgTimelineSegment[],
+  receivedAt: number,
 ): ECGSignal['detail'] {
   const pieces = detailPieces(manifest)
   if (pieces.length === 0) return undefined
   return createEcgDetailSource({
     studyId,
     pieces,
+    receivedAt,
     download: (piece, signal) => downloadEcgObject(piece, signal),
     refresh: async () => {
       const { data } = await api.get<EcgManifest>(`/studies/${studyId}/ecg/manifest`)

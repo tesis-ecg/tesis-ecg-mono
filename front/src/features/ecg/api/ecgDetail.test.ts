@@ -23,7 +23,14 @@ const download = vi.fn(async (p: DetailPiece) =>
   Float32Array.from({ length: p.sampleCount }, (_, i) => p.startSampleIndex + i),
 )
 
-function source(pieces: DetailPiece[], refresh = vi.fn(async () => pieces)) {
+/** El reloj del navegador en los tests: se adelanta a mano. */
+let clock = NOW
+
+function source(
+  pieces: DetailPiece[],
+  refresh = vi.fn(async () => pieces),
+  receivedAt: number | undefined = NOW - 5 * 60_000,
+) {
   return createEcgDetailSource({
     studyId: 'study',
     pieces,
@@ -33,13 +40,25 @@ function source(pieces: DetailPiece[], refresh = vi.fn(async () => pieces)) {
       timestampsMs: Float64Array.from({ length: count }, (_, i) => (first + i) * 2),
       gapIndices: [],
     }),
-    now: () => NOW,
+    receivedAt,
+    now: () => clock,
   })
 }
 
+/** Una URL firmada con SigV4 que vale `seconds` desde que se firmó. */
+function signedUrl(start: number, seconds = 600, version = 1): string {
+  return `https://s3/segment-${start}?X-Amz-Date=20261006T115000Z&X-Amz-Expires=${seconds}&v=${version}`
+}
+
+const forbidden = () => createApiError({ status: 403, code: 'UNKNOWN', message: 'prohibido' })
+
 afterEach(() => {
   clearDetailCache()
-  download.mockClear()
+  download.mockReset()
+  download.mockImplementation(async (p: DetailPiece) =>
+    Float32Array.from({ length: p.sampleCount }, (_, i) => p.startSampleIndex + i),
+  )
+  clock = NOW
 })
 
 describe('createEcgDetailSource', () => {
@@ -105,6 +124,71 @@ describe('createEcgDetailSource', () => {
       'https://s3/segment-0?v=2',
     ])
     expect(window.samples).toHaveLength(100)
+  })
+
+  it('con el reloj adelantado no da por vencida una URL recién firmada', async () => {
+    // La PC va 11 min adelantada: el `expiresAt` del servidor ya "pasó", pero
+    // la URL llegó recién y vale 10 min.
+    const fresh = piece(0, 100, {
+      url: signedUrl(0),
+      expiresAt: new Date(NOW - 60_000).toISOString(),
+    })
+    const refresh = vi.fn(async () => [fresh])
+    const detail = source([fresh], refresh, NOW)
+
+    await detail.load(0, 100)
+
+    expect(refresh).not.toHaveBeenCalled()
+    expect(download).toHaveBeenCalledOnce()
+  })
+
+  it('una URL firmada vence a los X-Amz-Expires de haber llegado', async () => {
+    // Con el reloj atrasado el `expiresAt` parece lejano, pero la URL llegó
+    // hace 9 min 50 s y vale 10.
+    const stale = piece(0, 100, {
+      url: signedUrl(0),
+      expiresAt: new Date(NOW + 60 * 60_000).toISOString(),
+    })
+    const fresh = piece(0, 100, { url: signedUrl(0, 600, 2) })
+    const refresh = vi.fn(async () => [fresh])
+    const detail = source([stale], refresh, NOW - 590_000)
+
+    await detail.load(0, 100)
+
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(download.mock.calls[0][0].url).toBe(signedUrl(0, 600, 2))
+  })
+
+  it('un 403 con el manifest recién pedido no se arregla renovando', async () => {
+    // Las URLs llegaron hace un momento: el 403 es otra cosa (un objeto que
+    // falta) y pedir el manifest en cada zoom solo le gasta CPU a la API.
+    const refresh = vi.fn(async () => [piece(0, 100)])
+    download.mockRejectedValue(forbidden())
+    const detail = source([piece(0, 100)], refresh, NOW - 5_000)
+
+    await expect(detail.load(0, 100)).rejects.toMatchObject({ status: 403 })
+    clock += 10_000
+    await expect(detail.load(0, 100)).rejects.toMatchObject({ status: 403 })
+
+    expect(refresh).not.toHaveBeenCalled()
+    expect(download).toHaveBeenCalledTimes(2)
+  })
+
+  it('entre dos renovaciones pasa al menos un minuto', async () => {
+    const refresh = vi.fn(async () => [piece(0, 100)])
+    download.mockRejectedValue(forbidden())
+    const detail = source([piece(0, 100)], refresh)
+
+    // El primer 403 renueva; los que siguen enseguida, no.
+    await expect(detail.load(0, 100)).rejects.toMatchObject({ status: 403 })
+    clock += 30_000
+    await expect(detail.load(0, 100)).rejects.toMatchObject({ status: 403 })
+    expect(refresh).toHaveBeenCalledOnce()
+
+    // Pasado el minuto, un 403 vuelve a valer un intento.
+    clock += 31_000
+    await expect(detail.load(0, 100)).rejects.toMatchObject({ status: 403 })
+    expect(refresh).toHaveBeenCalledTimes(2)
   })
 
   it('otro error no se disfraza de URL vencida', async () => {
