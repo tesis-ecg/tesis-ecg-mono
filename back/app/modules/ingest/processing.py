@@ -32,6 +32,7 @@ from typing import Any
 
 import numpy as np
 import structlog
+from sqlalchemy import update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -175,6 +176,11 @@ def decode_batch(payload: bytes) -> _DecodedBatch:
     signal = np.concatenate([f.raw_uV[0] for f in frames]).astype(np.float32) / UV_PER_MV
     flags = np.concatenate([f.flags for f in frames])
     return _DecodedBatch(signal_mV=signal.astype("<f4"), flags=flags, frames=frames)
+
+
+def _read_batch(frames_key: str) -> _DecodedBatch:
+    """Las tramas archivadas de un lote, decodificadas. **Bloqueante**: corre en un hilo."""
+    return decode_batch(get_object(frames_key))
 
 
 # --------------------------------------------------------------------------- #
@@ -826,12 +832,14 @@ async def _place_on_timeline(
     return 0, previous_end_t0_ms
 
 
-def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
+async def _raw_signal_range(study: Study, start: int, end: int) -> np.ndarray:
     """Read a bounded contiguous range from immutable decoded raw segments.
 
-    Shared by the filtered view and the detection engine (`append_ml_analysis`).
+    Shared by the filtered view and the beat pass. The GETs run in a thread
+    (`run_io`): on the event loop they froze every other request of the same
+    instance while a batch was being processed.
     """
-    return _raw_range(study.ecg_segments, start, end)
+    return await run_io(_raw_range, list(study.ecg_segments), start, end)
 
 
 def _raw_range(segments: list[dict[str, Any]], start: int, end: int) -> np.ndarray:
@@ -949,13 +957,13 @@ async def append_filtered_view(db: AsyncSession, study: Study) -> None:
             break
         read_start = max(run_start, cursor - context)
         read_end = min(run_end, safe_end + context)
-        raw = _raw_signal_range(study, read_start, read_end)
+        raw = await _raw_signal_range(study, read_start, read_end)
         filtered = filter_visualization(raw, rate)[cursor - read_start : safe_end - read_start]
         if filtered.size != safe_end - cursor:
             raise RuntimeError("La vista filtrada no cubre el tramo esperado.")
         key = filtered_segment_key(study.id, cursor)
         payload = filtered.tobytes()
-        put_object(key, payload)
+        await run_io(put_object, key, payload)
         filtered_segments = [item for item in study.ecg_filtered_segments if item.get("key") != key]
         filtered_segments.append(
             _object_meta(key, payload, startSampleIndex=cursor, sampleCount=int(filtered.size))
@@ -969,7 +977,7 @@ async def append_filtered_view(db: AsyncSession, study: Study) -> None:
         )
         envelope, remainder = build_envelope(np.concatenate((old_carry, filtered)))
         if envelope.size:
-            put_object(filtered_envelope_key(study.id, cursor), envelope.tobytes())
+            await run_io(put_object, filtered_envelope_key(study.id, cursor), envelope.tobytes())
         study.ecg_filtered_envelope_carry = remainder.tobytes() if remainder.size else None
         study.filtered_samples_count = safe_end
         study.ecg_filtered_pyramid_levels = append_level_chunks(
@@ -1052,12 +1060,12 @@ async def append_beat_analysis(
             break
         read_start = max(run_start, cursor - context)
         read_end = min(run_end, safe_end + context)
-        raw = _raw_signal_range(study, read_start, read_end)
+        raw = await _raw_signal_range(study, read_start, read_end)
         beats = analyze_window(raw, rate, offset=read_start, keep_start=cursor, keep_end=safe_end)
         if beats.size:
             key = beat_chunk_key(study.id, cursor)
             payload = encode_beats(beats)
-            put_object(key, payload)
+            await run_io(put_object, key, payload)
             chunks = [chunk for chunk in chunks if chunk.get("key") != key]
             chunks.append(
                 _object_meta(
@@ -1538,22 +1546,46 @@ async def _process_one_batch(
     """Procesa un lote con el estudio ya bloqueado; no maneja la transacción."""
     if batch.frames_s3_key is None:
         raise RuntimeError("El lote no tiene tramas archivadas.")
+    key = segment_key(study.id, batch.first_seq or 0)
+    appended = next((s for s in study.ecg_segments if s.get("key") == key), None)
+    if appended is not None:
+        # El segmento ya está en el estudio: un procesamiento anterior lo anexó
+        # y commiteó (segmento, muestras, línea de tiempo y eventos van en la
+        # misma transacción), pero el estado del lote quedó en otro valor.
+        # Anexarlo de nuevo lo corría al final de `ecg_segments` con la misma
+        # clave y dejaba un hueco donde estaba: la vista filtrada fallaba ahí en
+        # cada reintento, y el drenaje, que va en orden, no pasaba de este lote.
+        # Le pasó a un estudio real del chaleco el 1/10/2026, con 62 lotes
+        # trabados detrás.
+        samples = int(appended["sampleCount"])
+        await logger.awarning(
+            "process_batch_already_appended",
+            batch_id=str(batch.id),
+            study_id=str(study.id),
+            previous_status=batch.processing_status.value,
+        )
+        batch.num_samples = samples
+        batch.processing_status = ProcessingStatus.DONE
+        batch.processing_error = None
+        return samples, 0, None
     batch.processing_status = ProcessingStatus.PROCESSING
     await db.flush()
 
-    decoded = decode_batch(get_object(batch.frames_s3_key))
+    # Las llamadas a S3 de acá abajo van a un hilo (`run_io`): en el event loop
+    # congelan los demás requests de la misma instancia mientras el lote se
+    # procesa, incluidos los POST de otros chalecos.
+    decoded = await run_io(_read_batch, batch.frames_s3_key)
     sample_rate = study.sample_rate or 500
 
     # --- Segmento ---------------------------------------------------------- #
     start_sample_index = study.samples_count
     payload = decoded.signal_mV.tobytes()
-    key = segment_key(study.id, batch.first_seq or 0)
-    put_object(key, payload)
+    await run_io(put_object, key, payload)
     flags_payload = decoded.flags.astype(np.uint8).tobytes()
     flags_object = flags_key(study.id, batch.first_seq or 0)
-    put_object(flags_object, flags_payload)
+    await run_io(put_object, flags_object, flags_payload)
 
-    segments = [segment for segment in study.ecg_segments if segment.get("key") != key]
+    segments = list(study.ecg_segments)
     segments.append(
         _object_meta(
             key,
@@ -1579,7 +1611,7 @@ async def _process_one_batch(
     )
     envelope, remainder = build_envelope(np.concatenate([carry, decoded.signal_mV]))
     if envelope.size:
-        put_object(envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
+        await run_io(put_object, envelope_key(study.id, batch.first_seq or 0), envelope.tobytes())
     study.ecg_envelope_carry = remainder.tobytes() if remainder.size else None
     # Antes acá se llamaba `rebuild_pyramid`, que releía de S3 TODAS las
     # envolventes del estudio en cada lote. Era una fuente de contención que
@@ -1679,6 +1711,13 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
 
     El lock del estudio hace que dos tareas concurrentes reconsulten los estados
     en serie; la segunda no vuelve a anexar lo que la primera terminó.
+
+    **Una transacción por lote.** Antes el drenaje entero iba en una sola: con
+    la fila tomada de punta a punta, un POST esperaba todo el atraso, y como
+    era todo o nada, un atraso más largo que la duración máxima de la función
+    se revertía entero en cada intento y no avanzaba nunca. Ahora cada lote
+    commitea y suelta la fila; si la tarea se corta, lo hecho queda y el
+    próximo disparo sigue desde ahí.
     """
     requested = await repo.get_batch(db, batch_id)
     if requested is None:
@@ -1693,96 +1732,113 @@ async def process_batch(db: AsyncSession, batch_id: uuid.UUID) -> None:
         return
 
     failed_batch_id = batch_id
+    patient_id: uuid.UUID | None = None
+    # La alerta más severa de lo ya commiteado. Se avisa aunque el drenaje se
+    # corte después: esas alertas existen, y el push sale una vez por drenaje.
+    pushable: Pushable | None = None
     try:
-        study = await _lock_study(db, requested.study_id)
-        if study is None:
-            raise RuntimeError("el estudio del lote no existe")
-
-        processed: list[tuple[ECGBatch, int, int]] = []
-        pushable: Pushable | None = None
-        for pending in await repo.list_batches_to_process(db, study.id):
-            failed_batch_id = pending.id
-            samples, events, batch_pushable = await _process_one_batch(db, study, pending)
-            processed.append((pending, samples, events))
-            pushable = most_severe(pushable, batch_pushable)
-
-        if processed:
-            # Después de `_persist_events` a propósito: los `frame_gap` /
-            # `internal_gap` de los lotes drenados ya están en la sesión, y el
-            # motor los lee como empalmes del bloque. Analiza solo los bloques
-            # que esos lotes completaron (casi siempre ninguno: un bloque son
-            # ~20 lotes); el resto espera al siguiente o al cierre. **Una**
-            # pasada por transacción y no una por lote: el presupuesto de la
-            # pasada (`ML_PASS_BUDGET_SECONDS`) es lo que mantiene la fila
-            # debajo del `lock_timeout`, y con una pasada por lote un drenaje de
-            # N lotes atrasados lo multiplicaba por N. El cursor hace que el
-            # resultado sea el mismo; lo escrito se atribuye al último lote. En
-            # un SAVEPOINT: una falla del motor no puede tirar abajo los lotes.
-            last_batch, last_samples, last_events = processed[-1]
-            ml_pass = await _guarded_ml_pass(db, study, last_batch)
-            pushable = most_severe(pushable, ml_pass.pushable)
-            processed[-1] = (last_batch, last_samples, last_events + ml_pass.written)
+        while True:
+            study = await _lock_study(db, requested.study_id)
+            if study is None:
+                raise RuntimeError("el estudio del lote no existe")
+            pending = await repo.list_batches_to_process(db, study.id)
+            if not pending:
+                await db.commit()
+                break
+            batch = pending[0]
+            failed_batch_id = batch.id
+            samples, events, batch_pushable = await _process_one_batch(db, study, batch)
+            last = len(pending) == 1
+            if last:
+                # Después de `_persist_events` a propósito: los `frame_gap` /
+                # `internal_gap` de los lotes drenados ya están en la base o en
+                # la sesión, y el motor los lee como empalmes del bloque.
+                # Analiza solo los bloques que esos lotes completaron (casi
+                # siempre ninguno: un bloque son ~20 lotes); el resto espera al
+                # siguiente o al cierre. **Una** pasada por drenaje y no una por
+                # lote: el presupuesto de la pasada (`ML_PASS_BUDGET_SECONDS`)
+                # es lo que mantiene la fila debajo del `lock_timeout`, y con una
+                # pasada por lote un drenaje de N lotes atrasados lo multiplicaba
+                # por N. El cursor hace que el resultado sea el mismo; lo escrito
+                # se atribuye al último lote. En un SAVEPOINT: una falla del
+                # motor no puede tirar abajo el lote.
+                ml_pass = await _guarded_ml_pass(db, study, batch)
+                batch_pushable = most_severe(batch_pushable, ml_pass.pushable)
+                events += ml_pass.written
             # Recuento y no `+=`: los encabezados por morfología del motor se
             # upsertean (la fila ya existe y solo crece su conteo), así que
             # "filas escritas" no es "eventos nuevos". Contar las filas del
             # estudio cuenta cada evento una sola vez, lo haya escrito la Capa A
             # o el motor.
             await ml_persistence.recount_events(db, study)
-
-        patient_id = study.patient_id
-        await db.commit()
-        for done, samples, events in processed:
+            patient_id = study.patient_id
+            await db.commit()
+            pushable = most_severe(pushable, batch_pushable)
             await logger.ainfo(
                 "process_batch_done",
-                batch_id=str(done.id),
+                batch_id=str(batch.id),
                 study_id=str(study.id),
                 samples=samples,
                 events=events,
             )
-        # Recién acá, con la transacción cerrada: el `alertId` del push tiene
-        # que existir cuando el paciente toque la notificación.
-        if pushable is not None:
-            await notify_patient_task(
-                patient_id,
-                anomaly_message(
-                    pushable.alert_id,
-                    datetime.now(UTC).isoformat(),
-                    pushable.kind,
-                    pushable.severity,
-                ),
-            )
+            if last:
+                break
     except DBAPIError as error:
         if not is_lock_contention(error):
             await _mark_failed(db, batch_id, failed_batch_id, error)
-            return
-        # No se pudo tomar la fila ni después de los reintentos, o Postgres
-        # cortó un deadlock eligiendo esta transacción. El lote NO es
-        # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
-        # pendiente para que lo drene la próxima pasada — marcarlo fallido sería
-        # declarar rota una señal que está entera.
-        await db.rollback()
-        await logger.awarning(
-            "process_batch_contended",
-            requested_batch_id=str(batch_id),
-            pending_batch_id=str(failed_batch_id),
-        )
+        else:
+            # No se pudo tomar la fila ni después de los reintentos, o Postgres
+            # cortó un deadlock eligiendo esta transacción. El lote NO es
+            # `FAILED`: no tiene nada malo, solo perdió la carrera. Se lo deja
+            # pendiente para que lo drene la próxima pasada — marcarlo fallido
+            # sería declarar rota una señal que está entera.
+            await db.rollback()
+            await logger.awarning(
+                "process_batch_contended",
+                requested_batch_id=str(batch_id),
+                pending_batch_id=str(failed_batch_id),
+            )
     except Exception as error:  # noqa: BLE001 — el estado del lote tiene que reflejarlo
         await _mark_failed(db, batch_id, failed_batch_id, error)
+    # Recién acá, con la transacción cerrada: el `alertId` del push tiene que
+    # existir cuando el paciente toque la notificación.
+    if pushable is not None and patient_id is not None:
+        await notify_patient_task(
+            patient_id,
+            anomaly_message(
+                pushable.alert_id,
+                datetime.now(UTC).isoformat(),
+                pushable.kind,
+                pushable.severity,
+            ),
+        )
 
 
 async def _mark_failed(
     db: AsyncSession, batch_id: uuid.UUID, failed_batch_id: uuid.UUID, error: Exception
 ) -> None:
     await db.rollback()
-    failed = await repo.get_batch(db, failed_batch_id)
-    if failed is not None:
-        failed.processing_status = ProcessingStatus.FAILED
-        failed.processing_error = str(error)[:1024]
-        await db.commit()
+    # Condicional: otra tarea pudo haber terminado este lote mientras ésta
+    # fallaba (esperando la fila, por ejemplo). Pisar ese `DONE` con `FAILED`
+    # hacía que el próximo drenaje lo volviera a anexar.
+    marked = await db.scalar(
+        update(ECGBatch)
+        .where(
+            ECGBatch.id == failed_batch_id,
+            ECGBatch.processing_status != ProcessingStatus.DONE,
+        )
+        .values(
+            processing_status=ProcessingStatus.FAILED,
+            processing_error=str(error)[:1024],
+        )
+        .returning(ECGBatch.id)
+    )
+    await db.commit()
     await logger.aexception(
         "process_batch_failed",
         requested_batch_id=str(batch_id),
         failed_batch_id=str(failed_batch_id),
+        marked_failed=marked is not None,
     )
 
 
