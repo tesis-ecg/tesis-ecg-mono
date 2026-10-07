@@ -279,6 +279,29 @@ describe('ECGViewer — muestras de cerca', () => {
     expect(drawnAt(plot().data, 590)).toBe(1)
   })
 
+  it('un zoom adentro de lo que está bajando no lo descarta', async () => {
+    // El médico hace zoom antes de que lleguen las primeras muestras: lo que
+    // llega cubre lo nuevo y se empalma ahí, sin otra descarga.
+    const detail = detailSource()
+    let resolve: (() => void) | null = null
+    detail.load.mockImplementationOnce(
+      (startSample: number, endSample: number) =>
+        new Promise<ECGDetailWindow>((done) => {
+          resolve = () => done(samplesWindow(startSample, endSample))
+        }),
+    )
+    render(<ECGViewer signal={signal(detail)} />)
+    await settle()
+    expect(detail.load).toHaveBeenCalledOnce()
+
+    act(() => plot().setScale('x', { min: 594, max: 599 }))
+    await act(async () => resolve!())
+
+    expect(chart().dataset.trace).toBe('samples')
+    await settle()
+    expect(detail.load).toHaveBeenCalledOnce()
+  })
+
   it('el rango vertical sale de las muestras empalmadas, no del resumen', async () => {
     // Un resumen lejos de la señal: en un estudio largo el punto que queda en
     // pantalla es el máximo de un balde de 33 s, y centrar ahí cortaba la traza.

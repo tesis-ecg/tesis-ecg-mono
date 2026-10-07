@@ -429,9 +429,18 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       detail.load(wanted.startSample, wanted.endSample, controller.signal).then(
         (loaded) => {
           if (controller.signal.aborted || uplotRef.current !== inst || superseded()) return
-          // La vista se movió mientras bajaba: decide el `updateDetail` que ese
-          // movimiento ya agendó, con lo que se ve ahora.
-          if (inst.scales.x.min !== min || inst.scales.x.max !== max) return
+          // La vista se movió mientras bajaba. Si lo que llegó no cubre lo que
+          // se ve ahora, decide el `updateDetail` que ese movimiento agendó:
+          // empalmarlo tapaba con otro tramo lo que se está mirando. Si lo
+          // cubre (un zoom adentro), sirve tal cual.
+          const { min: nowMin, max: nowMax } = inst.scales.x
+          if (nowMin !== min || nowMax !== max) {
+            const now =
+              nowMin != null && nowMax != null
+                ? detailRequest(signal, detail, plotWidthPx(inst), nowMin, nowMax)
+                : null
+            if (!now?.wanted || !coversRange(loaded, now.visible)) return
+          }
           showDetail(inst, loaded)
         },
         () => {
