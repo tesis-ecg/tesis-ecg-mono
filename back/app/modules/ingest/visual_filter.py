@@ -39,9 +39,6 @@ def filter_band_notch(signal_mv: np.ndarray, sample_rate: int) -> np.ndarray:
     """
     if signal_mv.size == 0:
         return np.empty(0, dtype="<f4")
-    if signal_mv.size < 32:
-        padded = np.pad(signal_mv, (32, 32), mode="edge")
-        return filter_band_notch(padded, sample_rate)[32:-32]
     return _band_notch(signal_mv, sample_rate).astype("<f4")
 
 
@@ -52,24 +49,31 @@ def filter_visualization(signal_mv: np.ndarray, sample_rate: int) -> np.ndarray:
     feed QRS amplitude measurements or a future diagnostic classifier.
 
     The low-pass is a symmetric FIR convolved centered, so it adds no delay and
-    no phase. At a run edge the signal is extended with an odd reflection over
-    half the FIR, as `filtfilt` pads its own edges, so the first and last
-    samples of a run neither droop nor ring.
+    no phase. At a run edge the recipe's output is extended with an odd
+    reflection over half the FIR, as `filtfilt` pads its own edges, so the first
+    and last samples of a run neither droop nor ring. A run shorter than half
+    the FIR (321 samples at 500 Hz, e.g. a lone frame between two gaps) gets the
+    reflection repeated, which `np.pad` does by itself, so it also keeps the
+    recipe under 40 Hz. Padding the raw signal instead would change what the
+    0.05 Hz high-pass sees and shift the baseline of such a run by over 1 mV.
     """
     if signal_mv.size == 0:
         return np.empty(0, dtype="<f4")
     taps = _display_lowpass(sample_rate)
     half = taps.size // 2
-    if signal_mv.size <= half:
-        # Too short for the odd reflection: extend the edges first, as
-        # `filter_band_notch` does under 32 samples.
-        padded = np.pad(signal_mv, (half, half), mode="edge")
-        return filter_visualization(padded, sample_rate)[half:-half]
     shaped = np.pad(_band_notch(signal_mv, sample_rate), half, mode="reflect", reflect_type="odd")
     return cast(np.ndarray, oaconvolve(shaped, taps, mode="valid").astype("<f4"))
 
 
 def _band_notch(signal_mv: np.ndarray, sample_rate: int) -> np.ndarray:
+    """`filter_band_notch` in float64, before the cast.
+
+    Under 32 samples there is no room for `filtfilt`'s own edge padding, so the
+    edges are extended first.
+    """
+    if signal_mv.size < 32:
+        padded = np.pad(signal_mv, (32, 32), mode="edge")
+        return _band_notch(padded, sample_rate)[32:-32]
     notch_b, notch_a = iirnotch(50.0, 30.0, fs=sample_rate)
     band = butter(4, (0.05, 40.0), btype="bandpass", fs=sample_rate, output="sos")
     without_mains = filtfilt(notch_b, notch_a, signal_mv.astype(np.float64))

@@ -165,6 +165,22 @@ def test_senales_cortas_conservan_largo_y_tipo(size: int) -> None:
     assert filter_visualization(np.empty(0, dtype="<f4"), RATE).size == 0
 
 
+@pytest.mark.parametrize("size", [5, 31, 32, 100, 200, 270, 321, 322, 700])
+def test_una_corrida_corta_es_la_receta_mas_el_pasa_bajos(size: int) -> None:
+    # Un frame suelto entre dos huecos se filtra como corrida propia. Con menos de
+    # medio FIR (321 muestras) se rellenaba la cruda y no la salida de la receta:
+    # el pasa-altos de 0,05 Hz veía otra señal y la línea de base se corría 0,1 a
+    # 1,7 mV. El pasa-bajos solo puede sacar lo que la receta deja por encima de
+    # 40 Hz, que en este ECG no llega a 0,03 mV ni sobre un QRS.
+    times = beat_times(np.full(30, 0.8))
+    signal = 300.0 + synthetic_ecg(times, times[-1] + 1.5, RATE, noise_mv=0.05, wander_mv=0.5)
+
+    for start in range(0, 20 * RATE, RATE // 4):
+        run = signal[start : start + size]
+        change = filter_visualization(run, RATE) - filter_band_notch(run, RATE)
+        assert np.max(np.abs(change)) < 0.05, start
+
+
 @pytest.mark.parametrize("size", [0, 5, 31, 32, 33, 20 * RATE])
 def test_la_receta_del_st_no_cambia_ni_un_bit(size: int) -> None:
     rng = np.random.default_rng(size)
