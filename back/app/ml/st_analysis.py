@@ -1,8 +1,9 @@
 """Nivel del segmento ST por latido.
 
 Se mide sobre la señal con pasa-banda de 0,05–40 Hz de fase cero y notch de
-50 Hz (`filter_visualization`): el pasa-altos de 0,05 Hz es el que recomienda
-la AHA justamente para no deformar el ST. Sin detección de fin de QRS, el punto
+50 Hz (`filter_band_notch`, la receta §6.2 sin el pasa-bajos que la vista
+filtrada le suma encima): el pasa-altos de 0,05 Hz es el que recomienda la AHA
+justamente para no deformar el ST. Sin detección de fin de QRS, el punto
 ST se toma a una distancia fija del R —J ≈ R + 40 ms, ST = J + 60 ms— y se
 acorta con frecuencias altas, donde el ST queda más cerca del QRS.
 """
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.modules.ingest.visual_filter import filter_visualization
+from app.modules.ingest.visual_filter import filter_band_notch
 
 ISOELECTRIC_START_S = -0.080
 ISOELECTRIC_END_S = -0.060
@@ -33,7 +34,7 @@ def measure_st_levels(
     levels = np.full(peaks.size, np.nan, dtype=np.float32)
     if peaks.size == 0:
         return levels
-    shaped = filter_visualization(signal_mv, rate) if filtered is None else filtered
+    shaped = filter_band_notch(signal_mv, rate) if filtered is None else filtered
     iso_start = round(ISOELECTRIC_START_S * rate)
     iso_end = round(ISOELECTRIC_END_S * rate)
     half = max(1, round(ST_HALF_WINDOW_S * rate))
