@@ -335,13 +335,28 @@ async def test_telemetry_headers_update_the_device(
 ) -> None:
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
+    frames = build_frames(1800)
+    half = len(frames) // 2
 
-    await post_frames(client, device, api_key, build_frames(900), battery=42, firmware="9.9.9")
+    await post_frames(client, device, api_key, frames[:half], battery=42, firmware="9.9.9")
     await db.refresh(device)
 
     assert device.last_battery_pct == 42
     assert device.firmware_version == "9.9.9"
     assert device.last_seen_at is not None
+
+    # Un POST sin `X-Battery-Pct` es un equipo que no midió la batería
+    # (`INTEGRACION.md` §11.1). Conservar el 42 lo seguiría mostrando como la
+    # lectura actual. La versión de firmware no es una lectura: que no viaje
+    # no la vuelve desconocida, así que esa sí se conserva.
+    response = await post_frames(
+        client, device, api_key, frames[half:], battery=None, firmware=None
+    )
+    assert response.status_code == 202
+    await db.refresh(device)
+
+    assert device.last_battery_pct is None
+    assert device.firmware_version == "9.9.9"
 
 
 # --------------------------------------------------------------------------- #

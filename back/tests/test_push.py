@@ -222,9 +222,16 @@ async def test_un_token_se_reasigna_en_vez_de_duplicarse(
 # --------------------------------------------------------------------------- #
 
 
-async def _device_status(client: AsyncClient, device: Any, api_key: str, **overrides: Any) -> Any:
+async def _device_status(
+    client: AsyncClient,
+    device: Any,
+    api_key: str,
+    *,
+    header_kwargs: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> Any:
     payload = {"event": "signal_quality_bad", "durationSeconds": 300, **overrides}
-    headers = device_headers(device, api_key)
+    headers = device_headers(device, api_key, **(header_kwargs or {}))
     headers.pop("Content-Type")
     return await client.post("/ingest/device-status", json=payload, headers=headers)
 
@@ -717,6 +724,55 @@ async def test_alive_es_un_latido_y_no_toca_la_colocacion(
 
     alerts = (await db.execute(select(Alert).where(Alert.patient_id == patient.id))).scalars().all()
     assert list(alerts) == []
+
+
+async def test_un_aviso_sin_bateria_borra_la_lectura_anterior(
+    client: AsyncClient,
+    db: AsyncSession,
+    make_patient: Callable[..., Any],
+    make_device: Callable[..., Any],
+) -> None:
+    """Sin `batteryPct` ni `X-Battery-Pct`, el equipo no midió la batería.
+
+    El puente omite los dos cuando `batteryFlags` no trae el bit 0
+    (`INTEGRACION.md` §11.1 y §11.5), por ejemplo en una placa sin el medidor
+    cableado. Conservar la lectura anterior la dejaba fija: un equipo que alguna
+    vez mandó 0 % seguía en el watchdog como "Batería baja" sin reportar batería.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    device_id = device.id
+
+    # El cuerpo le gana a la cabecera: es la lectura que acompaña al aviso.
+    await _device_status(
+        client,
+        device,
+        api_key,
+        header_kwargs={"battery": 87},
+        event="alive",
+        durationSeconds=0,
+        batteryPct=64,
+    )
+    before = await db.get(Device, device_id)
+    assert before is not None
+    assert before.last_battery_pct == 64
+
+    # Sin cuerpo, vale la cabecera.
+    await _device_status(
+        client, device, api_key, header_kwargs={"battery": 51}, event="alive", durationSeconds=0
+    )
+    from_header = await db.get(Device, device_id)
+    assert from_header is not None
+    assert from_header.last_battery_pct == 51
+
+    response = await _device_status(
+        client, device, api_key, header_kwargs={"battery": None}, event="alive", durationSeconds=0
+    )
+
+    assert response.status_code == 200, response.text
+    after = await db.get(Device, device_id)
+    assert after is not None
+    assert after.last_battery_pct is None
 
 
 async def test_alive_no_pisa_una_colocacion_ya_reportada(

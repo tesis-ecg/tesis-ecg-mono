@@ -480,8 +480,11 @@ async def ingest_frames(
     window = _ack_window(frames, study)
 
     ctx.device.last_seen_at = input_data.received_at
-    if ctx.battery_pct is not None:
-        ctx.device.last_battery_pct = ctx.battery_pct
+    # Se escribe también la ausencia. El puente omite `X-Battery-Pct` cuando el
+    # equipo no mide la batería (`INTEGRACION.md` §11.1): conservar la lectura
+    # anterior la mostraba como actual, y un 0 % viejo dejaba al equipo en el
+    # watchdog como "Batería baja" para siempre. `NULL` es "Sin dato".
+    ctx.device.last_battery_pct = ctx.battery_pct
     if ctx.firmware_version:
         ctx.device.firmware_version = ctx.firmware_version
     battery_alert = _battery_alert(ctx)
@@ -752,10 +755,12 @@ async def report_device_status(
     device = ctx.device
     now = input_data.received_at
     device.last_seen_at = now
-    if input_data.data.batteryPct is not None:
-        device.last_battery_pct = input_data.data.batteryPct
-    elif ctx.battery_pct is not None:
-        device.last_battery_pct = ctx.battery_pct
+    # Igual que en la ingesta: sin `batteryPct` ni `X-Battery-Pct` el equipo no
+    # midió la batería (`INTEGRACION.md` §11.1 y §11.5), y la lectura vieja no
+    # puede quedar como actual.
+    device.last_battery_pct = (
+        input_data.data.batteryPct if input_data.data.batteryPct is not None else ctx.battery_pct
+    )
     if ctx.firmware_version:
         device.firmware_version = ctx.firmware_version
     if input_data.data.sqi is not None:
