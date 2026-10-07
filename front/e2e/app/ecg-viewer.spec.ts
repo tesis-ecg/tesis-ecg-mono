@@ -13,6 +13,10 @@ test('hiding the findings keeps the ECG zoom where it was', async ({ page }) => 
   const chart = page.getByLabel('Gráfico ECG interactivo')
   await expect(chart.locator('.uplot')).toBeVisible()
   await page.getByRole('button', { name: 'Zoom in' }).click()
+  // Up close the viewer splices in the samples when their download lands, and
+  // that moves the legend to a sample under the cursor. Wait for them, so what
+  // gets compared is the settled chart and not the download.
+  await expect(chart).toHaveAttribute('data-trace', 'samples')
   // Tag the uPlot root: if the chart is rebuilt the tag is gone, and with it
   // the zoom and the cursor the doctor had.
   await chart.locator('.uplot').evaluate((el) => el.setAttribute('data-e2e-instance', 'before'))
