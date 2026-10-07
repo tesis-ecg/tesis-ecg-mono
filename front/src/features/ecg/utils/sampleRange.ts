@@ -25,6 +25,19 @@ export function sampleRangeForSeconds(
   return [lowerBound(timestamps, minMs), lowerBound(timestamps, maxMs, true)]
 }
 
+/**
+ * Lo mismo sobre un eje que ya está en segundos desde el inicio, como el que
+ * recibe uPlot. Es para lo que no sale de `signal.samples`: el resumen con las
+ * muestras de un tramo empalmadas tiene otros puntos.
+ */
+export function pointRangeForSeconds(
+  xs: ArrayLike<number>,
+  minSec: number,
+  maxSec: number,
+): [number, number] {
+  return [lowerBound(xs, minSec), lowerBound(xs, maxSec, true)]
+}
+
 /** Primer índice con `values[i] >= target` (o `> target` si `inclusive`). */
 function lowerBound(values: ArrayLike<number>, target: number, inclusive = false): number {
   let lo = 0

@@ -160,7 +160,7 @@ export function verticalRange(
  * medio de la ventana correría el centro y sacaría el trazado de pantalla, que
  * es exactamente el problema que esta escala vino a resolver.
  */
-export function baselineMv(samples: Float32Array, from: number, to: number): number {
+export function baselineMv(samples: ArrayLike<number | null>, from: number, to: number): number {
   const start = Math.max(0, Math.min(from, samples.length))
   const end = Math.max(start, Math.min(to, samples.length))
   if (end === start) return 0
@@ -171,7 +171,7 @@ export function baselineMv(samples: Float32Array, from: number, to: number): num
   const values: number[] = []
   for (let i = start; i < end; i += stride) {
     const value = samples[i]
-    if (Number.isFinite(value)) values.push(value)
+    if (value != null && Number.isFinite(value)) values.push(value)
   }
   if (values.length === 0) return 0
   values.sort((a, b) => a - b)
@@ -194,10 +194,11 @@ const AUTO_PADDING = 0.08
  *
  * A diferencia de `baselineMv`, acá no se muestrea con salto: el objetivo es que
  * **ningún** pico quede fuera de pantalla, y un QRS dura pocas muestras.
- * Devuelve `null` si el tramo no tiene muestras finitas.
+ * Devuelve `null` si el tramo no tiene muestras finitas. Los cortes de la traza
+ * (`null`) no cuentan.
  */
 export function autoVerticalRange(
-  samples: Float32Array,
+  samples: ArrayLike<number | null>,
   from: number,
   to: number,
 ): [number, number] | null {
@@ -207,7 +208,7 @@ export function autoVerticalRange(
   let max = -Infinity
   for (let i = start; i < end; i++) {
     const value = samples[i]
-    if (!Number.isFinite(value)) continue
+    if (value == null || !Number.isFinite(value)) continue
     if (value < min) min = value
     if (value > max) max = value
   }
