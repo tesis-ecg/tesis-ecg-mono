@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "fastapi",
   "buildCommand": "uv run python -m app.scripts.migrate",
-  "regions": ["gru1"]
+  "regions": ["iad1"]
 }
