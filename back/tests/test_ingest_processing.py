@@ -2,6 +2,7 @@
 
 import hashlib
 import random
+import uuid
 from datetime import UTC, datetime
 
 import numpy as np
@@ -13,6 +14,7 @@ from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.study import Study, StudyStatus
 from app.modules.ingest.processing import (
     BASE_BUCKET,
+    _mark_failed,
     build_envelope,
     envelope_prefix,
     process_batch,
@@ -510,6 +512,117 @@ async def test_a_retry_after_failure_does_not_duplicate_segments(
     assert study.samples_count == study.ecg_segments[0]["sampleCount"]
 
 
+async def test_a_batch_appended_but_not_marked_done_is_not_appended_again(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Un lote cuyo segmento ya está en el estudio no se vuelve a anexar.
+
+    Le pasó a un estudio real del chaleco el 1/10/2026: el lote se anexó y se
+    commiteó, pero su estado terminó en `FAILED`. Cada reintento lo corría al
+    final de `ecg_segments` con la misma clave y dejaba un hueco donde estaba;
+    la vista filtrada fallaba ahí en cada intento, con todo el atraso detrás.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(4500)
+    third = len(frames) // 3
+    first = await _ingest_and_process(client, db, device, api_key, frames[:third])
+    second = await _ingest_and_process(client, db, device, api_key, frames[third : 2 * third])
+    poisoned = await db.get(ECGBatch, second["batchId"])
+    assert poisoned is not None
+    poisoned.processing_status = ProcessingStatus.FAILED
+    poisoned.processing_error = "Hay un hueco entre los segmentos crudos del estudio."
+    await db.commit()
+    later = (await post_frames(client, device, api_key, frames[2 * third :])).json()
+
+    await process_batch(db, later["batchId"])
+
+    study = await db.get(Study, first["studyId"])
+    assert study is not None
+    await db.refresh(study)
+    batches = list((await db.scalars(select(ECGBatch).where(ECGBatch.study_id == study.id))).all())
+    for batch in batches:
+        await db.refresh(batch)
+    assert [batch.processing_status for batch in batches] == [ProcessingStatus.DONE] * 3
+    assert all(batch.processing_error is None for batch in batches)
+    offset = 0
+    for segment in study.ecg_segments:
+        assert segment["startSampleIndex"] == offset
+        offset += segment["sampleCount"]
+    assert len(study.ecg_segments) == 3
+    assert offset == study.samples_count == sum(batch.num_samples or 0 for batch in batches)
+
+
+async def test_a_failure_never_overwrites_a_batch_another_task_finished(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Una tarea que falla no pisa el `DONE` que otra tarea ya commiteó.
+
+    La tarea pudo haber fallado esperando la fila mientras otra terminaba ese
+    mismo lote. Marcarlo `FAILED` hacía que el próximo drenaje lo volviera a
+    anexar.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    body = await _ingest_and_process(client, db, device, api_key, build_frames(1500))
+    batch_id = uuid.UUID(body["batchId"])
+
+    await _mark_failed(db, batch_id, batch_id, TimeoutError("esperando la fila del estudio"))
+
+    batch = await db.get(ECGBatch, batch_id)
+    assert batch is not None
+    await db.refresh(batch)
+    assert batch.processing_status is ProcessingStatus.DONE
+    assert batch.processing_error is None
+
+
+async def test_a_failure_mid_drain_keeps_the_batches_already_processed(
+    client, s3, db, make_patient, make_device, monkeypatch
+) -> None:
+    """Cada lote del drenaje commitea por su cuenta.
+
+    Antes el drenaje era todo o nada: un lote roto al final, o un atraso más
+    largo que la duración máxima de la función, revertía también los lotes
+    buenos, y el atraso no avanzaba nunca.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(4500)
+    third = len(frames) // 3
+    bodies = [
+        (await post_frames(client, device, api_key, chunk)).json()
+        for chunk in (frames[:third], frames[third : 2 * third], frames[2 * third :])
+    ]
+    broken = await db.get(ECGBatch, bodies[2]["batchId"])
+    assert broken is not None and broken.frames_s3_key is not None
+    broken_key = broken.frames_s3_key
+    real_get = get_object
+
+    def fail_last(key: str) -> bytes:
+        if key == broken_key:
+            raise RuntimeError("último lote ilegible")
+        return real_get(key)
+
+    monkeypatch.setattr("app.modules.ingest.processing.get_object", fail_last)
+    await process_batch(db, bodies[2]["batchId"])
+
+    batches = [await db.get(ECGBatch, body["batchId"]) for body in bodies]
+    for batch in batches:
+        assert batch is not None
+        await db.refresh(batch)
+    assert [batch.processing_status for batch in batches if batch is not None] == [
+        ProcessingStatus.DONE,
+        ProcessingStatus.DONE,
+        ProcessingStatus.FAILED,
+    ]
+    study = await db.get(Study, bodies[0]["studyId"])
+    assert study is not None
+    await db.refresh(study)
+    assert study.samples_count == sum(
+        batch.num_samples or 0 for batch in batches[:2] if batch is not None
+    )
+
+
 async def test_a_batch_without_frames_fails_cleanly(client, s3, db, make_patient, make_device):
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
@@ -527,8 +640,6 @@ async def test_a_batch_without_frames_fails_cleanly(client, s3, db, make_patient
 
 
 async def test_processing_a_missing_batch_is_a_noop(db, s3) -> None:
-    import uuid
-
     await process_batch(db, uuid.uuid4())  # no debe explotar
 
 
