@@ -9,15 +9,18 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import patch
 
+import numpy as np
 from sqlalchemy import select
 
 from app.core.s3 import put_object
 from app.db.models.audit_event import AuditEvent, AuditEventType
 from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
-from app.db.models.study import Study
+from app.db.models.study import Study, StudyStatus
 from app.db.models.user import UserRole
-from app.modules.ingest.processing import append_filtered_view, process_batch
+from app.modules.ingest.processing import PYRAMID_BUCKETS, append_filtered_view, process_batch
+from app.scripts.seed_demo import SAMPLE_RATE as DEMO_SAMPLE_RATE
+from app.scripts.seed_demo import StudySpec, _seed_study
 from tests.ingest_helpers import build_frames, post_frames
 
 
@@ -166,6 +169,47 @@ async def test_a_legacy_seeded_study_still_returns_raw(
     started_ms = manifest["startTimestamp"]
     assert manifest["annotations"][0]["startEpochMs"] == started_ms + 1250
     assert manifest["annotations"][0]["endEpochMs"] == started_ms + 1750
+
+
+async def test_a_demo_study_serves_its_levels_as_chunks(
+    client, s3, db, as_user, make_user, make_patient, make_device
+) -> None:
+    """Los estudios de `seed_demo` traen la pirámide en la forma que lee el manifest.
+
+    La seed escribía cada nivel como un objeto suelto, sin `chunks`. El manifest
+    los servía con cero chunks, el visor no descargaba nada y los estudios de
+    demo —los que abre el e2e del visor en CI— se dibujaban vacíos.
+    """
+    from app.core.s3 import get_object
+
+    patient = await make_patient()
+    device, _ = await make_device(patient=patient)
+    spec = StudySpec(status=StudyStatus.COMPLETED, starts_hours_ago=2, minutes=3)
+    study = await _seed_study(db, None, patient, device, spec, 0, batch_minutes=5)
+    await db.flush()
+    as_user(await make_user(UserRole.ADMIN))
+
+    manifest = await _manifest(client, study.id)
+
+    signal = np.frombuffer(get_object(_key_from_url(manifest["raw"]["url"])), dtype="<f4")
+    assert signal.size == manifest["sampleCount"] == 3 * 60 * DEMO_SAMPLE_RATE
+    assert [level["samplesPerBucket"] for level in manifest["levels"]] == list(PYRAMID_BUCKETS)
+    for level in manifest["levels"]:
+        bucket = level["samplesPerBucket"]
+        assert level["chunks"], f"el nivel {bucket} llega sin chunks"
+        assert sum(chunk["pointCount"] for chunk in level["chunks"]) == level["pointCount"]
+        payload = b""
+        for chunk in level["chunks"]:
+            data = get_object(_key_from_url(chunk["url"]))
+            assert len(data) == chunk["byteLength"] == chunk["pointCount"] * 4
+            assert hashlib.sha256(data).hexdigest() == chunk["sha256"]
+            payload += data
+        # Lo mismo que escribe la ingesta: min/max de cada bucket completo.
+        blocks = signal[: (signal.size // bucket) * bucket].reshape(-1, bucket)
+        expected = np.empty(blocks.shape[0] * 2, dtype="<f4")
+        expected[0::2] = blocks.min(axis=1)
+        expected[1::2] = blocks.max(axis=1)
+        assert np.array_equal(np.frombuffer(payload, dtype="<f4"), expected)
 
 
 async def test_manifest_normalizes_orders_and_clips_ingested_events(

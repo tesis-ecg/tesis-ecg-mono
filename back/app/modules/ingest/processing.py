@@ -76,8 +76,8 @@ from app.modules.patient_app.notifications_service import (
 
 logger = structlog.get_logger(__name__)
 
-#: Mismos buckets que usa `seed_demo`, para que el visor no tenga que
-#: distinguir un estudio seedeado de uno ingestado.
+#: `seed_demo` arma la pirámide de sus estudios con este mismo código, así que
+#: el visor no tiene que distinguir un estudio seedeado de uno ingestado.
 PYRAMID_BUCKETS = (16, 64, 256, 1024, 4096, 16384)
 BASE_BUCKET = PYRAMID_BUCKETS[0]
 
