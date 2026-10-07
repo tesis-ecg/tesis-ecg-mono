@@ -81,6 +81,15 @@ export interface ECGSignal {
   timeline: ECGTimelineSegment[]
   /** Hallazgos y problemas de calidad alineados al mismo eje temporal. */
   annotations: ECGAnnotation[]
+  /**
+   * De dónde sacar las muestras de un tramo cuando el resumen no alcanza.
+   *
+   * `samples` suele ser un nivel de la pirámide: un mínimo y un máximo por
+   * balde. De cerca eso no es la señal (un QRS cabe en un balde), así que el
+   * visor pide acá las muestras del tramo que está mirando. Ausente cuando
+   * `samples` ya son las muestras, o cuando no hay de dónde pedirlas.
+   */
+  detail?: ECGDetailSource
   /** Metadatos de adquisición necesarios para el informe clínico. */
   metadata?: {
     formatVersion: number
@@ -93,6 +102,27 @@ export interface ECGSignal {
     startTimeVerified?: boolean
     viewKind?: 'raw' | 'filtered_visualization'
   }
+}
+
+/** Las muestras de un tramo, con la hora de pared de cada una. */
+export interface ECGDetailWindow {
+  /** Primera muestra del tramo en el buffer del estudio (sin huecos). */
+  startSample: number
+  /** Una más que la última. */
+  endSample: number
+  /** En mV, de la misma vista (cruda o filtrada) que el resumen. */
+  samples: Float32Array
+  /** Hora de pared de cada muestra, en ms epoch. */
+  timestampsMs: Float64Array
+  /** Índices de `samples` donde arranca un tramo de grabación nuevo. */
+  gapIndices: number[]
+}
+
+export interface ECGDetailSource {
+  /** Muestras que se pueden pedir: `[0, sampleCount)`. */
+  sampleCount: number
+  /** Las muestras de `[startSample, endSample)`, recortado a lo que haya. */
+  load: (startSample: number, endSample: number, signal?: AbortSignal) => Promise<ECGDetailWindow>
 }
 
 export interface ECGViewerProps {

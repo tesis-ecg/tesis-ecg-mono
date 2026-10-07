@@ -4,6 +4,7 @@ import { api } from '@/lib/api'
 import { createApiError } from '@/lib/apiError'
 
 import { getStudyEcg } from './ecgApi'
+import { clearDetailCache } from './ecgDetail'
 
 describe('getStudyEcg', () => {
   const originalFetch = globalThis.fetch
@@ -543,5 +544,119 @@ describe('línea de tiempo de pared', () => {
 
     expect(signal.annotations[0].startMs).toBe(start + 3_601_000)
     expect(signal.annotations[0].endMs).toBe(start + 3_601_500)
+  })
+})
+
+describe('muestras de cerca', () => {
+  const originalFetch = globalThis.fetch
+  const originalWorker = globalThis.Worker
+  const start = 1_700_000_000_000
+  const hourMs = 3_600_000
+  const future = '2099-01-01T00:00:00Z'
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    clearDetailCache()
+    globalThis.fetch = originalFetch
+    globalThis.Worker = originalWorker
+  })
+
+  /** Dos lotes de 32 muestras con una hora de silencio en el medio. */
+  function twoBatches(overrides: Record<string, unknown> = {}) {
+    return manifest({
+      sampleCount: 64,
+      sampleRate: 500,
+      startTimestamp: start,
+      levels: [level({ samplesPerBucket: 16, pointCount: 8, byteLength: 32 })],
+      segments: [
+        object({
+          url: 'seg-0',
+          expiresAt: future,
+          byteLength: 128,
+          startSampleIndex: 0,
+          sampleCount: 32,
+        }),
+        object({
+          url: 'seg-32',
+          expiresAt: future,
+          byteLength: 128,
+          startSampleIndex: 32,
+          sampleCount: 32,
+        }),
+      ],
+      timeline: [
+        timelineSegment(0, 0, 32, start, start + 64),
+        timelineSegment(1, 32, 32, start + hourMs, start + hourMs + 64),
+      ],
+      ...overrides,
+    })
+  }
+
+  function serve() {
+    globalThis.fetch = vi.fn(async (url: string) =>
+      url === 'level'
+        ? floatResponse(Array(8).fill(0))
+        : floatResponse(Array.from({ length: 32 }, (_, i) => (url === 'seg-0' ? i : 32 + i))),
+    ) as unknown as typeof fetch
+  }
+
+  it('cada muestra cae a la misma hora que el balde del resumen que la contiene', async () => {
+    installDecoderWorker()
+    serve()
+    vi.spyOn(api, 'get').mockResolvedValue({ data: twoBatches() })
+
+    const signal = await getStudyEcg('study-id')
+    const window = await signal.detail!.load(0, 64)
+
+    expect(window.samples[40]).toBe(40)
+    // El punto 2 del resumen es el balde que arranca en la muestra 16; el 4, el
+    // que arranca en la 32, ya del otro lado del hueco.
+    expect(window.timestampsMs[16]).toBe(signal.timestampsMs[2])
+    expect(window.timestampsMs[32]).toBe(signal.timestampsMs[4])
+    expect(window.timestampsMs[32]).toBe(start + hourMs)
+    expect(window.gapIndices).toEqual([32])
+  })
+
+  it('un tramo que arranca después del hueco no corta en su primera muestra', async () => {
+    installDecoderWorker()
+    serve()
+    vi.spyOn(api, 'get').mockResolvedValue({ data: twoBatches() })
+
+    const signal = await getStudyEcg('study-id')
+    const window = await signal.detail!.load(40, 64)
+
+    expect(window.timestampsMs[0]).toBe(start + hourMs + 16)
+    expect(window.gapIndices).toEqual([])
+  })
+
+  it('con vista filtrada no usa el crudo: dibujaría otra señal', async () => {
+    installDecoderWorker()
+    serve()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: twoBatches({
+        viewKind: 'filtered_visualization',
+        segments: [],
+        raw: object({ url: 'raw', expiresAt: future, byteLength: 256 }),
+      }),
+    })
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.detail).toBeUndefined()
+  })
+
+  it('un estudio seedeado saca las muestras de su crudo', async () => {
+    installDecoderWorker()
+    serve()
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: twoBatches({
+        segments: [],
+        raw: object({ url: 'raw', expiresAt: future, byteLength: 256 }),
+      }),
+    })
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.detail?.sampleCount).toBe(64)
   })
 })

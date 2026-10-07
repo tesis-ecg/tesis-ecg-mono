@@ -39,6 +39,8 @@ import {
 import type {
   ECGAnnotation,
   ECGAnnotationSeverity,
+  ECGDetailSource,
+  ECGDetailWindow,
   ECGSignal,
   ECGViewerHandle,
   ECGViewerProps,
@@ -46,7 +48,8 @@ import type {
 } from '../types'
 import { formatWallClock, formatWallClockShort } from '../utils/formatEcgTimestamp'
 import { latestTimestampMs } from '../utils/processedRange'
-import { sampleRangeForSeconds } from '../utils/sampleRange'
+import { pointRangeForSeconds, sampleRangeForSeconds } from '../utils/sampleRange'
+import { coversRange, detailRangeFor, mergeDetail, type DetailRange } from '../utils/traceDetail'
 
 /**
  * Lee los tokens CSS del ECG desde `document.documentElement`. uPlot pinta sobre
@@ -102,6 +105,24 @@ function readAlertToken(
 
 const NO_ANNOTATIONS: ECGAnnotation[] = []
 
+/** Espera tras el último zoom o desplazamiento antes de pedir muestras. */
+const DETAIL_DEBOUNCE_MS = 150
+
+/**
+ * Lo más que una señal nueva espera a sus muestras antes de dibujarse igual,
+ * con el resumen. Una descarga colgada no puede frenar los lotes que llegan.
+ */
+const SIGNAL_HOLD_MAX_MS = 3_000
+
+/**
+ * Lo que uPlot tiene para dibujar: el resumen, o el resumen con las muestras
+ * de un tramo empalmadas. Eje X en segundos desde el inicio del estudio.
+ */
+interface DrawnTrace {
+  xs: Float64Array
+  ys: Float32Array | (number | null)[]
+}
+
 /**
  * `<ECGViewer />` — renderiza una traza ECG de canal único con uPlot.
  *
@@ -123,7 +144,7 @@ const NO_ANNOTATIONS: ECGAnnotation[] = []
  */
 export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function ECGViewer(
   {
-    signal,
+    signal: incomingSignal,
     height = 400,
     paperSpeed = DEFAULT_PAPER_SPEED,
     amplitude = DEFAULT_AMPLITUDE,
@@ -141,6 +162,22 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   },
   ref,
 ) {
+  // --- Señal dibujada ------------------------------------------------------ #
+  //
+  // En un estudio en curso cada lote llega como otra señal, y el gráfico se
+  // recrea con ella desde el resumen. Con las muestras en pantalla eso era
+  // volver un instante al serrucho del mín/máx en cada lote. Así que mientras
+  // se descargan las muestras de la señal nueva (el efecto de más abajo) se
+  // sigue dibujando la anterior, y el gráfico nuevo arranca ya con ellas.
+  const [signal, setSignal] = useState(incomingSignal)
+  const [showsSamples, setShowsSamples] = useState(false)
+  const holdsSignal =
+    incomingSignal !== signal && showsSamples && incomingSignal.detail !== undefined
+  if (incomingSignal !== signal && !holdsSignal) {
+    setSignal(incomingSignal)
+    setShowsSamples(false)
+  }
+
   const containerRef = useRef<HTMLDivElement | null>(null)
   const labelsOverlayRef = useRef<HTMLDivElement | null>(null)
   const uplotRef = useRef<uPlot | null>(null)
@@ -209,6 +246,14 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // sample rate para evitar reallocar 900k floats en cada render.
   const xs = useMemo(() => buildXAxis(signal), [signal])
   const ys = useMemo(() => buildYSeries(signal), [signal])
+  // Lo que está dibujado. El rango vertical se mide sobre esto y no sobre
+  // `signal.samples`: con las muestras empalmadas, el resumen puede no tener
+  // ni un punto en pantalla (un balde de 33 s contra 10 s a 25 mm/s).
+  const traceRef = useRef<DrawnTrace>({ xs, ys })
+  // Las últimas muestras empalmadas y la señal de la que salieron. Sobreviven
+  // a la recreación de uPlot: si son de su señal, el gráfico nuevo arranca con
+  // ellas en vez de volver al resumen.
+  const detailWindowRef = useRef<{ signal: ECGSignal; detail: ECGDetailWindow } | null>(null)
   // Ocultar los avisos no los borra: el panel los sigue listando. Viajan a
   // uPlot por ref y solo repintan: recrear la instancia para esto le hacía
   // perder al médico el zoom y el cursor cada vez que los alternaba.
@@ -290,6 +335,125 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           ? current
           : next,
       )
+    }
+
+    // --- Muestras de cerca ------------------------------------------------- #
+    //
+    // `signal.samples` es un resumen: un mínimo y un máximo por balde. Cuando
+    // lo visible pide más detalle que un balde por píxel, se descargan las
+    // muestras del tramo y se empalman en el lugar del resumen; al alejarse se
+    // vuelve a él. `data-trace` dice cuál de los dos está en pantalla.
+    const detail = signal.detail
+    const overviewBucket = signal.metadata?.overviewSamplesPerBucket ?? null
+
+    const spliceDetail = (loaded: ECGDetailWindow): DrawnTrace => {
+      const detailXs = new Float64Array(loaded.timestampsMs.length)
+      for (let i = 0; i < detailXs.length; i++) {
+        detailXs[i] = (loaded.timestampsMs[i] - signal.startTimestamp) / 1000
+      }
+      return mergeDetail(xs, ys, detailXs, loaded.samples, loaded.gapIndices)
+    }
+
+    // Si lo último empalmado es de esta señal (llegó un lote nuevo, o cambió
+    // el alto), el gráfico nuevo arranca con eso y no con el resumen.
+    if (detailWindowRef.current?.signal !== signal) detailWindowRef.current = null
+    const carried = detailWindowRef.current?.detail ?? null
+    let detailLoaded: DetailRange | null = carried && {
+      startSample: carried.startSample,
+      endSample: carried.endSample,
+    }
+    let detailTimer: number | null = null
+    let detailAbort: AbortController | null = null
+    traceRef.current = carried ? spliceDetail(carried) : { xs, ys }
+    container.dataset.trace = overviewBucket === null || carried ? 'samples' : 'overview'
+
+    // Lo dibujado cambió, y con eso dónde está la señal en el eje vertical.
+    const fitVertical = (inst: uPlot) => {
+      const { min, max } = inst.scales.x
+      if (min == null || max == null) return
+      applyVerticalRange(inst, scaleRef.current, traceRef.current, min, max, verticalOffsetRef)
+    }
+
+    const draw = (inst: uPlot, trace: DrawnTrace) => {
+      traceRef.current = trace
+      inst.setData([trace.xs, trace.ys], false)
+      fitVertical(inst)
+      // `setData` sin reescalar no repinta solo.
+      inst.redraw()
+    }
+
+    const showOverview = (inst: uPlot) => {
+      if (detailLoaded === null) return
+      detailLoaded = null
+      detailWindowRef.current = null
+      setShowsSamples(false)
+      container.dataset.trace = 'overview'
+      draw(inst, { xs, ys })
+    }
+
+    const showDetail = (inst: uPlot, loaded: ECGDetailWindow) => {
+      detailLoaded = { startSample: loaded.startSample, endSample: loaded.endSample }
+      detailWindowRef.current = { signal, detail: loaded }
+      setShowsSamples(true)
+      container.dataset.trace = 'samples'
+      draw(inst, spliceDetail(loaded))
+    }
+
+    // Una señal más nueva ya tiene sus muestras (ver `holdsSignal`) y este
+    // gráfico está por irse: no se pisa lo que va a heredar el siguiente.
+    const superseded = () =>
+      detailWindowRef.current !== null && detailWindowRef.current.signal !== signal
+
+    const updateDetail = () => {
+      detailTimer = null
+      const inst = uplotRef.current
+      if (!inst || !detail || superseded()) return
+      const { min, max } = inst.scales.x
+      if (min == null || max == null) return
+      const request = detailRequest(signal, detail, plotWidthPx(inst), min, max)
+      if (!request) return
+      const { visible, wanted } = request
+      if (!wanted || coversRange(detailLoaded, visible)) {
+        // Lo que estuviera bajando ya no hace falta. Si se lo dejaba seguir,
+        // al llegar tapaba con su tramo el que se está mirando: volver dentro
+        // de lo ya cargado antes de que terminara dejaba un borde de pantalla
+        // en el resumen.
+        detailAbort?.abort()
+        detailAbort = null
+        if (!wanted) showOverview(inst)
+        return
+      }
+      detailAbort?.abort()
+      const controller = new AbortController()
+      detailAbort = controller
+      detail.load(wanted.startSample, wanted.endSample, controller.signal).then(
+        (loaded) => {
+          if (controller.signal.aborted || uplotRef.current !== inst || superseded()) return
+          // La vista se movió mientras bajaba. Si lo que llegó no cubre lo que
+          // se ve ahora, decide el `updateDetail` que ese movimiento agendó:
+          // empalmarlo tapaba con otro tramo lo que se está mirando. Si lo
+          // cubre (un zoom adentro), sirve tal cual.
+          const { min: nowMin, max: nowMax } = inst.scales.x
+          if (nowMin !== min || nowMax !== max) {
+            const now =
+              nowMin != null && nowMax != null
+                ? detailRequest(signal, detail, plotWidthPx(inst), nowMin, nowMax)
+                : null
+            if (!now?.wanted || !coversRange(loaded, now.visible)) return
+          }
+          showDetail(inst, loaded)
+        },
+        () => {
+          // Sin las muestras queda el resumen, que es lo que ya se veía. Una
+          // descarga cancelada por otro zoom también termina acá.
+        },
+      )
+    }
+
+    const scheduleDetail = () => {
+      if (!detail) return
+      if (detailTimer != null) window.clearTimeout(detailTimer)
+      detailTimer = window.setTimeout(updateDetail, DETAIL_DEBOUNCE_MS)
     }
 
     const opts: uPlot.Options = {
@@ -422,6 +586,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             const last = lastViewportRef.current
             if (last && last.min === min && last.max === max) return
             lastViewportRef.current = { min, max }
+            scheduleDetail()
             setOverlayViewport((current) =>
               current?.startMs === nextViewport.startMs && current.endMs === nextViewport.endMs
                 ? current
@@ -442,7 +607,14 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
               if (uplotRef.current !== u) return
               const { min: nextMin, max: nextMax } = u.scales.x
               if (nextMin == null || nextMax == null) return
-              applyVerticalRange(u, scaleRef.current, signal, nextMin, nextMax, verticalOffsetRef)
+              applyVerticalRange(
+                u,
+                scaleRef.current,
+                traceRef.current,
+                nextMin,
+                nextMax,
+                verticalOffsetRef,
+              )
             })
             // El zoom libre sirve para navegar, no para medir. Si el rango
             // visible dejó de corresponder a `paperSpeed`, el rótulo de la barra
@@ -464,7 +636,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       },
     }
 
-    const data: uPlot.AlignedData = [xs as unknown as number[], ys as unknown as number[]]
+    const data: uPlot.AlignedData = [traceRef.current.xs, traceRef.current.ys]
 
     isInitializingFrameRef.current = true
     const u = new uPlot(opts, data, container)
@@ -588,7 +760,14 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       // El alto pudo cambiar, y con él cuántos mV entran.
       const after = inst.scales.x
       if (after.min != null && after.max != null) {
-        applyVerticalRange(inst, scaleRef.current, signal, after.min, after.max, verticalOffsetRef)
+        applyVerticalRange(
+          inst,
+          scaleRef.current,
+          traceRef.current,
+          after.min,
+          after.max,
+          verticalOffsetRef,
+        )
       }
       syncPlotArea(inst)
     })
@@ -659,7 +838,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         verticalOffsetRef.current = panStart.offsetMv + (dyPx / rect.height) * panStart.spanMv
         const { min, max } = inst.scales.x
         if (min != null && max != null) {
-          applyVerticalRange(inst, scaleRef.current, signal, min, max, verticalOffsetRef)
+          applyVerticalRange(inst, scaleRef.current, traceRef.current, min, max, verticalOffsetRef)
         }
       }
       const viewWidthSec = panStart.max - panStart.min
@@ -733,7 +912,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         if (yMin == null || yMax == null || min == null || max == null) return
         const dir = e.key === 'ArrowUp' ? 1 : -1
         verticalOffsetRef.current += (yMax - yMin) * 0.1 * dir
-        applyVerticalRange(inst, scaleRef.current, signal, min, max, verticalOffsetRef)
+        applyVerticalRange(inst, scaleRef.current, traceRef.current, min, max, verticalOffsetRef)
         e.preventDefault()
         return
       }
@@ -758,12 +937,60 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       container.removeEventListener('click', handleClick)
       container.removeEventListener('keydown', handleKeyDown)
       if (suppressClickTimeout != null) window.clearTimeout(suppressClickTimeout)
+      if (detailTimer != null) window.clearTimeout(detailTimer)
+      detailAbort?.abort()
       ro.disconnect()
       uplotRef.current?.destroy()
       uplotRef.current = null
       lastViewportRef.current = null
     }
   }, [signal, height, xs, ys, durationSec, initialWindowSeconds, followLatest])
+
+  // Llegó una señal nueva con muestras en pantalla (`holdsSignal`): se piden
+  // las del tramo que el gráfico nuevo va a encuadrar, y recién con ellas se
+  // cambia de señal. Las piezas que ya estaban vienen de la caché; las de un
+  // lote nuevo, de S3.
+  useEffect(() => {
+    if (!holdsSignal) return
+    const next = incomingSignal
+    const nextDetail = next.detail
+    const inst = uplotRef.current
+    const viewport = preservedViewportRef.current
+    const controller = new AbortController()
+    let settled = false
+    const show = (loaded: ECGDetailWindow | null) => {
+      if (settled || controller.signal.aborted) return
+      settled = true
+      detailWindowRef.current = loaded && { signal: next, detail: loaded }
+      setShowsSamples(loaded !== null)
+      setSignal(next)
+    }
+
+    let wanted: DetailRange | null = null
+    if (nextDetail && inst && viewport) {
+      // El mismo tramo que restaura el encuadre inicial: pegado al nuevo final
+      // si se sigue lo último que llega, o el que el médico estaba mirando.
+      const endSec = next.durationMs / 1000
+      const spanSec = (viewport.endMs - viewport.startMs) / 1000
+      const [minSec, maxSec] = followsLatestRef.current
+        ? [Math.max(0, endSec - spanSec), endSec]
+        : [
+            (viewport.startMs - next.startTimestamp) / 1000,
+            (viewport.endMs - next.startTimestamp) / 1000,
+          ]
+      wanted = detailRequest(next, nextDetail, plotWidthPx(inst), minSec, maxSec)?.wanted ?? null
+    }
+    const pending =
+      nextDetail && wanted
+        ? nextDetail.load(wanted.startSample, wanted.endSample, controller.signal)
+        : Promise.resolve(null)
+    pending.then(show, () => show(null))
+    const timeout = window.setTimeout(() => show(null), SIGNAL_HOLD_MAX_MS)
+    return () => {
+      controller.abort()
+      window.clearTimeout(timeout)
+    }
+  }, [holdsSignal, incomingSignal])
 
   // Cambiar ganancia o barrido NO recrea la instancia: se actualiza la ref que
   // leen `scales.y.range` y la grilla, se reencuadra el eje de tiempo a la
@@ -812,7 +1039,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     )
     const { min: nextMin, max: nextMax } = inst.scales.x
     if (nextMin != null && nextMax != null) {
-      applyVerticalRange(inst, scale, signalRef.current, nextMin, nextMax, verticalOffsetRef)
+      applyVerticalRange(inst, scale, traceRef.current, nextMin, nextMax, verticalOffsetRef)
     }
     inst.redraw()
   }, [scale, durationSec])
@@ -1057,6 +1284,37 @@ function plotHeightPx(inst: uPlot): number {
 }
 
 /**
+ * Qué muestras hacen falta para ver `[minSec, maxSec]` de cerca: lo visible,
+ * contado en muestras del estudio, y el tramo a descargar (`null` si el resumen
+ * alcanza). `null` del todo si la señal ya son las muestras.
+ */
+function detailRequest(
+  signal: ECGSignal,
+  detail: ECGDetailSource,
+  plotWidth: number,
+  minSec: number,
+  maxSec: number,
+): { visible: DetailRange; wanted: DetailRange | null } | null {
+  const bucket = signal.metadata?.overviewSamplesPerBucket ?? null
+  if (bucket === null) return null
+  // De puntos del resumen a muestras: cada par mín/máx es un balde. Un punto de
+  // más a la izquierda por el balde que asoma cortado.
+  const [fromPoint, toPoint] = sampleRangeForSeconds(signal, minSec, maxSec)
+  const visible = {
+    startSample: Math.floor(Math.max(fromPoint - 1, 0) / 2) * bucket,
+    endSample: Math.min(Math.ceil(toPoint / 2) * bucket, detail.sampleCount),
+  }
+  const wanted = detailRangeFor({
+    visibleStartSample: visible.startSample,
+    visibleEndSample: visible.endSample,
+    plotWidthPx: plotWidth,
+    overviewSamplesPerBucket: bucket,
+    availableSamples: detail.sampleCount,
+  })
+  return { visible, wanted }
+}
+
+/**
  * Fija el rango vertical: span de la ganancia, centro en la línea de base.
  *
  * El span no depende de los datos —eso es lo que hace comparable un milímetro
@@ -1070,22 +1328,27 @@ function plotHeightPx(inst: uPlot): number {
  * acotado para que la traza nunca quede entera fuera de pantalla. El valor
  * acotado se escribe de vuelta en `offsetMv`: si no, seguir arrastrando más
  * allá del tope dejaría un desplazamiento fantasma que habría que deshacer.
+ *
+ * Se mide sobre lo dibujado (`trace`) y no sobre el resumen. Con las muestras
+ * empalmadas el resumen puede tener uno o ningún punto en pantalla, y ese punto
+ * es el mínimo o el máximo de un balde de hasta 33 s: centrar ahí dejaba la
+ * traza cortada, o fuera de pantalla si el balde tenía un artefacto.
  */
 function applyVerticalRange(
   inst: uPlot,
   scale: PaperScale,
-  signal: ECGSignal,
+  trace: DrawnTrace,
   minSec: number,
   maxSec: number,
   offsetMv: { current: number },
 ): void {
   const heightPx = plotHeightPx(inst)
   if (heightPx <= 0) return
-  const [from, to] = sampleRangeForSeconds(signal, minSec, maxSec)
+  const [from, to] = pointRangeForSeconds(trace.xs, minSec, maxSec)
   // Una ventana sin muestras (un hueco, o antes de que llegue el lote) no dice
   // dónde está la señal: se conserva el rango actual. Centrar en 0 mV dejaba
   // fuera de pantalla a cualquier trazado con offset.
-  const extent = autoVerticalRange(signal.samples, from, to)
+  const extent = autoVerticalRange(trace.ys, from, to)
   if (!extent) return
   // En modo automático el rango lo pone la señal visible: es lo que permite ver
   // un trazado que se sale de cualquier ganancia fija.
@@ -1094,7 +1357,7 @@ function applyVerticalRange(
   if (scale.autoAmplitude) {
     ;[min, max] = extent
   } else {
-    const baseline = baselineMv(signal.samples, from, to)
+    const baseline = baselineMv(trace.ys, from, to)
     const center = pannedCenterMv(baseline, offsetMv.current, extent)
     offsetMv.current = center - baseline
     ;[min, max] = verticalRange(scale, heightPx, center)
