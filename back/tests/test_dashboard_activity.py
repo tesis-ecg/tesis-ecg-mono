@@ -17,6 +17,7 @@ from app.db.models.device import DeviceStatus
 from app.db.models.user import User, UserRole
 from app.modules.dashboard import dashboard_repository
 from app.modules.dashboard.dashboard_time import dashboard_date
+from tests.ingest_helpers import build_frames, post_frames
 
 URL = "/dashboard/overview"
 
@@ -203,6 +204,44 @@ async def test_la_flota_cuenta_los_asignados_y_los_que_transmiten(
 
     assert body["activity"]["fleet"] == {"assigned": 2, "transmitting": 1}
     assert {item["serial"] for item in body["deviceWatchdog"]} == {stale.serial_number}
+
+
+async def test_un_equipo_que_no_mide_la_bateria_no_figura_con_bateria_baja(
+    db: Any,
+    s3: Any,
+    as_user: Any,
+    make_doctor: Any,
+    make_patient: Any,
+    make_device: Any,
+) -> None:
+    """Sin dato de batería no es "Batería baja".
+
+    El puente omite `X-Battery-Pct` cuando el equipo no mide la batería
+    (`INTEGRACION.md` §11.1). La ingesta conservaba la última lectura, así que un
+    equipo que alguna vez mandó 0 % seguía listado acá aunque ya no reportara
+    ninguna. El que sí la mide y está bajo tiene que seguir apareciendo.
+    """
+    doctor = await make_doctor()
+    client: AsyncClient = as_user(await _doctor_user(db, doctor))
+    device, api_key = await make_device(await make_patient(doctor))
+    measured_low, _ = await make_device(
+        await make_patient(doctor), last_seen_at=datetime.now(UTC), last_battery_pct=10
+    )
+    frames = build_frames(1800)
+    half = len(frames) // 2
+
+    await post_frames(client, device, api_key, frames[:half], battery=0)
+    watchdog = (await client.get(URL)).json()["deviceWatchdog"]
+    assert {item["serial"]: item["reason"] for item in watchdog} == {
+        device.serial_number: "low_battery",
+        measured_low.serial_number: "low_battery",
+    }
+
+    await post_frames(client, device, api_key, frames[half:], battery=None)
+    watchdog = (await client.get(URL)).json()["deviceWatchdog"]
+    assert {item["serial"]: item["reason"] for item in watchdog} == {
+        measured_low.serial_number: "low_battery",
+    }
 
 
 async def test_el_overview_limita_los_listados_de_la_home(
