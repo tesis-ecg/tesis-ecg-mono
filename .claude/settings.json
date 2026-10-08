@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/opt/homebrew/bin/python3 /Users/martinbarreiro/.agents/hooks/project_hook_adapter.py /Users/martinbarreiro/Developer/tesis/tesis-ecg-mono 'node .claude/hooks/format-hook.js'"
+            "command": "\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}\"/.claude/hooks/run-hook.sh 'node .claude/hooks/format-hook.js'"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/opt/homebrew/bin/python3 /Users/martinbarreiro/.agents/hooks/project_hook_adapter.py /Users/martinbarreiro/Developer/tesis/tesis-ecg-mono 'bash .claude/hooks/structural-change-check.sh'"
+            "command": "\"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}\"/.claude/hooks/run-hook.sh 'bash .claude/hooks/structural-change-check.sh'"
           }
         ]
       }
