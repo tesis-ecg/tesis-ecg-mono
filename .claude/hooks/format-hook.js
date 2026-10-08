@@ -2,6 +2,14 @@ import { execFileSync } from 'child_process';
 import { readFileSync, realpathSync, existsSync } from 'fs';
 import path from 'path';
 
+// On Windows npx is a .cmd shim that execFileSync cannot start without a shell (and a
+// shell would re-parse file names), so run npm's own npx entry point with node instead.
+const npx = (args, options) =>
+  process.platform === 'win32'
+    ? execFileSync(process.execPath,
+        [path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npx-cli.js'), ...args], options)
+    : execFileSync('npx', args, options);
+
 // Format only the edited product file with the owning workspace's configuration.
 try {
   const payload = JSON.parse(readFileSync(0, 'utf-8'));
@@ -24,7 +32,7 @@ try {
     // A workspace without Prettier (currently mobile) keeps its existing toolchain.
     if (!existsSync(path.join(cwd, 'node_modules/.bin/prettier'))) process.exit(0);
     console.error(`Formatting (prettier): ${relative}`);
-    execFileSync('npx', ['--no-install', 'prettier', '--write', '--', target], {
+    npx(['--no-install', 'prettier', '--write', '--', target], {
       cwd, stdio: ['ignore', 'ignore', 'inherit'],
     });
   } else if (workspace === 'back' && resolved.endsWith('.py')) {
