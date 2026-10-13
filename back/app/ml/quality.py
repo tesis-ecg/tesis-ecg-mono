@@ -518,6 +518,35 @@ def spectral_sqi(
 # --------------------------------------------------------------------------- #
 
 
+#: Ventana del medidor de red sobre la cruda: la misma que usa el firmware
+#: (`LeadOffSignalDetector::lastNoiseUv()`), que es con la que se midió el umbral.
+FIRMWARE_MAINS_WINDOW_S = 2.0
+
+
+def firmware_untrusted(signal: Signal, sample_rate: int, max_uv: float) -> Mask:
+    """Muestras donde la red de la cruda invalida los R del firmware.
+
+    Con más de ~5 mV pp de red el detector del equipo inventa latidos (entre el
+    5 y el 28 % de las muestras con FC > 150 en las capturas del chaleco) y su
+    SQI los marca buenos: mira la señal ya filtrada, y el notch le borró la red
+    (`Filtros.md` §13.17.6 del repo de Biomédica). Lo que sí la ve es la cruda.
+    Se mide como el firmware: el desvío de la primera diferencia en ventanas de
+    2 s, en µV (una senoide de red de P mV pp da ~218·P µV). Es una marca de
+    entorno, no de latidos: no separa los buenos de los inventados dentro del
+    tramo, y no ve los que inventa el movimiento. `max_uv <= 0` la apaga.
+    """
+    mask = np.zeros(signal.size, dtype=bool)
+    if max_uv <= 0 or signal.size < 2:
+        return mask
+    step = max(int(FIRMWARE_MAINS_WINDOW_S * sample_rate), 2)
+    for start in range(0, signal.size, step):
+        chunk = signal[start : start + step].astype(np.float64)
+        difference = np.diff(chunk[np.isfinite(chunk)])
+        if difference.size >= 2 and float(np.std(difference)) * 1000.0 > max_uv:
+            mask[start : start + step] = True
+    return mask
+
+
 def assess_quality(
     signal: Signal,
     flags: Flags,
@@ -530,6 +559,7 @@ def assess_quality(
     context_samples: int = 0,
     lookahead_samples: int = 0,
     flags_known: Mask | None = None,
+    firmware_untrusted: Mask | None = None,
 ) -> QualityReport:
     """Evalúa el lote ventana por ventana y devuelve la máscara de analizable.
 
@@ -561,6 +591,10 @@ def assess_quality(
     bloque que mezclaba segmentos con y sin flags comparaba el ECG limpio de
     la parte sin flags contra un firmware "que no vio ningún R" y lo dejaba
     MARGINAL/bsqi, fuera del ritmo, la morfología y los totales.
+
+    Tampoco se pide donde `firmware_untrusted` (`firmware_untrusted()`) dice
+    que la red de la cruda invalida los R del firmware: contra latidos
+    inventados el bSQI mide el ruido del equipo, no la señal.
     """
     n_samples = int(signal.size)
     analyzable = np.zeros(n_samples, dtype=bool)
@@ -596,7 +630,8 @@ def assess_quality(
             sample_rate=sample_rate,
             thresholds=thresholds,
             firmware_available=firmware_available
-            and (flags_known is None or bool(flags_known[low:end].all())),
+            and (flags_known is None or bool(flags_known[low:end].all()))
+            and (firmware_untrusted is None or not bool(firmware_untrusted[low:end].any())),
         )
         windows.append(
             QualityWindow(

@@ -174,6 +174,11 @@ export interface StudyClinicalReportWindowPlan {
   confidenceScore: number | null
   description: string | null
   relatedSymptoms: string[]
+  /**
+   * `false` si la tira toca un tramo con la hora estimada por recepción. Los
+   * snapshots anteriores a `schemaVersion` 3 no lo traen.
+   */
+  timeVerified?: boolean
 }
 
 export interface StudyClinicalReportFindingSummary {
@@ -224,6 +229,12 @@ export interface StudyClinicalReportSnapshot {
     timeVerified?: boolean
     synchronizationSources: string[]
     maxSynchronizationUncertaintyMs: number | null
+    /** Desde `schemaVersion` 3: los tramos con la hora estimada por recepción. */
+    unverifiedSegments?: Array<{
+      startEpochMs: number
+      endEpochMs: number
+      uncertaintyMs: number | null
+    }>
   }
   /** Desde `schemaVersion` 2. Un snapshot anterior no la trae. */
   metrics?: HolterMetrics | null

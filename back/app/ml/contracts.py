@@ -74,6 +74,11 @@ class QualityThresholds:
     #: la apaga: es lo que necesita una señal sintética sin interferencia, y
     #: `build_config` trae los 50 Hz de `ml_mains_hz`. Ver `quality.deinterfere`.
     mains_hz: float = 0.0
+    #: Por encima de esta red en la cruda (desvío de la primera diferencia en
+    #: ventanas de 2 s, en µV) no se usan los R del firmware: su detector
+    #: inventa latidos y su SQI sigue diciendo buena. Cero lo apaga. Ver
+    #: `quality.firmware_untrusted`.
+    firmware_mains_max_uv: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

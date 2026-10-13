@@ -126,9 +126,15 @@ describe('StudyClinicalReportTab', () => {
         severity: 'blocking',
       },
       {
-        code: 'TIME_NOT_VERIFIED',
-        message: 'La hora de las muestras no está verificada.',
+        code: 'MISSING_INDICATION',
+        message: 'Completá la indicación del estudio para generar una versión final.',
         severity: 'blocking',
+      },
+      {
+        // Un tramo con hora estimada no impide emitir: es una advertencia.
+        code: 'TIME_NOT_VERIFIED',
+        message: '1 tramo con la hora estimada por recepción.',
+        severity: 'warning',
       },
       {
         code: 'SIMULATED_STUDY',
@@ -140,10 +146,10 @@ describe('StudyClinicalReportTab', () => {
     render(<StudyClinicalReportTab study={study} onPreview={vi.fn()} />)
 
     expect(screen.getByText('Faltan 2 requisitos para emitir el informe final')).toBeTruthy()
-    expect(screen.getByText('5/7')).toBeTruthy()
-    expect(screen.getByText('La hora de las muestras no está verificada.')).toBeTruthy()
+    expect(screen.getByText('4/6')).toBeTruthy()
+    expect(screen.getByText('1 tramo con la hora estimada por recepción.')).toBeTruthy()
     expect(screen.getByText('La señal fue generada con un chaleco simulado.')).toBeTruthy()
-    expect(screen.getAllByText('Requerido para finalizar')).toHaveLength(1)
+    expect(screen.getAllByText('Requerido para finalizar')).toHaveLength(2)
 
     fireEvent.click(screen.getByRole('button', { name: /Conclusión clínica/ }))
     expect(document.activeElement?.id).toBe('report-conclusion')

@@ -18,11 +18,12 @@ Hace falta porque `nk.ecg_quality(method="zhao2018")` no lo nota: medido, le da
 implementación de NeuroKit descartó el índice qSQI del paper original, que era
 justo el que medía coincidencia entre detectores. El bSQI lo recupera gratis.
 
-**Pan-Tompkins del backend (métricas Holter, `detect_r_peaks`).** El equipo ya
-marca `R_PEAK` por muestra, pero su detector no está validado, deja de correr
-con `FILTER_BAD` y no ubica puntos fiduciales. Las métricas del informe (FC,
-pausas, VFC, ST) necesitan una posición de R propia y estable, y el futuro
-clasificador de latidos va a partir de este mismo paso.
+**Pan-Tompkins del backend (`detect_r_peaks`).** Fue el detector de las
+métricas Holter hasta la versión 3 del algoritmo (`holter_metrics.py`). Desde
+la 4 las métricas usan el de NeuroKit, como el motor: corrido por lote, el PT
+reaprendía el umbral cada ~26 s, se enganchaba a la onda T y quedaba ciego
+después de un artefacto (`tools/physionet/DETECTORS.md`). Queda para el banco
+de `tools/physionet` y `tools/vest`, que lo comparan.
 
 Es un Pan-Tompkins clásico: pasa-banda 5–15 Hz, derivada, cuadrado e
 integración en 150 ms, con umbral adaptativo, período refractario, búsqueda

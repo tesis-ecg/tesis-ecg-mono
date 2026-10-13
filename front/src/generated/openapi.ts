@@ -309,6 +309,8 @@ export interface HolterPausesOut {
   "count": number
   "longest": MetricEvidenceOut | null
   "items": Array<MetricEvidenceOut>
+  "noisyCount"?: number
+  "noisyItems"?: Array<MetricEvidenceOut>
 }
 
 export interface HolterRrHistogramOut {
@@ -707,6 +709,7 @@ export interface StudyClinicalReportWindowPlanOut {
   "confidenceScore": number | null
   "description": string | null
   "relatedSymptoms": Array<string>
+  "timeVerified"?: boolean
 }
 
 export interface StudyDetailOut {

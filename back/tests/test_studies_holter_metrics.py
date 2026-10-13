@@ -1,13 +1,17 @@
 """`GET /studies/{id}/holter-metrics` y su paso al snapshot del informe."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
 
 from app.core.s3 import put_object
+from app.db.models.ecg_event import ECGEvent
 from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User
-from app.modules.ingest.processing import append_beat_analysis, segment_key
+from app.ml.beats import DETECTOR
+from app.modules.ingest.processing import append_beat_analysis, compact_beat_chunks, segment_key
+from app.modules.studies.studies_service import _engine_pauses
 from tests.synthetic_ecg import beat_times, synthetic_ecg
 
 RATE = 500
@@ -139,7 +143,7 @@ async def test_el_preview_congela_las_metricas_y_suma_tiras_de_evidencia(
     first = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
     second = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
 
-    assert first["snapshot"]["schemaVersion"] == 2
+    assert first["snapshot"]["schemaVersion"] == 3
     assert first["snapshot"]["metrics"]["status"] == "ok"
     assert first["snapshotHash"] == second["snapshotHash"]
     metric_windows = [window for window in first["windows"] if window["category"] == "metric"]
@@ -147,3 +151,68 @@ async def test_el_preview_congela_las_metricas_y_suma_tiras_de_evidencia(
     assert all(window["findingId"] is None for window in metric_windows)
     pause = metric_windows[-1]
     assert pause["startEpochMs"] < pause["findingStartEpochMs"] < pause["endEpochMs"]
+
+
+async def test_los_latidos_sin_la_marca_del_detector_declaran_el_pan_tompkins(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """Hasta el `backfill_beat_analysis --reset`, los latidos de un estudio
+    viejo son del Pan-Tompkins: la versión tiene que decirlo, o la nota de
+    método del PDF nombra un detector que no los produjo."""
+    doctor, study, _ = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    client = as_user(await _doctor_user(db, doctor))
+    assert all(chunk["detector"] == DETECTOR for chunk in study.ecg_beat_chunks)
+    current = (await client.get(f"/studies/{study.id}/holter-metrics")).json()
+
+    study.ecg_beat_chunks = [
+        {key: value for key, value in chunk.items() if key != "detector"}
+        for chunk in study.ecg_beat_chunks
+    ]
+    await db.commit()
+    legacy = (await client.get(f"/studies/{study.id}/holter-metrics")).json()
+
+    assert current["analysis"]["algorithmVersion"] == 4
+    assert legacy["analysis"]["algorithmVersion"] == 1
+
+
+def test_la_compactacion_conserva_la_marca_solo_si_todas_las_partes_la_tienen(s3) -> None:  # type: ignore[no-untyped-def]
+    study = Study(id=uuid.uuid4())
+    chunks = []
+    for start in (0, 100):
+        key = f"studies/{study.id}/beats/{start}.bin"
+        put_object(key, b"")
+        chunks.append({"key": key, "startSampleIndex": start, "sampleCount": 100, "beatCount": 0})
+    study.ecg_beat_chunks = [{**chunk, "detector": DETECTOR} for chunk in chunks]
+    assert compact_beat_chunks(study, force=True)[0]["detector"] == DETECTOR
+
+    study.ecg_beat_chunks = [{**chunks[0], "detector": DETECTOR}, chunks[1]]
+    assert "detector" not in compact_beat_chunks(study, force=True)[0]
+
+
+def _pause_event(start: int, count: int, **metadata: object) -> ECGEvent:
+    return ECGEvent(
+        event_metadata={
+            "kind": "pause",
+            "source": "ml",
+            "startSampleIndex": start,
+            "sampleCount": count,
+            **metadata,
+        }
+    )
+
+
+def test_las_pausas_fundidas_del_motor_son_episodios_y_no_pausas() -> None:
+    pauses, episodes = _engine_pauses(
+        [
+            _pause_event(0, 1500, beatCount=2),
+            _pause_event(5000, 5500, beatCount=3),
+            _pause_event(20000, 2000, beatCount=2, openStart=True),
+            _pause_event(30000, 2000),
+            _pause_event(40000, 2000, beatCount=2, source="firmware_flags"),
+        ]
+    )
+
+    assert pauses == [(0, 1500)]
+    assert episodes == [(5000, 10500), (20000, 22000), (30000, 32000)]

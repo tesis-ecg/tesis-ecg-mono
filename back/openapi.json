@@ -1835,6 +1835,19 @@
               }
             ]
           },
+          "noisyCount": {
+            "default": 0,
+            "title": "Noisycount",
+            "type": "integer"
+          },
+          "noisyItems": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MetricEvidenceOut"
+            },
+            "title": "Noisyitems",
+            "type": "array"
+          },
           "thresholdMs": {
             "title": "Thresholdms",
             "type": "integer"
@@ -4216,6 +4229,11 @@
           "startEpochMs": {
             "title": "Startepochms",
             "type": "integer"
+          },
+          "timeVerified": {
+            "default": true,
+            "title": "Timeverified",
+            "type": "boolean"
           }
         },
         "required": [

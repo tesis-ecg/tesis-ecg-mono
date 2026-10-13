@@ -9,6 +9,11 @@ los mide:
 | `nk` | `detect_rpeaks(clean_signal(raw))` | la señal de `nk.ecg_clean` | el motor: gate de calidad (bSQI), ritmo y morfología | por bloques de 300 s, con 60 s de contexto y 30 s de lookahead |
 | `pt` | `detect_r_peaks(raw)` | los mV crudos | `/holter-metrics`: FC, pausas, VFC, ST (`app/ml/beats.py`) | una pasada por lote: la señal nueva con 30 s de contexto a cada lado |
 
+**Decidido el 13/10/2026 con estos números:** `/holter-metrics` usa `nk` desde la versión 4
+del algoritmo (`app/ml/beats.py`). En el chaleco, `pt_por_lote` daba la FC máxima doble sobre
+señal limpia (`INTEGRACION.md` de Biomédica, pendiente 2: 121 lpm de máxima en
+`gel_limpia`, mediana 59; `nk` da 66). La tabla de arriba describe lo que se comparó.
+
 Cada uno recibe **lo que recibe en producción**. El código está en
 `tools/physionet/detectors.py` (MIT-BIH y NSTDB) y `tools/vest/detectors.py` (chaleco).
 

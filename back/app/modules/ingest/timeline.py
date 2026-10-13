@@ -230,6 +230,15 @@ def extend_segment(
     if anchors:
         segment.boot_epoch_ms, segment.anchor_slope_ppm = fit_anchor(anchors)
         segment.anchor_matches_boot = True
+    elif (
+        segment.anchor_matches_boot is False
+        and batch.anchor_matches_boot is False
+        and batch.epoch_anchor_ms is not None
+    ):
+        # Sin ancla del arranque, cada lote fechado por recepción es una cota
+        # superior: su última muestra no puede ser posterior a su POST. La más
+        # ajustada es la mejor estimación (`ingest_service.ingest_frames`).
+        segment.boot_epoch_ms = min(segment.boot_epoch_ms, batch.epoch_anchor_ms)
     if batch.time_sync_source is not None and batch.anchor_matches_boot is not False:
         segment.anchor_source = batch.time_sync_source
     if batch.anchor_matches_boot is not False:
@@ -243,3 +252,50 @@ def extend_segment(
         # muestra. Se conserva la hora con la que se abrió.
         segment.start_epoch_ms = epoch_at(segment, segment.first_t0_ms)
     segment.end_epoch_ms = epoch_at(segment, timing.last_end_t0_ms)
+
+
+def _shift(segment: StudyTimelineSegment, delta_ms: int) -> None:
+    segment.boot_epoch_ms += delta_ms
+    segment.start_epoch_ms += delta_ms
+    segment.end_epoch_ms += delta_ms
+
+
+def settle_unverified(segments: list[StudyTimelineSegment]) -> None:
+    """Acomoda los tramos sin ancla de su arranque entre sus vecinos.
+
+    `segments` va en orden de `ordinal`. Un tramo fechado por recepción
+    (`anchor_matches_boot` en falso) tiene una sola cota segura, la de arriba:
+    su última muestra no es posterior a su recepción. Hay otra igual de
+    segura: el arranque siguiente del equipo empezó después de que este
+    terminara. Sin esta, el backlog de varios arranques subido en una sola
+    ventana quedaba encimado entre sí y con el tramo verificado que sigue
+    (`INTEGRACION.md`, pendiente 1). Se recorre hacia atrás porque correr un
+    tramo puede encimarlo con el anterior, si tampoco tiene ancla.
+
+    Los tramos verificados no se mueven, y uno sin ancla no se corre antes del
+    final del verificado que lo precede: esa es su cota de abajo. Lo que queda entre los dos
+    es su incertidumbre, que se escribe en `anchor_uncertainty_ms` (`None`
+    para el primero del estudio, que no tiene cota de abajo).
+    """
+    for index in range(len(segments) - 2, -1, -1):
+        segment = segments[index]
+        if segment.anchor_matches_boot is not False:
+            continue
+        overlap = segment.end_epoch_ms - segments[index + 1].start_epoch_ms
+        if overlap <= 0:
+            continue
+        # El piso es el final del anterior solo si está verificado: uno sin
+        # ancla se corre a su vez cuando el recorrido llega a él.
+        previous = segments[index - 1] if index > 0 else None
+        room = (
+            segment.start_epoch_ms - previous.end_epoch_ms
+            if previous is not None and previous.anchor_matches_boot is not False
+            else overlap
+        )
+        _shift(segment, -min(overlap, max(room, 0)))
+    for index, segment in enumerate(segments):
+        if segment.anchor_matches_boot is not False:
+            continue
+        segment.anchor_uncertainty_ms = (
+            max(segment.start_epoch_ms - segments[index - 1].end_epoch_ms, 0) if index > 0 else None
+        )

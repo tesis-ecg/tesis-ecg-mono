@@ -12,7 +12,7 @@ import pytest
 from scipy.signal import butter, filtfilt, iirnotch, sosfiltfilt
 
 from app.ml.beats import analyze_window
-from app.ml.rpeak_detection import detect_r_peaks
+from app.ml.rpeak_detection import clean_signal, detect_rpeaks
 from app.ml.st_analysis import measure_st_levels
 from app.modules.ingest.visual_filter import (
     CONTEXT_SECONDS,
@@ -198,7 +198,8 @@ def test_el_st_y_los_latidos_siguen_midiendose_sobre_la_receta_sin_cambios() -> 
         0.3 * np.sin(2 * np.pi * 50.12 * t)
     ).astype("<f4")
     frozen = _recipe_6_2(signal, RATE)
-    peaks = detect_r_peaks(signal, RATE)
+    # El detector de las métricas (`beats.analyze_window`): NeuroKit desde la versión 4.
+    peaks = detect_rpeaks(clean_signal(signal, RATE), RATE)
     offset = 1_000_000
     keep_start, keep_end = offset + 5 * RATE, offset + 90 * RATE
 

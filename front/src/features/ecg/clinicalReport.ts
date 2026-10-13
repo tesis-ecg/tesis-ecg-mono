@@ -121,7 +121,24 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
   row('Observaciones clínicas', snapshot.clinicalContext.clinicalObservations)
 
   heading('Calidad de adquisición')
-  if (snapshot.quality.timeVerified === false) {
+  const unverified = snapshot.quality.unverifiedSegments
+  if (unverified && unverified.length > 0) {
+    // Desde `schemaVersion` 3: un tramo con la hora estimada no le quita la hora al resto.
+    row(
+      'Hora de muestras',
+      `Estimada por recepción en ${unverified.length} tramo${unverified.length === 1 ? '' : 's'}; el resto verificada. Las tiras de esos tramos lo indican.`,
+    )
+    unverified.forEach((segment, index) =>
+      row(
+        `Tramo con hora estimada ${index + 1}`,
+        `${formatDate(segment.startEpochMs)} – ${formatDate(segment.endEpochMs)} · ${
+          segment.uncertaintyMs == null
+            ? 'pudo haber ocurrido antes, sin cota conocida'
+            : `pudo haber ocurrido hasta ${formatDuration(segment.uncertaintyMs)} antes`
+        }`,
+      ),
+    )
+  } else if (snapshot.quality.timeVerified === false) {
     row(
       'Hora de muestras',
       'No verificada: las fechas de hallazgos y tiras son estimaciones y no deben usarse como hora clínica.',
@@ -204,7 +221,13 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
       'Síntomas / detalle relacionado',
       [...plan.relatedSymptoms, plan.description].filter(Boolean).join(' · '),
     )
-    drawTrace(doc, window, y, snapshot.quality.timeVerified !== false)
+    drawTrace(
+      doc,
+      window,
+      y,
+      // Los snapshots anteriores a `schemaVersion` 3 no marcan cada tira: vale la marca global.
+      plan.timeVerified ?? snapshot.quality.timeVerified !== false,
+    )
   }
 
   const pages = doc.getNumberOfPages()

@@ -178,3 +178,99 @@ def test_resultado_es_determinista() -> None:
     rr = 0.8 + 0.05 * rng.standard_normal(3000)
     runs = [_run(0, int(rr.sum() * RATE) + RATE)]
     assert _metrics(_beats(rr), runs) == _metrics(_beats(rr), runs)
+
+
+def _pausa_en_ruido(
+    engine_pauses: list[tuple[int, int]], noise: list[tuple[int, int]] | None
+) -> dict:
+    rr = np.full(200, 0.8)
+    rr[100] = 3.0
+    beats = _beats(rr)
+    total = int(rr.sum() * RATE) + RATE
+    return compute_holter_metrics(
+        beats, [_run(0, total)], [], [], RATE, total, noise=noise, engine_pauses=engine_pauses
+    )["pauses"]
+
+
+def test_una_pausa_en_ruido_que_el_motor_no_afirmo_va_aparte() -> None:
+    """Las pausas falsas de `04c72848` y `969174a3` (`INTEGRACION.md`, pendiente 3)."""
+    opens = round(100 * 0.8 * RATE)
+    pauses = _pausa_en_ruido([], [(opens - RATE, opens + 4 * RATE)])
+
+    assert pauses["count"] == 0 and pauses["longest"] is None and pauses["items"] == []
+    assert pauses["noisyCount"] == 1
+    assert pauses["noisyItems"][0]["durationMs"] == 3000
+
+
+def test_sin_el_veredicto_del_motor_la_pausa_cuenta_como_siempre() -> None:
+    pauses = _pausa_en_ruido([], None)
+
+    assert pauses["count"] == 1 and pauses["noisyCount"] == 0
+
+
+def test_la_pausa_del_motor_reemplaza_a_los_pedazos_del_detector() -> None:
+    """Dentro de una asistolia el detector encuentra "latidos" en el ruido y
+    la parte; la del motor la delimita entera y es la que queda."""
+    opens = round(100 * 0.8 * RATE)
+    noise = [(opens - RATE, opens + 4 * RATE)]
+    pauses = _pausa_en_ruido([(opens - 2 * RATE, opens + 3 * RATE)], noise)
+
+    assert pauses["count"] == 1 and pauses["noisyCount"] == 0
+    assert pauses["longest"]["durationMs"] == 5000
+    assert pauses["longest"]["sampleIndex"] == opens - 2 * RATE
+    assert pauses["longest"]["epochMs"] == START_EPOCH + (opens - 2 * RATE) * 1000 // RATE
+
+
+def _dos_pausas_en_ruido(**kwargs: object) -> dict:
+    """Pausas de 4 y 3 s separadas por 4 latidos, todo en ruido del motor."""
+    rr = np.full(200, 1.0)
+    rr[59], rr[64] = 4.0, 3.0
+    beats = _beats(rr)
+    total = int(rr.sum() * RATE) + RATE
+    return compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        noise=[(58 * RATE, 75 * RATE)],
+        **kwargs,  # type: ignore[arg-type]
+    )["pauses"]
+
+
+def test_un_evento_fundido_del_motor_confirma_y_no_inventa_una_pausa_larga() -> None:
+    """La refractariedad de 10 s funde las dos en un evento de 59 a 70 s. Su
+    largo no es una pausa: contarlo daba una de 11 s donde hubo una de 4 y otra
+    de 3."""
+    pauses = _dos_pausas_en_ruido(engine_episodes=[(59 * RATE, 70 * RATE)])
+
+    assert pauses["count"] == 2 and pauses["noisyCount"] == 0
+    assert [item["durationMs"] for item in pauses["items"]] == [4000, 3000]
+
+
+def test_un_evento_fundido_no_confirma_lo_que_no_toca() -> None:
+    pauses = _dos_pausas_en_ruido(engine_episodes=[(59 * RATE, 63 * RATE)])
+
+    assert pauses["count"] == 1 and pauses["longest"]["durationMs"] == 4000
+    assert pauses["noisyCount"] == 1 and pauses["noisyItems"][0]["durationMs"] == 3000
+
+
+def test_los_latidos_del_pan_tompkins_se_declaran_y_calculan_como_la_version_3() -> None:
+    """Un estudio analizado antes de la 4 y sin `--reset`: la nota de método no
+    puede nombrar a NeuroKit, y sus pausas en ruido cuentan como en la 3."""
+    pauses = _dos_pausas_en_ruido(legacy_beats=True, engine_pauses=[(59 * RATE, 63 * RATE)])
+    assert pauses["count"] == 2 and pauses["noisyCount"] == 0
+
+    rr = np.full(100, 0.8)
+    runs = [_run(0, int(rr.sum() * RATE) + RATE)]
+    total = runs[0].sample_count
+
+    def version(**kwargs: object) -> int:
+        result = compute_holter_metrics(_beats(rr), runs, [], [], RATE, total, **kwargs)  # type: ignore[arg-type]
+        return int(result["analysis"]["algorithmVersion"])
+
+    assert version(legacy_beats=True, noise=[]) == 3
+    assert version(legacy_beats=True) == 1
+    assert version(noise=[]) == 5
+    assert version() == 4

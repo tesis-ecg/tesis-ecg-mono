@@ -169,6 +169,8 @@ function metrics(overrides: Partial<HolterMetrics> = {}): HolterMetrics {
       count: 3,
       longest: { value: 2450, sampleIndex: 300, epochMs: T0 + 1_500_000, durationMs: 2450 },
       items: [],
+      noisyCount: 2,
+      noisyItems: [],
     },
     supraventricular: null,
     ventricular: null,
@@ -303,6 +305,9 @@ describe('StudyAnalysisTab', () => {
     expect(screen.getByText('48 lpm')).toBeTruthy()
     expect(screen.getByText('131 lpm')).toBeTruthy()
     expect(screen.getByText('Pausas R-R > 2000 ms')).toBeTruthy()
+    expect(
+      screen.getByText('+2 en tramos con ruido, no confirmadas por el análisis automático'),
+    ).toBeTruthy()
     expect(screen.getByText('2,45 s')).toBeTruthy()
     expect(screen.getByText('112,4 ms')).toBeTruthy()
     expect(screen.getByText('35,1 ms')).toBeTruthy()

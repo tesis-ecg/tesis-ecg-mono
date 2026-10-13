@@ -76,3 +76,41 @@ def test_analyze_window_conserva_solo_el_tramo_pedido_en_coordenada_absoluta() -
     assert beats["sample_index"].max() < offset + 30 * RATE
     assert beats.size == 25
     assert np.array_equal(decode_beats(encode_beats(beats)), beats)
+
+
+def test_una_onda_t_alta_no_se_cuenta_como_otro_latido() -> None:
+    """La FC máxima doble de `ee0880bc` (`INTEGRACION.md`, pendiente 2).
+
+    A 60 lpm, con la T a 0,38 del R como la del canal 2 del chaleco, y por
+    lotes de 26 s con 30 s de contexto como corre `append_beat_analysis`: el
+    detector de las métricas encuentra un latido por segundo, no dos.
+    """
+    times = beat_times(np.full(300, 1.0))
+    duration = times[-1] + 1.5
+    signal = synthetic_ecg(times, duration, RATE, noise_mv=0.02)
+    t = np.arange(signal.size) / RATE
+    for beat in times:  # la T del sintético es de 0,30 mV: se la lleva a 0,45
+        signal += (0.15 * np.exp(-((t - beat - 0.28) ** 2) / (2 * 0.04**2))).astype(np.float32)
+
+    batch, context = 26 * RATE, 30 * RATE
+    found = []
+    for keep_start in range(0, signal.size, batch):
+        keep_end = min(keep_start + batch, signal.size)
+        read_start = max(0, keep_start - context)
+        read_end = min(signal.size, keep_end + context)
+        found.append(
+            analyze_window(
+                signal[read_start:read_end],
+                RATE,
+                offset=read_start,
+                keep_start=keep_start,
+                keep_end=keep_end,
+            )["sample_index"]
+        )
+    peaks = np.concatenate(found)
+
+    sensitivity, ppv, _ = _score(peaks, times)
+    assert sensitivity >= 0.99 and ppv >= 0.99
+    rr = np.diff(peaks) / RATE
+    assert 59 <= 60 / float(np.median(rr)) <= 61
+    assert 60 / float(rr.min()) < 70
