@@ -46,7 +46,7 @@ from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.study import Study, StudyStatus
 from app.db.models.study_timeline_segment import StudyTimelineSegment
-from app.ml.beats import analyze_window, decode_beats, encode_beats
+from app.ml.beats import DETECTOR, analyze_window, decode_beats, encode_beats, legacy_chunks
 from app.ml.decompression import (
     FLAG_ADC_SATURATED,
     FLAG_EVENT_MARKER,
@@ -804,6 +804,7 @@ async def _place_on_timeline(
                 study, batch, timing, ordinal, start_sample_index, decoded.n_samples
             ),
         )
+        timeline.settle_unverified(await repo.list_timeline_segments(db, study.id))
         return gap_ms, None
 
     # Antes de extender: `extend_segment` corre `end_epoch_ms` al final de este
@@ -821,6 +822,11 @@ async def _place_on_timeline(
         for row in await repo.list_boot_anchors(db, study.id, batch.boot_id, current.first_seq)
     ]
     timeline.extend_segment(current, batch, timing, decoded.n_samples, anchors)
+    if current.anchor_matches_boot is False or current.ordinal > 0:
+        # Extender un tramo sin ancla lo corre (`extend_segment`), y re-ajustar
+        # el ancla de uno verificado le corre el inicio contra el anterior. El
+        # primero, verificado, no tiene nada antes que reacomodar.
+        timeline.settle_unverified(await repo.list_timeline_segments(db, study.id))
     if (
         current.ordinal == 0
         and current.anchor_matches_boot is True
@@ -1074,6 +1080,7 @@ async def append_beat_analysis(
                     startSampleIndex=cursor,
                     sampleCount=safe_end - cursor,
                     beatCount=int(beats.size),
+                    detector=DETECTOR,
                 )
             )
         if budget is not None:
@@ -1098,6 +1105,8 @@ def compact_beat_chunks(study: Study, *, force: bool = False) -> list[dict[str, 
     end = int(chunks[-1]["startSampleIndex"]) + int(chunks[-1]["sampleCount"])
     key = beat_compacted_key(study.id, end)
     put_object(key, payload)
+    # El compactado es del detector nuevo solo si lo eran todas sus partes.
+    detector = {} if legacy_chunks(chunks) else {"detector": DETECTOR}
     return [
         _object_meta(
             key,
@@ -1105,6 +1114,7 @@ def compact_beat_chunks(study: Study, *, force: bool = False) -> list[dict[str, 
             startSampleIndex=start,
             sampleCount=end - start,
             beatCount=sum(int(chunk["beatCount"]) for chunk in chunks),
+            **detector,
         )
     ]
 

@@ -1444,6 +1444,20 @@ def _metric_window_plans(metrics: HolterMetricsOut) -> list[StudyClinicalReportW
     return plans
 
 
+def _unverified_segments(timeline: list[StudyTimelineSegment]) -> list[StudyTimelineSegment]:
+    """Los tramos cuya hora no salió de un ancla de su arranque."""
+    return [segment for segment in timeline if segment.anchor_matches_boot is not True]
+
+
+def _touches_any(
+    window: StudyClinicalReportWindowPlanOut, segments: list[StudyTimelineSegment]
+) -> bool:
+    return any(
+        window.startEpochMs <= segment.end_epoch_ms and segment.start_epoch_ms <= window.endEpochMs
+        for segment in segments
+    )
+
+
 def _metric_runs(study: Study, timeline: list[StudyTimelineSegment]) -> list[TimelineRun]:
     """Los tramos con su hora de pared, con el mismo fallback que `_wall_clock_resolver`."""
     if timeline:
@@ -1548,6 +1562,38 @@ def _metric_quality_marks(events: list[ECGEvent]) -> tuple[list[tuple[int, int]]
     return exclusions, breaks
 
 
+def _engine_pauses(
+    events: list[ECGEvent],
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Las pausas que afirmó el motor: `(pausas, episodios)`.
+
+    Una pausa es un evento de un solo R-R: dos latidos (`beatCount`) y sin
+    borde abierto. Su largo es la duración de la pausa. El resto son episodios:
+    pausas fundidas por la refractariedad o el empalme entre bloques, cuyo
+    largo va del primer R al último y no mide ninguna pausa, o una abierta en
+    un borde, sin el R que la abre o la cierra. Esos solo confirman las del
+    detector (`compute_holter_metrics`).
+    """
+    pauses: list[tuple[int, int]] = []
+    episodes: list[tuple[int, int]] = []
+    for event in events:
+        metadata = event.event_metadata or {}
+        if metadata.get("kind") != "pause" or metadata.get("source") != "ml":
+            continue
+        start = finite_number(metadata.get("startSampleIndex"))
+        if start is None:
+            continue
+        count = finite_number(metadata.get("sampleCount")) or 0
+        span = (int(start), int(start + count))
+        single = (
+            metadata.get("beatCount") == 2
+            and not metadata.get("openStart")
+            and not metadata.get("openEnd")
+        )
+        (pauses if single else episodes).append(span)
+    return pauses, episodes
+
+
 def _metrics_unavailable(status: str, reason: str) -> HolterMetricsOut:
     return HolterMetricsOut(
         status=cast(Literal["pending", "unavailable"], status),
@@ -1582,6 +1628,7 @@ async def _holter_metrics(
     """
     # Adentro y no arriba: los dos cargan numpy, y este módulo se importa al
     # arrancar la API (`test_starting_the_api_does_not_import_numpy`).
+    from app.ml.beats import legacy_chunks
     from app.ml.holter_metrics import compute_holter_metrics
     from app.modules.ingest.processing import load_beats
 
@@ -1592,6 +1639,9 @@ async def _holter_metrics(
     runs = _metric_runs(study, timeline)
     exclusions, breaks = _metric_quality_marks(events)
     noise = _metric_noise(study, runs, quality)
+    # Sin el veredicto del motor sobre toda la señal (`noise=None`), tampoco sus
+    # pausas: la versión que se declara entonces no las menciona.
+    engine_pauses, engine_episodes = _engine_pauses(events) if noise is not None else ([], [])
     if noise is not None:
         # El riel del motor sale como un `lead_off`, pausas incluidas; el ruido
         # sale de todo salvo de las pausas (`compute_holter_metrics`).
@@ -1606,6 +1656,9 @@ async def _holter_metrics(
         study.sample_rate or 500,
         study.beats_analyzed_samples,
         noise=noise,
+        engine_pauses=engine_pauses,
+        engine_episodes=engine_episodes,
+        legacy_beats=legacy_chunks(study.ecg_beat_chunks or []),
     )
     return HolterMetricsOut.model_validate(raw)
 
@@ -1677,7 +1730,14 @@ async def _clinical_report_snapshot(
     metrics = await _holter_metrics(
         study, events, timeline, await repo.list_quality_intervals(db, study.id)
     )
-    windows = _metric_window_plans(metrics) + _report_window_plans(annotations)
+    unverified = _unverified_segments(timeline)
+    has_verified_clock = bool(timeline) or study.started_at_verified
+    windows = [
+        window.model_copy(
+            update={"timeVerified": has_verified_clock and not _touches_any(window, unverified)}
+        )
+        for window in _metric_window_plans(metrics) + _report_window_plans(annotations)
+    ]
     doctor_info = await repo.get_responsible_doctor(db, patient.doctor_id)
     doctor, doctor_user = doctor_info if doctor_info is not None else (None, None)
     updated_by = await auth_repo.get_user_by_id(db, draft.updated_by) if draft else None
@@ -1685,9 +1745,11 @@ async def _clinical_report_snapshot(
     recorded_ms = round(_recorded_ms(study))
     wall_ms = _duration_ms(study)
     interruption_ms = max(0, wall_ms - recorded_ms)
-    time_verified = study.started_at_verified and all(
-        segment.anchor_matches_boot is True for segment in timeline
-    )
+    # La hora de las muestras es la de los tramos: un tramo verificado no deja
+    # de serlo porque `started_at` no se haya podido confirmar (un inicio que
+    # cae después de su recepción, dentro de la incertidumbre del puente). Sin
+    # línea de tiempo (estudios anteriores a ella) solo queda la marca del estudio.
+    time_verified = not unverified if timeline else study.started_at_verified
     time_uncertainties = [segment.anchor_uncertainty_ms for segment in timeline]
     max_time_uncertainty = (
         max(value for value in time_uncertainties if value is not None)
@@ -1696,13 +1758,13 @@ async def _clinical_report_snapshot(
     )
 
     snapshot: dict[str, Any] = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "version": version,
         "study": {
             "id": str(study.id),
             "status": study.status.value,
             "startedAt": study.started_at.isoformat(),
-            "startedAtVerified": time_verified,
+            "startedAtVerified": study.started_at_verified,
             "endedAt": study.ended_at.isoformat() if study.ended_at else None,
             "durationMs": wall_ms,
             "deviceSerial": device.serial_number,
@@ -1736,6 +1798,14 @@ async def _clinical_report_snapshot(
             "timeVerified": time_verified,
             "synchronizationSources": sorted({item.anchor_source.value for item in timeline}),
             "maxSynchronizationUncertaintyMs": max_time_uncertainty,
+            "unverifiedSegments": [
+                {
+                    "startEpochMs": segment.start_epoch_ms,
+                    "endEpochMs": segment.end_epoch_ms,
+                    "uncertaintyMs": segment.anchor_uncertainty_ms,
+                }
+                for segment in unverified
+            ],
         },
         "metrics": metrics.model_dump(mode="json"),
         "findings": _summarize_annotations(annotations, {"clinical", "patient_marker"}),
@@ -1764,14 +1834,22 @@ async def _clinical_report_snapshot(
             )
         )
     if not time_verified:
+        # Advertencia y no bloqueo (`INTEGRACION.md`, pendiente 4): un tramo así
+        # aparece con cada arranque del equipo que el puente no presenció, y en
+        # un estudio de 15 días es casi seguro. El informe marca sus horas como
+        # estimadas tramo por tramo (`unverifiedSegments`, `timeVerified`).
+        count = len(unverified)
         issues.append(
             StudyClinicalReportIssueOut(
                 code="TIME_NOT_VERIFIED",
                 message=(
-                    "La hora de las muestras no está verificada para todos los tramos. "
-                    "No se puede emitir un informe final con horas estimadas."
+                    f"{count} tramo{'s' if count != 1 else ''} con la hora estimada por "
+                    "recepción. El informe marca esas horas como estimadas."
+                    if count
+                    else "La hora de las muestras es estimada: el estudio es anterior a la "
+                    "línea de tiempo. El informe la marca como estimada."
                 ),
-                severity="blocking",
+                severity="warning",
             )
         )
     if study.is_simulated:

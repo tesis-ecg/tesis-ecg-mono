@@ -10,7 +10,12 @@ la fila del estudio con `FOR UPDATE` como la ingesta. Así un estudio abierto
 sigue recibiendo lotes mientras se pone al día. Idempotente: retoma desde el
 cursor `beats_analyzed_samples`.
 
-    python -m app.scripts.backfill_beat_analysis [--dry-run] [--study <uuid>]
+`--reset` vuelve el cursor a cero y descarta los latidos guardados antes de
+analizar: es lo que hace falta cuando cambia el detector (la versión 4 del
+algoritmo pasó del Pan-Tompkins a NeuroKit) y los latidos viejos ya no son los
+que daría. Los informes finales ya emitidos no cambian: congelaron su snapshot.
+
+    python -m app.scripts.backfill_beat_analysis [--dry-run] [--reset] [--study <uuid>]
 """
 
 import argparse
@@ -29,23 +34,30 @@ from app.modules.ingest.processing import (
 )
 
 
-async def _study_ids(study_id: uuid.UUID | None) -> list[uuid.UUID]:
+async def _study_ids(study_id: uuid.UUID | None, reset: bool) -> list[uuid.UUID]:
     if study_id is not None:
         return [study_id]
     async with async_session_factory() as db:
-        query = (
-            select(Study.id)
-            .where(
-                Study.deleted_at.is_(None),
-                func.jsonb_array_length(Study.ecg_segments) > 0,
-                Study.beats_analyzed_samples < Study.samples_count,
-            )
-            .order_by(Study.started_at)
-        )
+        conditions = [Study.deleted_at.is_(None), func.jsonb_array_length(Study.ecg_segments) > 0]
+        if not reset:
+            conditions.append(Study.beats_analyzed_samples < Study.samples_count)
+        query = select(Study.id).where(*conditions).order_by(Study.started_at)
         return list((await db.scalars(query)).all())
 
 
-async def _backfill(study_id: uuid.UUID, dry_run: bool) -> bool:
+async def _reset(study_id: uuid.UUID) -> None:
+    async with async_session_factory() as db:
+        study = await repo.get_study_for_update(db, study_id)
+        if study is None:
+            return
+        study.beats_analyzed_samples = 0
+        study.ecg_beat_chunks = []
+        await db.commit()
+
+
+async def _backfill(study_id: uuid.UUID, dry_run: bool, reset: bool) -> bool:
+    if reset and not dry_run:
+        await _reset(study_id)
     passes = 0
     while True:
         async with async_session_factory() as db:
@@ -75,18 +87,21 @@ async def _backfill(study_id: uuid.UUID, dry_run: bool) -> bool:
                 return True
 
 
-async def _run(dry_run: bool, study_id: uuid.UUID | None) -> None:
-    ids = await _study_ids(study_id)
-    done = sum([await _backfill(item, dry_run) for item in ids])
+async def _run(dry_run: bool, reset: bool, study_id: uuid.UUID | None) -> None:
+    ids = await _study_ids(study_id, reset)
+    done = sum([await _backfill(item, dry_run, reset) for item in ids])
     print(f"\nEstudios {'revisados' if dry_run else 'analizados'}: {done} de {len(ids)}.")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="mostrar sin escribir")
+    parser.add_argument(
+        "--reset", action="store_true", help="descartar los latidos guardados y volver a analizar"
+    )
     parser.add_argument("--study", type=uuid.UUID, default=None, help="un solo estudio")
     args = parser.parse_args()
-    asyncio.run(_run(args.dry_run, args.study))
+    asyncio.run(_run(args.dry_run, args.reset, args.study))
 
 
 if __name__ == "__main__":

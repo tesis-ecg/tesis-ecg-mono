@@ -6,7 +6,11 @@ from app.db.models.study import StudyStatus
 from app.db.models.study_timeline_segment import StudyTimelineSegment
 from app.db.models.user import User, UserRole
 from app.modules.studies import studies_service
-from app.modules.studies.studies_schemas import StudyEcgAnnotationOut
+from app.modules.studies.studies_schemas import (
+    StudyClinicalReportWindowPlanOut,
+    StudyEcgAnnotationOut,
+)
+from app.modules.studies.studies_service import _touches_any
 
 
 def _annotation(
@@ -174,7 +178,7 @@ async def test_final_report_is_immutable_versioned_and_downloads_exact_pdf(
     assert downloaded.headers["content-disposition"].startswith("attachment;")
 
 
-async def test_unverified_study_cannot_be_finalized(
+async def test_unverified_study_can_be_finalized_with_a_warning(
     db, as_user, make_doctor, make_patient, make_device, make_study
 ) -> None:
     doctor, study = await _completed_study(make_doctor, make_patient, make_device, make_study)
@@ -188,12 +192,16 @@ async def test_unverified_study_cannot_be_finalized(
     preview = await client.get(f"/studies/{study.id}/clinical-report/preview")
     assert preview.status_code == 200
     body = preview.json()
-    assert body["canFinalize"] is False
+    assert body["canFinalize"] is True
     assert body["snapshot"]["quality"]["timeVerified"] is False
-    assert any(issue["code"] == "TIME_NOT_VERIFIED" for issue in body["issues"])
+    assert _time_issue(body)["severity"] == "warning"
 
 
-async def test_unknown_anchor_in_later_segment_blocks_final_report(
+def _time_issue(body: dict) -> dict:
+    return next(issue for issue in body["issues"] if issue["code"] == "TIME_NOT_VERIFIED")
+
+
+async def test_unknown_anchor_in_later_segment_is_marked_but_does_not_block(
     db, as_user, make_doctor, make_patient, make_device, make_study
 ) -> None:
     doctor, study = await _completed_study(make_doctor, make_patient, make_device, make_study)
@@ -224,9 +232,78 @@ async def test_unknown_anchor_in_later_segment_blocks_final_report(
 
     assert preview.status_code == 200
     body = preview.json()
-    assert body["canFinalize"] is False
+    # Un tramo con la hora estimada no le quita el informe al médico
+    # (`INTEGRACION.md`, pendiente 4): lo advierte y lo marca.
+    assert body["canFinalize"] is True
+    assert body["snapshot"]["schemaVersion"] == 3
     assert body["snapshot"]["quality"]["timeVerified"] is False
-    assert any(issue["code"] == "TIME_NOT_VERIFIED" for issue in body["issues"])
+    assert _time_issue(body)["severity"] == "warning"
+    later = started_ms + 1_000
+    assert body["snapshot"]["quality"]["unverifiedSegments"] == [
+        {"startEpochMs": later, "endEpochMs": later + 100, "uncertaintyMs": None}
+    ]
+
+
+async def test_verified_segments_need_no_warning_when_only_the_start_is_unconfirmed(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """`started_at` sin confirmar (su inicio cayó después de la recepción,
+    dentro de la incertidumbre del puente) con todos los tramos verificados: la
+    hora de las muestras es buena. Antes salía "1 tramo con la hora estimada"
+    sin ningún tramo así, y el PDF marcaba estimadas todas las horas."""
+    doctor, study = await _completed_study(make_doctor, make_patient, make_device, make_study)
+    study.started_at_verified = False
+    started_ms = int(study.started_at.timestamp() * 1000)
+    db.add(
+        StudyTimelineSegment(
+            study_id=study.id,
+            ordinal=0,
+            boot_id=0,
+            start_sample_index=0,
+            sample_count=100,
+            start_epoch_ms=started_ms,
+            end_epoch_ms=started_ms + 200,
+            boot_epoch_ms=started_ms,
+            anchor_matches_boot=True,
+        )
+    )
+    await db.commit()
+    client = as_user(await _doctor_user(db, doctor))
+
+    body = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
+
+    assert body["snapshot"]["quality"]["timeVerified"] is True
+    assert body["snapshot"]["quality"]["unverifiedSegments"] == []
+    assert body["snapshot"]["study"]["startedAtVerified"] is False
+    assert all(issue["code"] != "TIME_NOT_VERIFIED" for issue in body["issues"])
+
+
+def test_only_the_strips_inside_an_unverified_segment_lose_their_clock() -> None:
+    segment = StudyTimelineSegment(start_epoch_ms=10_000, end_epoch_ms=20_000)
+
+    def window(start: int, end: int) -> StudyClinicalReportWindowPlanOut:
+        return StudyClinicalReportWindowPlanOut(
+            id="w",
+            findingId=None,
+            kind="hr_max",
+            category="metric",
+            severity="low",
+            findingStartEpochMs=start,
+            findingEndEpochMs=start,
+            findingDurationMs=0,
+            startEpochMs=start,
+            endEpochMs=end,
+            blockIndex=1,
+            blockCount=1,
+            confidenceScore=None,
+            description=None,
+            relatedSymptoms=[],
+        )
+
+    assert _touches_any(window(15_000, 16_000), [segment])
+    assert _touches_any(window(5_000, 10_500), [segment])
+    assert not _touches_any(window(0, 9_000), [segment])
+    assert not _touches_any(window(21_000, 31_000), [segment])
 
 
 async def test_finalization_rejects_open_simulated_invalid_and_stale_reports(

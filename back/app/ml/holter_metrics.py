@@ -66,14 +66,30 @@ from app.ml.holter_contracts import TimelineRun as TimelineRun
 #:   `LEAD_OFF` (segmento viejo, ADC congelado, corto) salía como una pausa de
 #:   lo que durara, que el motor nunca afirmó ni avisó.
 #:
-#: Es la versión vigente. Un cálculo concreto informa la 1 si no recibió el
+#: - 4: los latidos salen del detector del motor (NeuroKit) y no del
+#:   Pan-Tompkins por lote, que se enganchaba a la onda T (FC máxima doble) y
+#:   quedaba ciego tras un artefacto (`INTEGRACION.md`, pendiente 2). Sin el
+#:   veredicto del motor: las exclusiones de la Capa A, como la 1.
+#: - 5: la 4 con el veredicto del motor, como la 3, y una pausa que cae en
+#:   ruido cuenta solo si el motor la confirmó con su regla del hueco quieto;
+#:   si no, se informa aparte (`noisyCount`, `noisyItems`; pendiente 3).
+#:
+#: Es la versión vigente. Un cálculo concreto informa la 4 si no recibió el
 #: veredicto del motor (`noise=None`: apagado, o una señal que no evaluó
-#: entera), porque entonces es exactamente el algoritmo 1 y la nota de método
-#: no puede afirmar una exclusión que no se aplicó: `studies_service` tampoco
-#: le pasa los rieles.
-ALGORITHM_VERSION = 3
+#: entera), porque entonces la nota de método no puede afirmar una exclusión
+#: que no se aplicó: `studies_service` tampoco le pasa los rieles ni las pausas
+#: del motor.
+#:
+#: Un estudio cuyos latidos guardados salieron del Pan-Tompkins
+#: (`legacy_beats`: analizado antes de la 4 y sin `backfill_beat_analysis
+#: --reset`) se calcula y se declara como antes: la 3, o la 1 sin el motor. La
+#: nota de método no puede nombrar un detector que no produjo esos latidos.
+ALGORITHM_VERSION = 5
 #: Versión que se informa cuando el motor no cubrió la señal.
-ALGORITHM_VERSION_WITHOUT_ENGINE = 1
+ALGORITHM_VERSION_WITHOUT_ENGINE = 4
+#: Las mismas dos, para los latidos del Pan-Tompkins.
+LEGACY_ALGORITHM_VERSION = 3
+LEGACY_ALGORITHM_VERSION_WITHOUT_ENGINE = 1
 
 PAUSE_MS = 2000
 MIN_RR_S = 0.2
@@ -122,6 +138,12 @@ def _epoch_mapper(runs: Sequence[TimelineRun]) -> Callable[[np.ndarray], np.ndar
         return np.round(start_epochs[index] + within * span).astype(np.int64)
 
     return resolve
+
+
+def _algorithm_version(with_engine: bool, legacy_beats: bool) -> int:
+    if legacy_beats:
+        return LEGACY_ALGORITHM_VERSION if with_engine else LEGACY_ALGORITHM_VERSION_WITHOUT_ENGINE
+    return ALGORITHM_VERSION if with_engine else ALGORITHM_VERSION_WITHOUT_ENGINE
 
 
 def _merge_spans(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -345,6 +367,9 @@ def compute_holter_metrics(
     analyzed_until: int,
     *,
     noise: Sequence[tuple[int, int]] | None = None,
+    engine_pauses: Sequence[tuple[int, int]] = (),
+    engine_episodes: Sequence[tuple[int, int]] = (),
+    legacy_beats: bool = False,
 ) -> dict[str, Any]:
     """Métricas del informe en el formato de `HolterMetricsOut` (camelCase).
 
@@ -358,6 +383,24 @@ def compute_holter_metrics(
     sus latidos no se cuentan para la FC, la VFC ni los extremos, y un RR que
     lo cruza no es NN, pero una pausa se busca solo contra el hardware, los
     cortes y los huecos.
+
+    Las pausas del motor (`engine_pauses`, `[R1, R2]` de cada una, decididas
+    con la regla del hueco quieto de `quiet_gap`, que sí distingue una
+    asistolia del ruido) cuentan siempre, con su duración, y reemplazan a las
+    del detector que las solapan. Una del detector que toca el ruido y que el
+    motor no afirmó es, lo más probable, un latido que no vio en el ruido: se
+    informa aparte, en `noisyCount` y `noisyItems`, y no cuenta ni puede ser la
+    más larga (`INTEGRACION.md`, pendiente 3).
+
+    `engine_episodes` son eventos de pausa del motor que no son un solo R-R:
+    varias pausas fundidas por la refractariedad (`episodes.apply_refractory`,
+    el empalme entre bloques) o una abierta en un borde. Su largo no es la
+    duración de ninguna pausa —dos de 4 y 3 s a menos de 10 s salen como un
+    evento de 11 s—, así que no se cuentan como pausa: solo confirman las del
+    detector que solapan, que cuentan con su propia duración.
+
+    `legacy_beats` declara latidos del Pan-Tompkins: se calcula como la versión
+    3 (o la 1), sin las pausas del motor y con las pausas en ruido contadas.
     """
     if not runs:
         raise ValueError("compute_holter_metrics necesita al menos un tramo")
@@ -391,9 +434,7 @@ def compute_holter_metrics(
     epochs = to_epoch(samples)
 
     analysis = {
-        "algorithmVersion": (
-            ALGORITHM_VERSION_WITHOUT_ENGINE if noise is None else ALGORITHM_VERSION
-        ),
+        "algorithmVersion": _algorithm_version(noise is not None, legacy_beats),
         "analyzedUntilSample": int(analyzed_until),
         "analyzedMs": analyzed_ms,
         "excludedMs": int(sum(e - s for s, e in excluded) * 1000 / rate),
@@ -405,7 +446,14 @@ def compute_holter_metrics(
         "unavailableReason": None,
         "analysis": analysis,
         "heartRate": None,
-        "pauses": {"thresholdMs": PAUSE_MS, "count": 0, "longest": None, "items": []},
+        "pauses": {
+            "thresholdMs": PAUSE_MS,
+            "count": 0,
+            "longest": None,
+            "items": [],
+            "noisyCount": 0,
+            "noisyItems": [],
+        },
         "supraventricular": None,
         "ventricular": None,
         "ectopyUnavailableReason": ECTOPY_UNAVAILABLE,
@@ -433,21 +481,50 @@ def compute_holter_metrics(
     pause_rr, pause_valid = _valid_rr(pause_samples, runs, hardware, breaks, rate)
     pause_epochs = to_epoch(pause_samples)
     pause_index = np.flatnonzero(pause_valid & (pause_rr > PAUSE_MS))
-    pause_items = [
-        _evidence(
-            pause_rr[k],
-            pause_samples[k],
-            pause_epochs[k],
-            duration_ms=int(round(pause_rr[k])),
+    # Las del motor primero: dentro de una asistolia el detector encuentra
+    # "latidos" en el ruido y la parte en pausas más cortas, y el motor la
+    # delimita entera con su regla del hueco quieto. Una pausa del detector que
+    # solapa una del motor es la misma, y queda la del motor.
+    # Los latidos del Pan-Tompkins se calculan como la versión 3: sin el motor
+    # en las pausas, y las del ruido cuentan.
+    with_engine = noise is not None and not legacy_beats
+    noisy_spans = _clip_spans(noise or (), analyzed_until) if with_engine else []
+    confirmed = (
+        [
+            (start, end)
+            for start, end in _merge_spans(engine_pauses)
+            if start < analyzed_until and (end - start) * 1000 / rate > PAUSE_MS
+        ]
+        if with_engine
+        else []
+    )
+    # Fundidas o abiertas: confirman, pero su largo no es el de ninguna pausa.
+    episodes = _clip_spans(engine_episodes, analyzed_until) if with_engine else []
+    pause_items: list[dict[str, Any]] = []
+    if confirmed:
+        starts = np.array([start for start, _ in confirmed], dtype=np.int64)
+        for start, epoch, (_, end) in zip(starts, to_epoch(starts), confirmed, strict=True):
+            duration = (end - int(start)) * 1000 / rate
+            pause_items.append(_evidence(duration, start, epoch, duration_ms=round(duration)))
+    noisy_items: list[dict[str, Any]] = []
+    for k in pause_index:
+        opens, closes = int(pause_samples[k]), int(pause_samples[k + 1])
+        if _overlap(confirmed, opens, closes):
+            continue
+        item = _evidence(
+            pause_rr[k], pause_samples[k], pause_epochs[k], duration_ms=int(round(pause_rr[k]))
         )
-        for k in pause_index
-    ]
-    pause_items.sort(key=lambda item: (-item["durationMs"], item["sampleIndex"]))
+        noisy = _overlap(noisy_spans, opens, closes) and not _overlap(episodes, opens, closes)
+        (noisy_items if noisy else pause_items).append(item)
+    for items in (pause_items, noisy_items):
+        items.sort(key=lambda item: (-item["durationMs"], item["sampleIndex"]))
     result["pauses"] = {
         "thresholdMs": PAUSE_MS,
         "count": len(pause_items),
         "longest": pause_items[0] if pause_items else None,
         "items": pause_items[:MAX_PAUSE_EVIDENCE],
+        "noisyCount": len(noisy_items),
+        "noisyItems": noisy_items[:MAX_PAUSE_EVIDENCE],
     }
 
     # --- NN ---------------------------------------------------------------- #

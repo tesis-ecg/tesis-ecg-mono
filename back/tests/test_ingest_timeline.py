@@ -220,7 +220,8 @@ async def test_millis_wraparound_opens_a_new_segment_without_a_reboot(
     patient = await make_patient()
     device, api_key = await make_device(patient=patient)
     near_wrap = 0xFFFFFFFF - 5_000
-    now = _now_ms()
+    # En el pasado: un ancla que pone muestras después de su POST se descarta.
+    now = _now_ms() - 20_000
 
     first = await _ingest(
         client,
@@ -605,3 +606,111 @@ def test_a_real_silence_still_opens_a_new_segment() -> None:
     # Cuatro horas sin grabar, con el equipo despierto: `t0Ms` salta.
     silent_start = span_ms + 4 * HOUR_MS
     assert timeline.starts_new_segment(previous, batch, _timing(3, silent_start, span_ms))
+
+
+# --------------------------------------------------------------------------- #
+# Un tramo sin ancla de su arranque (`INTEGRACION.md`, pendiente 1)
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_backlog_without_its_anchor_ends_at_its_reception(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """Fechado por recepción, el tramo termina en el POST: no empieza ahí.
+
+    Con la primera muestra en la recepción, 25 min de backlog del arranque 4
+    subidos de una vez quedaban 25 min en el futuro (estudio `969174a3`).
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    frames = build_frames(15_000, boot_id=4)
+    half = len(frames) // 2
+
+    before = _now_ms()
+    body = await _ingest(client, db, device, api_key, frames[:half], boot_id=5)
+    await _ingest(client, db, device, api_key, frames[half:], boot_id=5)
+    after = _now_ms()
+
+    [segment] = await _segments(db, body["studyId"])
+    assert segment.anchor_matches_boot is False
+    assert segment.anchor_source is TimeSyncSource.SERVER_RECEIVE
+    assert before - 1_000 <= segment.end_epoch_ms <= after
+    assert segment.end_epoch_ms - segment.start_epoch_ms == pytest.approx(30_000, abs=500)
+    # Es el primero del estudio: no hay nada abajo que acote cuánto antes fue.
+    assert segment.anchor_uncertainty_ms is None
+
+
+async def test_backlogs_without_anchor_do_not_overlap_the_next_boot(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """El arranque 4 sin ancla termina antes de que empiece el 5, verificado.
+
+    Es el `969174a3`: el tramo fechado por recepción quedaba encimado con el
+    verificado siguiente. Y entre el 3 y el 5 queda lo que el 4 pudo correrse,
+    que es su incertidumbre.
+    """
+    patient = await make_patient()
+    device, api_key = await make_device(patient=patient)
+    now = _now_ms()
+    boot3 = build_frames(1500, boot_id=3)
+    boot4 = build_frames(1500, boot_id=4, first_seq=len(boot3))
+    boot5 = build_frames(1500, boot_id=5, first_seq=len(boot3) + len(boot4))
+
+    body = await _ingest(
+        client, db, device, api_key, boot3, boot_id=3, uptime_ms=HOUR_MS, bridge_epoch_ms=now
+    )
+    await _ingest(client, db, device, api_key, boot4, boot_id=5, uptime_ms=60_000)
+    await _ingest(
+        client, db, device, api_key, boot5, boot_id=5, uptime_ms=60_000, bridge_epoch_ms=now
+    )
+
+    first, backlog, last = await _segments(db, body["studyId"])
+    assert (first.anchor_matches_boot, backlog.anchor_matches_boot) == (True, False)
+    assert last.anchor_matches_boot is True
+    assert backlog.end_epoch_ms <= last.start_epoch_ms
+    assert backlog.start_epoch_ms >= first.end_epoch_ms
+    assert backlog.anchor_uncertainty_ms == backlog.start_epoch_ms - first.end_epoch_ms
+
+
+def _segment(ordinal: int, start: int, end: int, matches: bool) -> StudyTimelineSegment:
+    return StudyTimelineSegment(
+        ordinal=ordinal,
+        boot_epoch_ms=start,
+        start_epoch_ms=start,
+        end_epoch_ms=end,
+        anchor_slope_ppm=0,
+        anchor_matches_boot=matches,
+    )
+
+
+def test_three_backlogs_uploaded_together_are_laid_end_to_end() -> None:
+    """El `208cfee6`: los arranques 6, 7 y 8 subidos en una ventana, sin ancla.
+
+    Fechados cada uno por su recepción quedaban encimados entre sí; acomodados
+    hacia atrás, cada uno termina donde empieza el siguiente.
+    """
+    verified = _segment(0, 0, 100_000, True)
+    six = _segment(1, 500_000, 800_000, False)
+    seven = _segment(2, 600_000, 820_000, False)
+    eight = _segment(3, 700_000, 840_000, False)
+    segments = [verified, six, seven, eight]
+
+    timeline.settle_unverified(segments)
+
+    assert seven.end_epoch_ms == eight.start_epoch_ms == 700_000
+    assert six.end_epoch_ms == seven.start_epoch_ms == 480_000
+    assert six.start_epoch_ms == 180_000
+    assert six.anchor_uncertainty_ms == 80_000
+    assert seven.anchor_uncertainty_ms == eight.anchor_uncertainty_ms == 0
+    assert (verified.start_epoch_ms, verified.end_epoch_ms) == (0, 100_000)
+
+
+def test_an_unverified_segment_never_moves_before_the_previous_one() -> None:
+    previous = _segment(0, 0, 100_000, True)
+    backlog = _segment(1, 120_000, 300_000, False)
+    following = _segment(2, 200_000, 400_000, True)
+
+    timeline.settle_unverified([previous, backlog, following])
+
+    assert backlog.start_epoch_ms == previous.end_epoch_ms
+    assert following.start_epoch_ms == 200_000

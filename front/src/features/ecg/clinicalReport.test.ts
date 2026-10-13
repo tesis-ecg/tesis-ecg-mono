@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { HolterMetrics } from '@/features/studies/types'
 
@@ -8,6 +8,23 @@ import { metricsMethodNote, metricsStatusText } from './clinicalReportSummary'
 import type { ClinicalReportInput } from './clinicalReportTypes'
 
 const start = 1_700_000_000_000
+
+// El PDF sale comprimido: para leer lo que dice se registra cada texto que se escribe.
+const written = vi.hoisted(() => [] as string[])
+vi.mock('jspdf', async (importOriginal) => {
+  const original = await importOriginal<typeof import('jspdf')>()
+  class RecordingPdf extends original.jsPDF {
+    constructor(...args: ConstructorParameters<typeof original.jsPDF>) {
+      super(...args)
+      const text = this.text.bind(this)
+      this.text = ((value: string | string[], ...rest: unknown[]) => {
+        written.push(String(value))
+        return (text as (...all: unknown[]) => unknown)(value, ...rest)
+      }) as typeof this.text
+    }
+  }
+  return { ...original, jsPDF: RecordingPdf }
+})
 
 function evidence(value: number, offsetMs: number, durationMs: number | null = null) {
   return { value, sampleIndex: offsetMs / 2, epochMs: start + offsetMs, durationMs }
@@ -256,6 +273,54 @@ describe('clinical ECG report', () => {
     expect(new TextDecoder().decode(buildClinicalReport(value).slice(0, 8))).toContain('%PDF-')
   })
 
+  it('marca la hora estimada solo en los tramos y tiras que la tienen', () => {
+    const value = input()
+    value.snapshot.schemaVersion = 3
+    value.snapshot.quality.timeVerified = false
+    value.snapshot.quality.unverifiedSegments = [
+      { startEpochMs: start + 20_000, endEpochMs: start + 40_000, uncertaintyMs: 90_000 },
+    ]
+    const plan = (id: string, at: number, timeVerified: boolean) => ({
+      id,
+      findingId: null,
+      kind: 'hr_max',
+      category: 'metric' as const,
+      severity: 'low' as const,
+      findingStartEpochMs: at,
+      findingEndEpochMs: at,
+      findingDurationMs: 0,
+      startEpochMs: at - 5_000,
+      endEpochMs: at + 5_000,
+      blockIndex: 1,
+      blockCount: 1,
+      confidenceScore: null,
+      description: null,
+      relatedSymptoms: [],
+      timeVerified,
+    })
+    value.windowPlans = [
+      plan('verified', start + 10_000, true),
+      plan('estimated', start + 30_000, false),
+    ]
+    value.detailWindows = value.windowPlans.map((item) => ({
+      id: item.id,
+      startEpochMs: item.startEpochMs,
+      endEpochMs: item.endEpochMs,
+      timestampsMs: Array.from({ length: 100 }, (_, index) => item.startEpochMs + index * 100),
+      samplesMv: Array.from({ length: 100 }, (_, index) => Math.sin(index / 4)),
+      gapIndices: [],
+      source: 'raw' as const,
+    }))
+
+    written.length = 0
+    buildClinicalReport(value)
+    const text = written.join('\n')
+
+    expect(text).toContain('Tramo con hora estimada 1')
+    expect(text).toContain('Hora de Buenos Aires')
+    expect(text).toContain('Hora estimada, no verificada')
+  })
+
   it('sólo clasifica como automáticos los hallazgos clínicos no vinculados', () => {
     const clinical = {
       id: 'finding-1',
@@ -314,6 +379,15 @@ describe('formato de métricas del informe', () => {
     // El ruido del motor no saca pausas: una asistolia se le parece.
     expect(v2).toMatch(/pausas se buscan también en esos tramos/)
     expect(v2).toMatch(/nunca se cuenta como pausa/)
+  })
+
+  it('describe el detector y las pausas en ruido desde la versión 4', () => {
+    expect(metricsMethodNote(4)).toMatch(/NeuroKit/)
+    expect(metricsMethodNote(4)).not.toMatch(/ruido/)
+    const v5 = metricsMethodNote(5)
+    expect(v5).toMatch(/NeuroKit/)
+    expect(v5).toMatch(/pausas en ruido sin confirmar/)
+    expect(metricsMethodNote(3)).toMatch(/Pan-Tompkins/)
   })
 
   it('genera la hoja de tendencias con métricas de la versión 2 del algoritmo', () => {

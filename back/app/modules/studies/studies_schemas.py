@@ -301,6 +301,10 @@ class StudyClinicalReportWindowPlanOut(CamelModel):
     confidenceScore: float | None
     description: str | None
     relatedSymptoms: list[str]
+    #: `False` si la tira toca un tramo con la hora estimada por recepción: su
+    #: eje no es hora clínica. Cada tira lo dice por su cuenta para que un solo
+    #: tramo así no le quite la hora al informe entero.
+    timeVerified: bool = True
 
 
 class MetricEvidenceOut(CamelModel):
@@ -345,6 +349,11 @@ class HolterPausesOut(CamelModel):
     count: int
     longest: MetricEvidenceOut | None
     items: list[MetricEvidenceOut]
+    #: Pausas que caen en ruido del motor y que el motor no confirmó: lo más
+    #: probable es un latido que el detector no vio. No entran en `count` ni en
+    #: `longest`. Desde la versión 5 del algoritmo.
+    noisyCount: int = 0
+    noisyItems: list[MetricEvidenceOut] = []
 
 
 class HolterEctopyCountOut(CamelModel):

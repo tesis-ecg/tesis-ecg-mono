@@ -41,7 +41,7 @@ from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.user import User
-from app.ml.holter_metrics import ALGORITHM_VERSION
+from app.ml.holter_metrics import ALGORITHM_VERSION, ALGORITHM_VERSION_WITHOUT_ENGINE
 from tests.ecg_synth import SAMPLE_RATE
 from tests.test_ml_blocks import _Chaleco, _ecg, _estudio, _eventos_del_motor, _latidos
 from tests.test_ml_ingest import finalizar
@@ -142,13 +142,13 @@ def _codigos(preview: dict[str, Any]) -> set[str]:
 
 
 @pytest.mark.parametrize("reason", ["psqi", "ksqi", "bassqi"])
-async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_pero_no_de_las_pausas(
+async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_y_su_pausa_va_aparte(
     reason, db, s3, as_user, make_doctor, make_patient, make_device, make_study
 ) -> None:
     """Una ventana `bad` por ruido sobre la pausa: sus latidos no cuentan para
-    la FC ni la VFC, y el análisis declara el tramo excluido. La pausa queda:
-    el gate no distingue ruido de una asistolia, y el médico la descarta
-    mirando su tira."""
+    la FC ni la VFC, y el análisis declara el tramo excluido. La pausa no se
+    pierde, pero sin la confirmación del motor no cuenta: se informa aparte,
+    como pausa en ruido (`INTEGRACION.md`, pendiente 3)."""
     doctor, study, times = await _study_with_signal(
         db, make_doctor, make_patient, make_device, make_study
     )
@@ -158,8 +158,8 @@ async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_pero_no_de_las_pausas(
     await _calidad(db, study, SignalQualityLevel.BAD, reason, desde, hasta)
     despues = await _metricas(db, as_user, doctor, study)
 
-    assert antes["analysis"]["algorithmVersion"] == 1
-    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 3
+    assert antes["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_ENGINE
+    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 5
     assert antes["analysis"]["excludedMs"] == 0
     assert despues["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
     assert despues["analysis"]["analyzedMs"] == (
@@ -168,8 +168,48 @@ async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_pero_no_de_las_pausas(
     # Los latidos de adentro no se cuentan: 2 s antes y 2 s después a 75 lpm.
     assert despues["heartRate"]["totalBeats"] < antes["heartRate"]["totalBeats"]
     assert despues["analysis"]["rrIntervals"] < antes["analysis"]["rrIntervals"]
-    assert despues["pauses"] == antes["pauses"]
+    assert despues["pauses"]["count"] == 0
+    assert despues["pauses"]["longest"] is None
+    assert despues["pauses"]["noisyCount"] == 1
+    assert despues["pauses"]["noisyItems"] == antes["pauses"]["items"]
+
+
+async def test_una_pausa_en_ruido_que_el_motor_confirma_cuenta(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """Si el motor afirmó la pausa con su regla del hueco quieto —que sí
+    separa una asistolia del ruido—, la del informe cuenta aunque caiga en
+    una ventana `bad`."""
+    doctor, study, times = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    antes = await _metricas(db, as_user, doctor, study)
+    desde, hasta = _alrededor_de_la_pausa(times)
+    await _calidad(db, study, SignalQualityLevel.BAD, "psqi", desde, hasta)
+    lote = await _lote(db, study)
+    abre, cierra = int(round(times[200] * RATE)), int(round(times[201] * RATE))
+    db.add(
+        ECGEvent(
+            batch_id=lote.id,
+            study_id=study.id,
+            event_type=ECGEventType.PAUSE,
+            severity=ECGEventSeverity.HIGH,
+            timestamp_in_recording=abre / RATE,
+            event_metadata={
+                "kind": "pause",
+                "source": "ml",
+                "startSampleIndex": abre,
+                "sampleCount": cierra - abre,
+            },
+        )
+    )
+    await db.commit()
+
+    despues = await _metricas(db, as_user, doctor, study)
+
     assert despues["pauses"]["count"] == 1
+    assert despues["pauses"]["noisyCount"] == 0
+    assert despues["pauses"]["items"] == antes["pauses"]["items"]
 
 
 @pytest.mark.parametrize(
@@ -256,7 +296,7 @@ async def test_un_riel_del_motor_sale_de_las_pausas_como_un_lead_off(
 
     assert antes["pauses"]["count"] == 1
     assert con_riel["pauses"]["count"] == 0
-    assert con_riel["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 3
+    assert con_riel["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 5
     assert con_riel["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
     assert con_riel["heartRate"]["totalBeats"] < antes["heartRate"]["totalBeats"]
     assert con_riel["analysis"] == con_lead_off["analysis"]
@@ -267,9 +307,10 @@ async def test_un_riel_del_motor_sale_de_las_pausas_como_un_lead_off(
 async def test_el_ruido_sigue_sin_tocar_las_pausas_aunque_haya_un_riel(
     db, s3, as_user, make_doctor, make_patient, make_device, make_study
 ) -> None:
-    """El riel corta las pausas; el ruido no. pSQI sobre la pausa y un riel
-    lejos de ella: los dos salen de la FC y la pausa queda, porque el gate
-    marca así también una asistolia."""
+    """El riel corta las pausas; el ruido no las borra. pSQI sobre la pausa y
+    un riel lejos de ella: los dos salen de la FC y la pausa queda, aparte
+    como pausa en ruido porque el motor no la afirmó (el gate marca así
+    también una asistolia, y entonces el motor sí la afirma)."""
     doctor, study, times = await _study_with_signal(
         db, make_doctor, make_patient, make_device, make_study
     )
@@ -290,8 +331,9 @@ async def test_el_ruido_sigue_sin_tocar_las_pausas_aunque_haya_un_riel(
         body["analysis"]["excludedMs"]
         == ((hasta - desde) + (riel_hasta - riel_desde)) * 1000 // RATE
     )
-    assert body["pauses"]["count"] == 1
-    assert abs(body["pauses"]["longest"]["durationMs"] - 2600) <= 10
+    assert body["pauses"]["count"] == 0
+    assert body["pauses"]["noisyCount"] == 1
+    assert abs(body["pauses"]["noisyItems"][0]["durationMs"] - 2600) <= 10
 
 
 async def test_sin_el_veredicto_completo_del_motor_el_riel_no_se_aplica(
@@ -309,7 +351,7 @@ async def test_sin_el_veredicto_completo_del_motor_el_riel_no_se_aplica(
     despues = await _metricas(db, as_user, doctor, study)
 
     assert despues == antes
-    assert despues["analysis"]["algorithmVersion"] == 1
+    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_ENGINE
     assert despues["pauses"]["count"] == 1
 
 
@@ -329,7 +371,7 @@ async def test_si_el_motor_no_evaluo_toda_la_senal_las_metricas_son_las_de_la_ve
     despues = await _metricas(db, as_user, doctor, study)
 
     assert despues == antes
-    assert despues["analysis"]["algorithmVersion"] == 1
+    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_ENGINE
     assert despues["analysis"]["excludedMs"] == 0
 
 
@@ -342,7 +384,7 @@ async def test_con_el_motor_apagado_y_sin_filas_la_version_es_la_1(
 
     body = await _metricas(db, as_user, doctor, study)
 
-    assert body["analysis"]["algorithmVersion"] == 1
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_ENGINE
 
 
 @pytest.mark.usefixtures("ml_engine")

@@ -53,6 +53,7 @@ from app.ml.morphology import BeatAssignment, BeatMatrix, TemplateBank
 from app.ml.quality import (
     assess_quality,
     exclude_splices,
+    firmware_untrusted,
     invalid_samples,
     merge_windows,
     remove_mains,
@@ -162,6 +163,7 @@ def build_config(
                 settings.ml_firmware_peak_refractory_ms * sample_rate / 1000.0
             ),
             mains_hz=settings.ml_mains_hz,
+            firmware_mains_max_uv=settings.ml_mains_rpeak_max_uv,
         ),
         rhythm=RhythmThresholds(
             tachycardia_bpm=settings.ml_tachycardia_bpm,
@@ -285,6 +287,10 @@ def analyze_batch(
         lag_samples=config.quality.firmware_lag_samples,
         refractory_samples=config.quality.firmware_refractory_samples,
     )
+    # Con mucha red los R del firmware no valen: ni para el bSQI ni para decir
+    # que ahí hubo latidos (`quiet_gap`). INTEGRACION.md, pendiente 39.
+    untrusted = firmware_untrusted(signal_mv, sample_rate, config.quality.firmware_mains_max_uv)
+    firmware_peaks = firmware_peaks[~untrusted[firmware_peaks]]
     detected_peaks = detect_rpeaks(cleaned, sample_rate)
 
     report = assess_quality(
@@ -298,6 +304,7 @@ def analyze_batch(
         context_samples=context,
         lookahead_samples=n_samples - end,
         flags_known=flags_known,
+        firmware_untrusted=untrusted,
     )
     reported = tuple(window for window in report.windows if context <= window.start_sample < end)
     analyzable = exclude_splices(report.analyzable, gap_samples, sample_rate)

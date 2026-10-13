@@ -433,19 +433,27 @@ async def ingest_frames(
     boot_id = parsed[0].info.boot_id
     frames = _dedupe_by_seq([f for f in parsed if f.info.boot_id == boot_id])
     matches_boot = None if ctx.boot_id is None else ctx.boot_id == boot_id
+    received_ms = int(input_data.received_at.timestamp() * 1000)
+    # Sin un ancla propia, lo único seguro es que la ÚLTIMA muestra del lote no
+    # es posterior a su recepción. Poner ahí la primera dejaba el lote entero
+    # en el futuro: un backlog de 25 min subido de una vez terminaba 25 min
+    # después de recibido (`INTEGRACION.md`, pendiente 1). La línea de tiempo
+    # ajusta la cota con cada lote (`timeline.extend_segment`).
+    last_end_t0_ms = frames[-1].info.t0_ms + frames[-1].info.duration_ms
     if matches_boot is False:
         # El par (epoch, uptime) pertenece al arranque ACTUAL del equipo. Este
         # backlog es anterior: conservarlo sin atribuirle esa hora ajena.
-        epoch_anchor_ms = int(input_data.received_at.timestamp() * 1000) - frames[0].info.t0_ms
+        epoch_anchor_ms = received_ms - last_end_t0_ms
         sync_source = TimeSyncSource.SERVER_RECEIVE
         uncertainty_ms = None
     first_sample_ms = epoch_anchor_ms + frames[0].info.t0_ms
-    received_ms = int(input_data.received_at.timestamp() * 1000)
-    if first_sample_ms > received_ms:
+    if first_sample_ms > received_ms + (uncertainty_ms or 0):
         # Una muestra archivada no puede comenzar después de recibir su POST.
         # El puente anterior no informa el bootId del ancla: ante un reinicio,
         # mezclar su uptime actual con tramas viejas producía inicios futuros.
-        epoch_anchor_ms = received_ms - frames[0].info.t0_ms
+        # El margen es la incertidumbre que el puente declara: sin él, un reloj
+        # adelantado dentro de lo declarado descartaba un ancla buena (§11.4).
+        epoch_anchor_ms = received_ms - last_end_t0_ms
         sync_source = TimeSyncSource.SERVER_RECEIVE
         uncertainty_ms = None
         matches_boot = False

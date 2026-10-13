@@ -272,6 +272,10 @@ export function drawSummaryPage(doc: jsPDF, input: ClinicalReportInput, startY: 
           evidenceTime(item),
         ],
       ),
+    // Desde la versión 5: pausas en ruido que el análisis automático no confirmó.
+    ...(pauses?.noisyCount
+      ? [['En ruido, sin confirmar:', formatMetricValue(pauses.noisyCount)] as Row]
+      : []),
   ]
   rows(doc, right, y + BOX_TITLE + 5, COLUMN, pauseRows)
   if (status) note(doc, left, y + rowA - 2.5, COLUMN, status)
@@ -603,6 +607,10 @@ function drawSpectrum(doc: jsPDF, metrics: HolterMetrics, frameTop: number) {
 
 const METHOD_DETECTION =
   'Método. Los latidos se detectan en el servidor (Pan-Tompkins) sobre el canal 1.'
+const METHOD_DETECTION_NK =
+  'Método. Los latidos se detectan en el servidor (NeuroKit, el mismo detector del análisis automático) sobre el canal 1.'
+const METHOD_HARDWARE =
+  'Los tramos con electrodo suelto, señal no analizable o saturación se excluyen, y un corte o hueco del registro nunca se cuenta como pausa.'
 
 /**
  * Primer párrafo de la nota de método, según el algoritmo que calculó las métricas.
@@ -614,12 +622,29 @@ const METHOD_DETECTION =
  * ruido, salvo las pausas: el análisis de calidad no distingue una asistolia del
  * ruido, así que se siguen buscando ahí y el médico las verifica en su tira. El
  * backend informa la versión 1 cuando el motor no evaluó toda la señal.
+ *
+ * Desde la versión 4 el detector es el del motor (NeuroKit); la 5 es la 4 con el
+ * ruido del motor, y una pausa en ruido cuenta solo si el motor la confirma. Sin
+ * el veredicto del motor el backend informa la 4.
  */
 export function metricsMethodNote(algorithmVersion: number | null | undefined): string {
+  if (algorithmVersion === 5) {
+    return `${METHOD_DETECTION_NK} Se excluyen los tramos con electrodo suelto, señal no analizable o saturación, y los que el análisis automático de calidad de señal clasifica como ruido o artefacto. Una pausa en esos tramos cuenta solo si el análisis automático la confirma con su propia regla, que distingue una asistolia del ruido; las demás se informan aparte, como pausas en ruido sin confirmar. Un corte o hueco del registro nunca se cuenta como pausa.`
+  }
+  if (algorithmVersion === 4) return `${METHOD_DETECTION_NK} ${METHOD_HARDWARE}`
   if (algorithmVersion != null && algorithmVersion >= 2) {
     return `${METHOD_DETECTION} Se excluyen los tramos con electrodo suelto, señal no analizable o saturación, y los que el análisis automático de calidad de señal clasifica como ruido o artefacto. Las pausas se buscan también en esos tramos, porque una asistolia no se distingue del ruido: cada una debe verificarse en su tira. Un corte o hueco del registro nunca se cuenta como pausa.`
   }
-  return `${METHOD_DETECTION} Los tramos con electrodo suelto, señal no analizable o saturación se excluyen, y un corte o hueco del registro nunca se cuenta como pausa.`
+  return `${METHOD_DETECTION} ${METHOD_HARDWARE}`
+}
+
+function pauseList(items: MetricEvidenceOut[]): string {
+  return items
+    .map(
+      (item) =>
+        `${formatAxisTime(item.epochMs)} (${formatMetricValue((item.durationMs ?? 0) / 1000, 2, 's')})`,
+    )
+    .join(' · ')
 }
 
 export function hasTrends(metrics: HolterMetrics | null | undefined): metrics is HolterMetrics {
@@ -646,13 +671,9 @@ export function drawTrendsPage(doc: jsPDF, metrics: HolterMetrics, startY: numbe
     analysis
       ? `Tiempo analizado: ${formatDuration(analysis.analyzedMs)} · excluido por calidad: ${formatDuration(analysis.excludedMs)} · intervalos RR válidos: ${formatMetricValue(analysis.rrIntervals)} · NN: ${formatMetricValue(analysis.nnIntervals)} · algoritmo v${analysis.algorithmVersion}.`
       : '',
-    metrics.pauses?.items.length
-      ? `Pausas registradas: ${metrics.pauses.items
-          .map(
-            (item) =>
-              `${formatAxisTime(item.epochMs)} (${formatMetricValue((item.durationMs ?? 0) / 1000, 2, 's')})`,
-          )
-          .join(' · ')}.`
+    metrics.pauses?.items.length ? `Pausas registradas: ${pauseList(metrics.pauses.items)}.` : '',
+    metrics.pauses?.noisyItems?.length
+      ? `Pausas en tramos con ruido, no confirmadas por el análisis automático (no cuentan en las pausas): ${pauseList(metrics.pauses.noisyItems)}.`
       : '',
   ].filter(Boolean)
   doc.setFont('helvetica', 'normal')

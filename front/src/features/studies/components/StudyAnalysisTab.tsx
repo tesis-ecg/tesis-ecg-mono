@@ -393,6 +393,11 @@ function RhythmCard({
           icon={CirclePause}
           label={`Pausas R-R > ${pauses?.thresholdMs ?? 2000} ms`}
           value={formatMetricValue(pauses?.count)}
+          hint={
+            pauses?.noisyCount
+              ? `+${pauses.noisyCount} en tramos con ruido, no confirmada${pauses.noisyCount === 1 ? '' : 's'} por el análisis automático`
+              : undefined
+          }
         />
         <AnalysisMetric
           icon={Timer}

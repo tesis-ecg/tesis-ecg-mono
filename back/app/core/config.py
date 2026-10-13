@@ -222,6 +222,14 @@ class Settings(BaseSettings):
     #: buenas de 29 (`tools/vest/evaluate.py`). Solo 0 o 45-65 Hz: ver
     #: `_mains_is_a_grid`.
     ml_mains_hz: float = Field(default=50.0, ge=0.0, le=65.0)
+    #: Red en la cruda por encima de la cual el motor no usa los R del
+    #: firmware (bit 1 de los flags): con más de ~5 mV pp de red el detector
+    #: del equipo inventa latidos y su SQI los marca buenos, porque mira la
+    #: señal después del notch (`Filtros.md` §13.17.6 del repo de Biomédica,
+    #: `INTEGRACION.md`, pendiente 39). Es el desvío de la primera diferencia en
+    #: ventanas de 2 s: 1000 µV son ~4,6 mV pp de red, entre los 485 de la peor
+    #: captura sin latidos inventados y los 1572 de la mejor con. 0 lo apaga.
+    ml_mains_rpeak_max_uv: float = Field(default=1000.0, ge=0.0, le=100_000.0)
 
     #: 50 y no 60: la bradicardia sinusal nocturna a 55 lpm es normal en un adulto
     #: sano, y con 60 se marcaría media noche de todos los Holter.

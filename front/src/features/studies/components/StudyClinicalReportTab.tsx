@@ -44,7 +44,6 @@ type PreviewState = 'loading' | 'error' | 'ready'
 // así que este catálogo permite mostrar también los cumplidos.
 const REPORT_REQUIREMENTS: { code: string; label: string; fieldId?: string }[] = [
   { code: 'STUDY_NOT_COMPLETED', label: 'Estudio completado' },
-  { code: 'TIME_NOT_VERIFIED', label: 'Hora de las muestras verificada' },
   { code: 'MISSING_RAW_SIGNAL', label: 'Señal cruda disponible' },
   { code: 'BEAT_ANALYSIS_PENDING', label: 'Análisis de latidos completo' },
   // Las métricas excluyen el ruido que marca el motor: hasta que cubre toda la

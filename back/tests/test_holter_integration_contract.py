@@ -16,7 +16,7 @@ from app.modules.devices.devices_schemas import HolterIdInput
 from app.modules.devices.devices_service import unassign_holter
 from app.modules.ingest.processing import _human_duration, append_filtered_view, process_batch
 from app.modules.ingest.visual_filter import filter_visualization
-from tests.ingest_helpers import build_frames, post_frames
+from tests.ingest_helpers import build_frames, now_ms, post_frames
 
 
 async def test_changed_bytes_with_same_boot_open_new_study(
@@ -92,6 +92,49 @@ async def test_a_legacy_anchor_cannot_start_a_study_after_its_upload(
     assert study.started_at <= batch.received_at
     assert study.started_at_verified is False
     assert batch.anchor_matches_boot is False
+
+
+async def test_a_clock_ahead_within_its_declared_uncertainty_keeps_the_anchor(
+    client, s3, db, make_patient, make_device
+) -> None:
+    """La regla de "muestra en el futuro" tiene el margen que el puente declara.
+
+    Sin él, un reloj del puente adelantado dentro de su incertidumbre
+    descartaba un ancla buena y el tramo quedaba sin verificar (§11.4).
+    """
+    patient = await make_patient()
+    device, key = await make_device(patient=patient)
+    ahead = now_ms() + 1_000
+    frames = build_frames(900, t0_ms=60_000)
+
+    kept = (
+        await post_frames(
+            client,
+            device,
+            key,
+            frames,
+            uptime_ms=60_000,
+            bridge_epoch_ms=ahead,
+            sync_uncertainty_ms=5_000,
+        )
+    ).json()
+    batch = await db.get(ECGBatch, kept["batchId"])
+    assert batch is not None and batch.anchor_matches_boot is not False
+
+    other_device, other_key = await make_device(patient=await make_patient())
+    dropped = (
+        await post_frames(
+            client,
+            other_device,
+            other_key,
+            frames,
+            uptime_ms=60_000,
+            bridge_epoch_ms=ahead,
+            sync_uncertainty_ms=45,
+        )
+    ).json()
+    other = await db.get(ECGBatch, dropped["batchId"])
+    assert other is not None and other.anchor_matches_boot is False
 
 
 async def test_reassignment_rearms_battery_alert_for_the_next_patient(

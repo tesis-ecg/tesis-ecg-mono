@@ -18,6 +18,7 @@ from app.ml.quality import (
     VETO_FRACTION,
     assess_quality,
     deinterfere,
+    firmware_untrusted,
     hardware_veto,
     is_flatline,
     mains_settle_samples,
@@ -604,6 +605,64 @@ def test_sin_r_peaks_del_firmware_el_bsqi_no_se_aplica() -> None:
     assert report.firmware_peaks_available is False
     assert all(window.bsqi is None for window in report.windows)
     assert {window.level for window in report.windows} == {SignalQualityLevel.GOOD}
+
+
+# --------------------------------------------------------------------------- #
+# Red fuerte: los R del firmware no valen (`INTEGRACION.md`, pendiente 39)
+# --------------------------------------------------------------------------- #
+
+
+def _red_con_latidos_inventados() -> tuple[np.ndarray, np.ndarray]:
+    """30 s a 60 lpm; en la ventana del medio, 6 mV pp de red y el firmware
+    marcando un R cada 400 ms (150 lpm), como sobre la placa con el router al
+    lado (`Filtros.md` §13.17.6 del repo de Biomédica)."""
+    result = synth_ecg(duration_s=30.0)
+    signal = result.signal_mv.astype(np.float32).copy()
+    flags = result.flags.copy()
+    middle = slice(10 * SAMPLE_RATE, 20 * SAMPLE_RATE)
+    signal[middle] = _with_mains(signal[middle], amplitude_mv=3.0)
+    lag = int(0.250 * SAMPLE_RATE)
+    for sample in range(10 * SAMPLE_RATE + lag, 20 * SAMPLE_RATE, int(0.4 * SAMPLE_RATE)):
+        flags[sample] |= FLAG_R_PEAK
+    return signal, flags
+
+
+def test_la_red_fuerte_se_mide_sobre_la_cruda_por_ventanas_de_dos_segundos() -> None:
+    signal, _ = _red_con_latidos_inventados()
+
+    mask = firmware_untrusted(signal, SAMPLE_RATE, 1000.0)
+
+    assert not mask[: 10 * SAMPLE_RATE].any()
+    assert mask[10 * SAMPLE_RATE : 20 * SAMPLE_RATE].all()
+    assert not mask[20 * SAMPLE_RATE :].any()
+    assert not firmware_untrusted(signal, SAMPLE_RATE, 0.0).any()
+
+
+def test_con_red_fuerte_los_r_del_firmware_no_entran_al_bsqi() -> None:
+    signal, flags = _red_con_latidos_inventados()
+    thresholds = replace(THRESHOLDS, mains_hz=50.0)
+    cleaned = clean_signal(signal, SAMPLE_RATE)
+    detected = detect_rpeaks(cleaned, SAMPLE_RATE)
+
+    def report(untrusted: np.ndarray | None):  # type: ignore[no-untyped-def]
+        return assess_quality(
+            signal,
+            flags,
+            cleaned,
+            _firmware(flags),
+            detected,
+            sample_rate=SAMPLE_RATE,
+            thresholds=thresholds,
+            firmware_untrusted=untrusted,
+        ).windows
+
+    antes = report(None)
+    despues = report(firmware_untrusted(signal, SAMPLE_RATE, 1000.0))
+
+    # Contra los latidos inventados el bSQI medía el ruido del equipo.
+    assert antes[1].bsqi is not None and antes[1].bsqi < THRESHOLDS.bsqi_min
+    assert despues[1].bsqi is None
+    assert despues[0].bsqi is not None and despues[2].bsqi is not None
 
 
 # --------------------------------------------------------------------------- #
