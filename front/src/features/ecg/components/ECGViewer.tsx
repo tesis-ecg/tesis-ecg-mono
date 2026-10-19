@@ -22,6 +22,14 @@ import {
 } from '../annotationMeta'
 import { centerRangeAt, layoutVisibleAnnotationLabels } from '../annotationLayout'
 import { drawAnnotationBands, type ECGAnnotationColors } from '../annotationPlugin'
+import { drawUnverifiedTimeBands, type UnverifiedTimeColors } from '../unverifiedTimePlugin'
+import { isTimestampVerified } from '../timeVerification'
+import {
+  ECGMeasurementOverlay,
+  ECGMeasurementToolbar,
+  useMeasurements,
+  type MeasureTrace,
+} from '../measurement'
 import { drawPaperGrid, type PaperGridColors } from '../paperGridPlugin'
 import {
   DEFAULT_AMPLITUDE,
@@ -68,6 +76,7 @@ interface EcgTokens {
   fg: string
   alerts: ECGAnnotationColors
   paperGrid: PaperGridColors
+  timeUnverified: UnverifiedTimeColors
 }
 
 function readEcgTokens(): EcgTokens {
@@ -87,6 +96,10 @@ function readEcgTokens(): EcgTokens {
     paperGrid: {
       minor: style.getPropertyValue('--ecg-grid-minor').trim() || 'rgba(214, 138, 128, 0.35)',
       major: style.getPropertyValue('--ecg-grid-major').trim() || 'rgba(197, 92, 78, 0.55)',
+    },
+    timeUnverified: {
+      stroke: style.getPropertyValue('--ecg-time-unverified').trim() || '#7a4fb5',
+      fill: style.getPropertyValue('--ecg-time-unverified-bg').trim() || 'rgba(122, 79, 181, 0.1)',
     },
   }
 }
@@ -170,12 +183,15 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // se descargan las muestras de la señal nueva (el efecto de más abajo) se
   // sigue dibujando la anterior, y el gráfico nuevo arranca ya con ellas.
   const [signal, setSignal] = useState(incomingSignal)
-  const [showsSamples, setShowsSamples] = useState(false)
+  // Las muestras reales empalmadas, o null si se dibuja el resumen. Son la
+  // única fuente de las mediciones sobre estudios con resumen.
+  const [detailWindow, setDetailWindow] = useState<ECGDetailWindow | null>(null)
+  const showsSamples = detailWindow !== null
   const holdsSignal =
     incomingSignal !== signal && showsSamples && incomingSignal.detail !== undefined
   if (incomingSignal !== signal && !holdsSignal) {
     setSignal(incomingSignal)
-    setShowsSamples(false)
+    setDetailWindow(null)
   }
 
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -276,6 +292,52 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     uplotRef.current?.redraw(false)
   }, [annotationDrawOrder, annotationLinks])
 
+  // --- Mediciones ---------------------------------------------------------- #
+  //
+  // Se miden las muestras reales, nunca el resumen mín/máx: un serrucho de
+  // envolvente daría amplitudes y áreas que no son las de la señal. Por eso la
+  // traza de medición sale de la ventana de detalle empalmada (o de la señal
+  // entera si ya es cruda) y las herramientas se apagan cuando lo visible no
+  // está cubierto por ella.
+  const measurements = useMeasurements(String(signal.startTimestamp))
+  // uPlot no pasa por React: cada cambio de escala (X o Y) o de tamaño tiene
+  // que reproyectar las mediciones, y este contador es lo que las repinta.
+  const [, setScaleTick] = useState(0)
+  const measureTrace = useMemo<MeasureTrace | null>(() => {
+    if (detailWindow) {
+      return {
+        xs: detailWindow.timestampsMs,
+        ys: detailWindow.samples,
+        gapIndices: detailWindow.gapIndices,
+      }
+    }
+    if (signal.metadata?.overviewSamplesPerBucket == null) {
+      return { xs: signal.timestampsMs, ys, gapIndices: signal.gapIndices }
+    }
+    return null
+  }, [detailWindow, signal, ys])
+  const measureRange = useMemo(() => {
+    const startMs = overlayViewport?.startMs ?? signal.startTimestamp
+    return { startMs, endMs: overlayViewport?.endMs ?? signal.startTimestamp + signal.durationMs }
+  }, [overlayViewport, signal.startTimestamp, signal.durationMs])
+  const measureEnabled = useMemo(() => {
+    if (!measureTrace || measureTrace.xs.length === 0) return false
+    // Lo visible, recortado al estudio: en los bordes el viewport puede pasarse.
+    const studyStart = signal.startTimestamp
+    const studyEnd = signal.startTimestamp + signal.durationMs
+    const wantedStart = Math.max(measureRange.startMs, studyStart)
+    const wantedEnd = Math.min(measureRange.endMs, studyEnd)
+    const slackMs = (4 * 1000) / signal.sampleRate
+    const first = measureTrace.xs[0]
+    const last = measureTrace.xs[measureTrace.xs.length - 1]
+    return first - slackMs <= wantedStart && last + slackMs >= wantedEnd
+  }, [measureTrace, measureRange, signal.startTimestamp, signal.durationMs, signal.sampleRate])
+  const xToPx = (epochMs: number) =>
+    uplotRef.current?.valToPos((epochMs - signal.startTimestamp) / 1000, 'x') ?? 0
+  const pxToX = (px: number) =>
+    signal.startTimestamp + (uplotRef.current?.posToVal(px, 'x') ?? 0) * 1000
+  const yToPx = (mv: number) => uplotRef.current?.valToPos(mv, 'y') ?? 0
+
   const annotationLabelLayouts = useMemo(() => {
     if (!overlayViewport || !plotArea) return []
     return layoutVisibleAnnotationLabels({
@@ -317,7 +379,22 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     const tokens = readEcgTokens()
     const initialWidth = Math.max(container.clientWidth, 600)
     const startTimestamp = signal.startTimestamp
-    const timeVerified = signal.metadata?.startTimeVerified !== false
+    // La hora de pared se decide por tramo. El tiempo transcurrido queda solo
+    // para un estudio legacy: sin línea de tiempo y con la hora sin verificar.
+    const timeline = signal.timeline
+    const legacyWallClock = signal.metadata?.startTimeVerified !== false
+    const hasWallClock = timeline.length > 0 || legacyWallClock
+    // En un hueco entre tramos no hay traza ni a quién preguntarle: no se marca.
+    const verifiedFallback = timeline.length > 0 ? true : legacyWallClock
+    // Un instante estimado lleva "≈": uPlot no deja pintar cada etiqueta de un
+    // color distinto, así que el prefijo es lo que la distingue en el eje.
+    const timeLabel = (v: number, format: (epochMs: number) => string) => {
+      if (!hasWallClock) return formatRelativeSeconds(v)
+      const epochMs = startTimestamp + v * 1000
+      return isTimestampVerified(timeline, epochMs, verifiedFallback)
+        ? format(epochMs)
+        : `≈${format(epochMs)}`
+    }
 
     const syncPlotArea = (inst: uPlot) => {
       const next = {
@@ -386,7 +463,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       if (detailLoaded === null) return
       detailLoaded = null
       detailWindowRef.current = null
-      setShowsSamples(false)
+      setDetailWindow(null)
       container.dataset.trace = 'overview'
       draw(inst, { xs, ys })
     }
@@ -394,7 +471,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     const showDetail = (inst: uPlot, loaded: ECGDetailWindow) => {
       detailLoaded = { startSample: loaded.startSample, endSample: loaded.endSample }
       detailWindowRef.current = { signal, detail: loaded }
-      setShowsSamples(true)
+      setDetailWindow(loaded)
       container.dataset.trace = 'samples'
       draw(inst, spliceDetail(loaded))
     }
@@ -505,12 +582,9 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           // necesita para cruzar un hallazgo con lo que el paciente estaba
           // haciendo. `v` es segundos desde el inicio del eje, que arranca en
           // `startTimestamp`.
-          values: (_self, splits) =>
-            splits.map((v) =>
-              timeVerified
-                ? formatWallClockShort(startTimestamp + v * 1000)
-                : formatRelativeSeconds(v),
-            ),
+          values: (_self, splits) => splits.map((v) => timeLabel(v, formatWallClockShort)),
+          // Con el prefijo "≈" la etiqueta es más ancha: sin más aire se pisan.
+          space: 76,
           size: 30,
         },
         {
@@ -524,12 +598,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       series: [
         {
           label: 'Tiempo',
-          value: (_self, v) =>
-            v == null
-              ? '—'
-              : timeVerified
-                ? formatWallClock(startTimestamp + v * 1000)
-                : formatRelativeSeconds(v),
+          value: (_self, v) => (v == null ? '—' : timeLabel(v, formatWallClock)),
         },
         {
           label: 'ECG',
@@ -548,6 +617,9 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             drawPaperGrid(u, scaleRef.current, tokens.paperGrid)
           },
           (u) => {
+            drawUnverifiedTimeBands(u, timeline, startTimestamp, tokens.timeUnverified)
+          },
+          (u) => {
             drawAnnotationBands(
               u,
               annotationDrawOrderRef.current,
@@ -560,6 +632,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
         ],
         setScale: [
           (u, scaleKey) => {
+            setScaleTick((tick) => tick + 1)
             if (scaleKey !== 'x') return
             const { min, max } = u.scales.x
             if (min == null || max == null) return
@@ -962,7 +1035,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
       if (settled || controller.signal.aborted) return
       settled = true
       detailWindowRef.current = loaded && { signal: next, detail: loaded }
-      setShowsSamples(loaded !== null)
+      setDetailWindow(loaded)
       setSignal(next)
     }
 
@@ -1180,17 +1253,38 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           })}
         </div>
       ) : null}
-      {toolbar ? (
-        // Fuera del contenedor de uPlot a propósito: un click acá no tiene que
-        // arrancar un pan ni seleccionar el aviso que esté debajo.
-        <div
-          className="absolute z-10"
-          style={{ top: (plotArea?.top ?? 0) + 8, right: 8 }}
-          data-testid="ecg-viewer-toolbar"
-        >
-          {toolbar}
-        </div>
-      ) : null}
+      <div className="pointer-events-none absolute inset-0 z-[15]">
+        <ECGMeasurementOverlay
+          tool={measurements.tool}
+          enabled={measureEnabled}
+          plotArea={plotArea}
+          xToPx={xToPx}
+          pxToX={pxToX}
+          yToPx={yToPx}
+          visibleRange={measureRange}
+          trace={measureTrace}
+          measurements={measurements.measurements}
+          onChange={measurements.setMeasurements}
+        />
+      </div>
+      {/* Fuera del contenedor de uPlot a propósito: un click acá no tiene que
+          arrancar un pan ni seleccionar el aviso que esté debajo. */}
+      <div
+        className="absolute z-20 flex items-start gap-2"
+        style={{ top: (plotArea?.top ?? 0) + 8, right: 8 }}
+        data-testid="ecg-viewer-toolbar"
+      >
+        <ECGMeasurementToolbar
+          tool={measurements.tool}
+          onToolChange={measurements.setTool}
+          enabled={measureEnabled}
+          disabledReason="Acercá el gráfico hasta ver las muestras reales para medir."
+          measurementCount={measurements.measurements.length}
+          onClear={measurements.clear}
+          viewKind={signal.metadata?.viewKind}
+        />
+        {toolbar}
+      </div>
     </div>
   )
 })

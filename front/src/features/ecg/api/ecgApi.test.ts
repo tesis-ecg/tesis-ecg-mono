@@ -185,6 +185,34 @@ describe('getStudyEcg', () => {
     const signal = await getStudyEcg('study-id')
 
     expect(signal.metadata?.startTimeVerified).toBe(false)
+    // Un solo tramo sin verificar: el resumen dice cuál, no que todo el estudio lo está.
+    expect(signal.metadata?.timeVerification).toEqual({
+      allVerified: false,
+      segmentCount: 2,
+      unverifiedSegmentCount: 1,
+      unverifiedDurationMs: 4,
+      maxUncertaintyMs: null,
+    })
+  })
+
+  it('resume la verificación de la hora cuando todos los tramos coinciden', async () => {
+    installDecoderWorker()
+    const start = 1_700_000_000_000
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 2,
+        startTimestamp: start,
+        levels: [level({ pointCount: 2 })],
+        timeline: [timelineSegment(0, 0, 2, start, start + 4)],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.metadata?.startTimeVerified).toBe(true)
+    expect(signal.metadata?.timeVerification?.allVerified).toBe(true)
+    expect(signal.metadata?.timeVerification?.unverifiedSegmentCount).toBe(0)
   })
 
   it('concatena en orden los segmentos de un estudio demasiado corto para la pirámide', async () => {
