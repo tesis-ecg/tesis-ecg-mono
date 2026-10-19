@@ -354,6 +354,7 @@ export interface IngestAckOut {
   "framesRejected": number
   "framesDuplicate": number
   "lastAcceptedSeq": number | null
+  "lastAcceptedCrc32"?: number | null
   "batchId": string | null
   "studyId": string
   "serverTime": string
@@ -836,6 +837,7 @@ export interface StudyEcgTimelineSegmentOut {
   "anchorSource": "ntp" | "none" | "server_receive"
   "anchorUncertaintyMs": number | null
   "anchorMatchesBoot"?: boolean | null
+  "timeVerified"?: boolean
 }
 
 export interface StudyFindingGroupOut {

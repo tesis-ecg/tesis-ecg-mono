@@ -7,14 +7,16 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 
@@ -24,13 +26,19 @@ from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
 from app.core.workers import shutdown_workers, warmup_ml
 from app.db.errors import is_lock_contention
 from app.db.session import engine
+from app.dependencies.common_dependencies import get_db
 from app.modules.alerts import router as alerts_router
 from app.modules.auth import router as auth_router
 from app.modules.dashboard import router as dashboard_router
 from app.modules.devices import router as devices_router
 from app.modules.doctors import router as doctors_router
 from app.modules.ingest import router as ingest_router
+from app.modules.ingest.contact_watch import sweep_silent_devices
 from app.modules.patient_app import router as patient_app_router
+from app.modules.patient_app.notifications_service import (
+    no_contact_message,
+    notify_patient_task,
+)
 from app.modules.patients import router as patients_router
 from app.modules.studies import router as studies_router
 from app.modules.users import router as users_router
@@ -341,8 +349,15 @@ app.include_router(patient_app_router, prefix="/mobile", tags=["mobile"])
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str | int]:
+    """Latido, y la hora del servidor para el puente WiFi cuando el SNTP no contesta.
+
+    El puente se fechaba con el `Date` de esta respuesta, y con la función quieta
+    ese `Date` llega congelado (minutos atrás, sin caché de por medio): el
+    servidor lo arma con un reloj que solo avanza mientras atiende. `serverTimeMs`
+    se lee al armar ESTA respuesta (`INTEGRACION.md`, pendiente 3).
+    """
+    return {"status": "ok", "serverTimeMs": int(datetime.now(UTC).timestamp() * 1000)}
 
 
 @app.get("/health/live")
@@ -370,3 +385,30 @@ async def health_ready(request: Request) -> dict[str, str]:
             detail={"code": "NOT_READY", "message": "Base de datos no disponible."},
         ) from exc
     return {"status": "ready"}
+
+
+@app.get("/internal/device-contact-sweep", include_in_schema=False)
+async def device_contact_sweep(
+    request: Request, db: AsyncSession = Depends(get_db)
+) -> dict[str, int]:
+    """Barre los estudios abiertos y avisa de los equipos que dejaron de subir.
+
+    La llama un programador externo con `Authorization: Bearer <CRON_SECRET>`
+    (`.github/workflows/device-contact-sweep.yml`): Vercel Cron en Hobby no corre
+    más de una vez por día, y este aviso necesita correr cada pocos minutos. Sin
+    secreto configurado, o con otro, la ruta no existe (404, como `/health/ready`).
+    """
+    expected = _settings.cron_secret
+    provided = request.headers.get("authorization", "")
+    if not expected or not hmac.compare_digest(provided, f"Bearer {expected}"):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": "Recurso no encontrado."},
+        )
+    silent = await sweep_silent_devices(db, datetime.now(UTC))
+    await db.commit()
+    for item in silent:
+        await notify_patient_task(
+            item.patient_id, no_contact_message(item.alert_id, item.silent_minutes)
+        )
+    return {"alerted": len(silent)}

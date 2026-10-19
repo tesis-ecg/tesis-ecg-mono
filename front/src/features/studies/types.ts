@@ -229,6 +229,11 @@ export interface StudyClinicalReportSnapshot {
     timeVerified?: boolean
     synchronizationSources: string[]
     maxSynchronizationUncertaintyMs: number | null
+    /**
+     * Desde `schemaVersion` 4: lo que pasó entre la última muestra y el cierre del
+     * estudio. Ya no cuenta en `interruptionMs`, que llega hasta la última muestra.
+     */
+    afterLastSampleMs?: number
     /** Desde `schemaVersion` 3: los tramos con la hora estimada por recepción. */
     unverifiedSegments?: Array<{
       startEpochMs: number

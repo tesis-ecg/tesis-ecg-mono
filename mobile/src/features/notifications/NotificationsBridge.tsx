@@ -1,12 +1,15 @@
-import * as Notifications from 'expo-notifications'
-import { useRouter } from 'expo-router'
-import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef } from 'react'
+import * as Notifications from "expo-notifications";
+import { useRouter } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 
-import { useAuth } from '@/features/auth/AuthContext'
-import { patientKeys } from '@/features/patient/hooks'
-import { registerForPushNotifications } from './registerPushToken'
-import { routeForNotification, type NotificationData } from './routeForNotification'
+import { useAuth } from "@/features/auth/AuthContext";
+import { patientKeys } from "@/features/patient/hooks";
+import { registerForPushNotifications } from "./registerPushToken";
+import {
+  routeForNotification,
+  type NotificationData,
+} from "./routeForNotification";
 
 /**
  * Comportamiento en primer plano.
@@ -22,7 +25,7 @@ Notifications.setNotificationHandler({
     shouldShowBanner: true,
     shouldShowList: true,
   }),
-})
+});
 
 /**
  * Une las notificaciones con la navegación y con la sesión.
@@ -32,23 +35,23 @@ Notifications.setNotificationHandler({
  * abrir el formulario ya anclado a ese momento.
  */
 export function NotificationsBridge() {
-  const { patient } = useAuth()
-  const router = useRouter()
-  const queryClient = useQueryClient()
+  const { patient } = useAuth();
+  const router = useRouter();
+  const queryClient = useQueryClient();
   /** El token de Expo rota, así que se re-registra en cada arranque con sesión. */
-  const registeredFor = useRef<string | null>(null)
-  const lastResponse = Notifications.useLastNotificationResponse()
-  const handledResponse = useRef<string | null>(null)
+  const registeredFor = useRef<string | null>(null);
+  const lastResponse = Notifications.useLastNotificationResponse();
+  const handledResponse = useRef<string | null>(null);
 
   useEffect(() => {
     if (!patient) {
-      registeredFor.current = null
-      return
+      registeredFor.current = null;
+      return;
     }
-    if (registeredFor.current === patient.id) return
-    registeredFor.current = patient.id
-    void registerForPushNotifications()
-  }, [patient])
+    if (registeredFor.current === patient.id) return;
+    registeredFor.current = patient.id;
+    void registerForPushNotifications();
+  }, [patient]);
 
   /**
    * Un push que llega con la app abierta tiene que actualizar lo que se está
@@ -60,40 +63,43 @@ export function NotificationsBridge() {
    * aviso manda al paciente seguía dibujando el estado cacheado.
    */
   useEffect(() => {
-    if (!patient) return
+    if (!patient) return;
     const subscription = Notifications.addNotificationReceivedListener(() => {
-      void queryClient.invalidateQueries({ queryKey: patientKeys.alerts })
-      void queryClient.invalidateQueries({ queryKey: patientKeys.device })
-    })
-    return () => subscription.remove()
-  }, [patient, queryClient])
+      void queryClient.invalidateQueries({ queryKey: patientKeys.alerts });
+      void queryClient.invalidateQueries({ queryKey: patientKeys.device });
+    });
+    return () => subscription.remove();
+  }, [patient, queryClient]);
 
   useEffect(() => {
-    if (!patient || !lastResponse) return
-    const responseId = lastResponse.notification.request.identifier
-    if (handledResponse.current === responseId) return
-    handledResponse.current = responseId
+    if (!patient || !lastResponse) return;
+    const responseId = lastResponse.notification.request.identifier;
+    if (handledResponse.current === responseId) return;
+    handledResponse.current = responseId;
 
-    if (lastResponse.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) {
-      Notifications.clearLastNotificationResponse()
-      return
+    if (
+      lastResponse.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER
+    ) {
+      Notifications.clearLastNotificationResponse();
+      return;
     }
-    const data = lastResponse.notification.request.content.data as NotificationData
-    const route = routeForNotification(data)
+    const data = lastResponse.notification.request.content
+      .data as NotificationData;
+    const route = routeForNotification(data);
     // Un aviso tocado desde el fondo no pasa por el listener de recepción, así
     // que la pantalla a la que lleva se dibujaría con lo que haya en caché.
-    void queryClient.invalidateQueries({ queryKey: patientKeys.alerts })
-    void queryClient.invalidateQueries({ queryKey: patientKeys.device })
+    void queryClient.invalidateQueries({ queryKey: patientKeys.alerts });
+    void queryClient.invalidateQueries({ queryKey: patientKeys.device });
 
-    if (route.pathname === '/(tabs)/device') {
-      router.navigate(route.pathname)
-    } else if (route.pathname === '/notifications') {
-      router.push(route.pathname)
+    if (route.pathname === "/(tabs)/device") {
+      router.navigate(route.pathname);
+    } else if (route.pathname === "/notifications") {
+      router.push(route.pathname);
     } else {
-      router.push({ pathname: route.pathname, params: route.params })
+      router.push({ pathname: route.pathname, params: route.params });
     }
-    Notifications.clearLastNotificationResponse()
-  }, [lastResponse, patient, router, queryClient])
+    Notifications.clearLastNotificationResponse();
+  }, [lastResponse, patient, router, queryClient]);
 
-  return null
+  return null;
 }

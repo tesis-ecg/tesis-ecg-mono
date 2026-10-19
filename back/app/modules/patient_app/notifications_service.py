@@ -119,6 +119,19 @@ def battery_message(alert_id: uuid.UUID, level: str) -> PushMessage:
     )
 
 
+def no_contact_message(alert_id: uuid.UUID, silent_minutes: int) -> PushMessage:
+    """El chaleco no sube hace un rato y lo que lo arregla es acercarlo al WiFi."""
+    hours = max(1, silent_minutes // 60)
+    return PushMessage(
+        title="Tu chaleco no se está conectando",
+        body=(
+            f"Tu chaleco no se conecta hace {hours} hora{'s' if hours != 1 else ''}. "
+            "Sigue grabando: acercate a tu WiFi para que se envíe lo guardado."
+        ),
+        data={"type": "device_no_contact", "alertId": str(alert_id)},
+    )
+
+
 async def notify_patient_task(patient_id: uuid.UUID, message: PushMessage) -> None:
     """Entrypoint del `BackgroundTasks`: abre su propia sesión.
 

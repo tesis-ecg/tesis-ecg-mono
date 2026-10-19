@@ -829,7 +829,7 @@ async def _place_on_timeline(
         timeline.settle_unverified(await repo.list_timeline_segments(db, study.id))
     if (
         current.ordinal == 0
-        and current.anchor_matches_boot is True
+        and current.time_verified
         and study.status is StudyStatus.IN_PROGRESS
         and current.start_epoch_ms <= int(batch.received_at.timestamp() * 1000)
     ):

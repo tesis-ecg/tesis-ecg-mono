@@ -21,7 +21,7 @@ from app.db.models.patient_report import PatientReport
 from app.db.models.push_token import PushPlatform, PushToken
 from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User, UserRole
-from app.modules.patient_app.alert_actions import VEST_MISPLACED_KIND
+from app.modules.patient_app.alert_actions import NO_RESPONSE_KINDS, VEST_MISPLACED_KIND
 from app.modules.patient_app.patient_app_schemas import MobileAlertStatus
 
 
@@ -141,7 +141,7 @@ async def list_patient_alerts(
     )
     requires_response = or_(
         Alert.kind.is_(None),
-        Alert.kind.not_in((VEST_MISPLACED_KIND, "battery_low", "battery_critical")),
+        Alert.kind.not_in(NO_RESPONSE_KINDS),
     )
     vest_alert = aliased(Alert)
     latest_vest_alert_id = (

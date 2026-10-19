@@ -159,8 +159,8 @@ class ECGBatch(TimestampMixin, Base):
     device_lead_flags: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     device_loss_flags: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     device_status_flags: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    #: Estimación de atraso del propio firmware. Se archiva para diagnóstico y
-    #: **no se usa para alertar**: va ~2× alto (ver `DeviceContext.backlog_seconds`).
+    #: Segundos de señal sin subir según el firmware; desde el 30/9/2026 con −0,4 %
+    #: de error medido (ver `DeviceContext.backlog_seconds`).
     device_backlog_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: Las 256 B por trama tal cual llegaron. Fuente de verdad verificable por
     #: CRC: siempre se puede volver al byte exacto que grabó el equipo.

@@ -8,33 +8,33 @@
  * actualiza este archivo.
  */
 
-export type PatientSex = 'M' | 'F' | 'X'
-export type PatientStudyStatus = 'active' | 'completed' | 'paused' | 'none'
-export type ReportSource = 'push_response' | 'manual'
-export type PushPlatform = 'ios' | 'android'
+export type PatientSex = "M" | "F" | "X";
+export type PatientStudyStatus = "active" | "completed" | "paused" | "none";
+export type ReportSource = "push_response" | "manual";
+export type PushPlatform = "ios" | "android";
 
 export interface Doctor {
-  fullName: string
-  email: string | null
+  fullName: string;
+  email: string | null;
 }
 
 export interface PatientProfile {
-  id: string
-  fullName: string
-  dni: string
-  birthDate: string | null
-  sex: PatientSex
-  email: string | null
-  phone: string | null
-  studyStatus: PatientStudyStatus
-  doctor: Doctor | null
+  id: string;
+  fullName: string;
+  dni: string;
+  birthDate: string | null;
+  sex: PatientSex;
+  email: string | null;
+  phone: string | null;
+  studyStatus: PatientStudyStatus;
+  doctor: Doctor | null;
 }
 
 export interface Session {
-  accessToken: string
-  refreshToken: string
-  expiresAt: string
-  patient: PatientProfile
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: string;
+  patient: PatientProfile;
 }
 
 /**
@@ -47,7 +47,8 @@ export interface Session {
  * - `idle`: conectado pero sin estudio en curso
  * - `stale`: hace horas que no manda nada
  */
-export type DeviceState = 'none' | 'never_connected' | 'recording' | 'idle' | 'stale'
+export type DeviceState =
+  "none" | "never_connected" | "recording" | "idle" | "stale";
 
 /**
  * Cómo tiene puesto el chaleco el paciente, según el último reporte del equipo.
@@ -56,83 +57,83 @@ export type DeviceState = 'none' | 'never_connected' | 'recording' | 'idle' | 's
  * decirle al paciente que lo tiene bien puesto sin haberlo medido es
  * exactamente el error que este aviso existe para evitar.
  */
-export type VestPlacement = 'ok' | 'bad' | 'unknown'
+export type VestPlacement = "ok" | "bad" | "unknown";
 
 export interface DeviceStatus {
-  hasDevice: boolean
-  state: DeviceState
-  vestPlacement: VestPlacement
-  vestPlacementAt: string | null
-  deviceId: string | null
-  serial: string | null
-  model: string | null
-  firmwareVersion: string | null
-  batteryPercent: number | null
-  lastSeenAt: string | null
-  lastDataReceivedAt: string | null
-  studyId: string | null
-  studyStartedAt: string | null
+  hasDevice: boolean;
+  state: DeviceState;
+  vestPlacement: VestPlacement;
+  vestPlacementAt: string | null;
+  deviceId: string | null;
+  serial: string | null;
+  model: string | null;
+  firmwareVersion: string | null;
+  batteryPercent: number | null;
+  lastSeenAt: string | null;
+  lastDataReceivedAt: string | null;
+  studyId: string | null;
+  studyStartedAt: string | null;
 }
 
-export type AlertSeverity = 'low' | 'medium' | 'high' | 'critical'
+export type AlertSeverity = "low" | "medium" | "high" | "critical";
 
 export interface PatientAlert {
-  id: string
-  kind: string
-  severity: AlertSeverity
-  message: string
-  detectedAt: string
-  requiresResponse: boolean
-  needsReport: boolean
-  reportId: string | null
-  answeredAt: string | null
+  id: string;
+  kind: string;
+  severity: AlertSeverity;
+  message: string;
+  detectedAt: string;
+  requiresResponse: boolean;
+  needsReport: boolean;
+  reportId: string | null;
+  answeredAt: string | null;
 }
 
 export interface AlertList {
-  items: PatientAlert[]
-  total: number
-  pendingTotal: number
-  limit: number
-  offset: number
+  items: PatientAlert[];
+  total: number;
+  pendingTotal: number;
+  limit: number;
+  offset: number;
 }
 
 export interface PatientReport {
-  id: string
-  occurredAt: string
-  source: ReportSource
-  symptoms: string[]
-  symptomsOther: string | null
-  activity: string
-  activityOther: string | null
-  notes: string | null
-  alertId: string | null
-  studyId: string | null
-  createdAt: string
+  id: string;
+  occurredAt: string;
+  source: ReportSource;
+  symptoms: string[];
+  symptomsOther: string | null;
+  activity: string;
+  activityOther: string | null;
+  notes: string | null;
+  alertId: string | null;
+  studyId: string | null;
+  createdAt: string;
 }
 
 export interface ReportList {
-  items: PatientReport[]
-  total: number
-  limit: number
-  offset: number
+  items: PatientReport[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface ReportInput {
-  occurredAt?: string
-  alertId?: string
-  symptoms: string[]
-  symptomsOther?: string | null
-  activity: string
-  activityOther?: string | null
-  notes?: string | null
+  occurredAt?: string;
+  alertId?: string;
+  symptoms: string[];
+  symptomsOther?: string | null;
+  activity: string;
+  activityOther?: string | null;
+  notes?: string | null;
 }
 
 export interface CatalogOption {
-  value: string
-  label: string
+  value: string;
+  label: string;
 }
 
 export interface Catalogs {
-  symptoms: CatalogOption[]
-  activities: CatalogOption[]
+  symptoms: CatalogOption[];
+  activities: CatalogOption[];
 }

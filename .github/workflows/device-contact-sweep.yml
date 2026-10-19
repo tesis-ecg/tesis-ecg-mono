@@ -1,0 +1,40 @@
+# Avisa de los chalecos que dejaron de subir (INTEGRACION.md, pendiente 5).
+#
+# Llama a GET /internal/device-contact-sweep del backend desplegado cada 15 min.
+# No es un Vercel Cron porque en Hobby un cron no puede correr más de una vez por
+# día (y uno más frecuente hace fallar el deploy). Los schedule de GitHub se
+# atrasan algunos minutos con carga, que contra un umbral de 2 h no importa.
+#
+# Necesita dos secretos del repo, y sin ellos no hace nada:
+#   CRON_SECRET          el mismo valor que la variable CRON_SECRET del backend en Vercel
+#   SWEEP_BACKEND_URL    la URL base del backend de producción, sin barra final
+name: Device contact sweep
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: device-contact-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run the sweep
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SWEEP_BACKEND_URL: ${{ secrets.SWEEP_BACKEND_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$SWEEP_BACKEND_URL" ]; then
+            echo "CRON_SECRET o SWEEP_BACKEND_URL sin configurar: no se barre."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$SWEEP_BACKEND_URL/internal/device-contact-sweep"

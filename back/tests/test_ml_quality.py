@@ -57,7 +57,7 @@ def _firmware(flags: np.ndarray) -> np.ndarray:
     """
     return compensate_firmware_peaks(
         firmware_rpeaks(flags),
-        lag_samples=int(0.250 * SAMPLE_RATE),
+        lag_samples=int(0.195 * SAMPLE_RATE),
         refractory_samples=int(0.300 * SAMPLE_RATE),
     )
 
@@ -621,7 +621,7 @@ def _red_con_latidos_inventados() -> tuple[np.ndarray, np.ndarray]:
     flags = result.flags.copy()
     middle = slice(10 * SAMPLE_RATE, 20 * SAMPLE_RATE)
     signal[middle] = _with_mains(signal[middle], amplitude_mv=3.0)
-    lag = int(0.250 * SAMPLE_RATE)
+    lag = int(0.195 * SAMPLE_RATE)
     for sample in range(10 * SAMPLE_RATE + lag, 20 * SAMPLE_RATE, int(0.4 * SAMPLE_RATE)):
         flags[sample] |= FLAG_R_PEAK
     return signal, flags

@@ -12,6 +12,7 @@ bytes" de "los procesé" es exactamente eso.
 """
 
 import asyncio
+import struct
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -32,9 +33,17 @@ from app.dependencies.device_dependencies import INGESTABLE_STATUSES, DeviceCont
 # `frame_header` y no `decompression`: la ruta del ACK solo valida cabeceras y
 # cuenta tramas, y ese módulo no arrastra numpy. Importarlo acá metía numpy en
 # cada arranque en frío de la función para contestar un 202 que no lo usa.
-from app.ml.frame_header import SAMPLE_RATE_HZ, FrameError, FrameInfo, iter_frames, read_header
-from app.ml.status_flags import device_faults
+from app.ml.frame_header import (
+    CRC_OFFSET,
+    SAMPLE_RATE_HZ,
+    FrameError,
+    FrameInfo,
+    iter_frames,
+    read_header,
+)
+from app.ml.status_flags import device_faults, has_afe_config_mismatch
 from app.modules.ingest import ingest_repository as repo
+from app.modules.ingest.contact_watch import resolve_contact_alerts
 from app.modules.ingest.ingest_schemas import (
     DeviceStatusAckOut,
     DeviceStatusInput,
@@ -285,13 +294,41 @@ async def _resolve_study(
         started_at=started_at,
         sample_rate=SAMPLE_RATE_HZ,
     )
-    study.started_at_verified = anchor.matches_boot is True
+    # Una hora `none` es el `Date` de una respuesta HTTP: no se da por verificada
+    # (`StudyTimelineSegment.time_verified`).
+    study.started_at_verified = (
+        anchor.matches_boot is True and anchor.source is not TimeSyncSource.NONE
+    )
     study.filter_view_enabled = True
     return study, patient
 
 
 #: Kind de la alerta que avisa que el equipo rebobinó su numeración.
 SEQ_REWIND_ALERT_KIND = "study_seq_rewind"
+
+
+async def _archived_crc32(
+    db: AsyncSession, study: Study, seq: int | None, frames: list[_ParsedFrame]
+) -> int | None:
+    """El campo CRC-32 (bytes 20 a 23) de la trama `seq` tal como quedó archivada.
+
+    Casi siempre está en este mismo POST: o se acaba de aceptar, o es una ya
+    almacenada, y las de debajo del cursor ya se compararon byte a byte contra lo
+    archivado (`_is_seq_rewind`). Solo si no viene en el lote se lee del archivo.
+    """
+    if seq is None:
+        return None
+    for frame in frames:
+        if frame.info.seq == seq:
+            return int(struct.unpack_from("<I", frame.payload, CRC_OFFSET)[0])
+    for batch in await repo.archived_batches_overlapping(db, study.id, seq, seq):
+        if batch.frames_s3_key is None:
+            continue
+        payload = await asyncio.to_thread(get_object, batch.frames_s3_key)
+        for raw in iter_frames(payload):
+            if read_header(raw).seq == seq:
+                return int(struct.unpack_from("<I", raw, CRC_OFFSET)[0])
+    return None
 
 
 async def _is_seq_rewind(db: AsyncSession, study: Study, frames: list[_ParsedFrame]) -> bool:
@@ -488,6 +525,8 @@ async def ingest_frames(
     window = _ack_window(frames, study)
 
     ctx.device.last_seen_at = input_data.received_at
+    if ctx.device.patient_id is not None:
+        await resolve_contact_alerts(db, ctx.device.patient_id, input_data.received_at)
     # Se escribe también la ausencia. El puente omite `X-Battery-Pct` cuando el
     # equipo no mide la batería (`INTEGRACION.md` §11.1): conservar la lectura
     # anterior la mostraba como actual, y un 0 % viejo dejaba al equipo en el
@@ -504,6 +543,7 @@ async def ingest_frames(
     # POST. Es una query indexada que solo corre cuando hay un bit prendido, o
     # sea nunca en un equipo sano.
     await _raise_device_faults(db, ctx, input_data.received_at)
+    await _raise_afe_config_mismatch(db, ctx, input_data.received_at)
 
     # El paciente también tiene telemetría, y hasta acá nadie la escribía: su
     # `study_status` se quedaba en el valor del alta y `last_data_received_at`
@@ -563,6 +603,7 @@ async def ingest_frames(
         framesRejected=rejected,
         framesDuplicate=len(window.already_stored),
         lastAcceptedSeq=last_seq,
+        lastAcceptedCrc32=await _archived_crc32(db, study, last_seq, frames),
         batchId=batch_id,
         studyId=study.id,
         serverTime=datetime.now(UTC),
@@ -716,6 +757,45 @@ async def _raise_device_faults(db: AsyncSession, ctx: DeviceContext, now: dateti
     )
 
 
+#: El front-end no quedó con la configuración pedida (bit 6 de `leadOffFlags`).
+AFE_CONFIG_ALERT_KIND = "afe_config_mismatch"
+
+
+async def _raise_afe_config_mismatch(db: AsyncSession, ctx: DeviceContext, now: datetime) -> None:
+    """Alerta técnica cuando el equipo avisa que su front-end corre con otra configuración.
+
+    Como las fallas de `statusFlags` es un **estado** que el equipo repite en cada
+    POST hasta reiniciar, así que va con el mismo debounce. Tampoco hay push al
+    paciente: no puede hacer nada, y el registro sigue. Es un equipo a revisar, y
+    la señal de ese tramo puede estar en otra escala (`INTEGRACION.md`, pendiente 6).
+    """
+    if not has_afe_config_mismatch(ctx.lead_flags) or ctx.device.patient_id is None:
+        return
+    patient_id = ctx.device.patient_id
+    window_start = now - timedelta(minutes=settings.device_fault_debounce_minutes)
+    if await repo.get_recent_alert(db, patient_id, AFE_CONFIG_ALERT_KIND, window_start):
+        return
+    db.add(
+        Alert(
+            patient_id=patient_id,
+            event_id=None,
+            kind=AFE_CONFIG_ALERT_KIND,
+            severity=AlertSeverity.HIGH,
+            message=(
+                f"{ctx.device.serial_number}: el front-end de adquisición corre con una "
+                "configuración distinta de la pedida. La señal desde su último arranque puede "
+                "estar en otra ganancia o a otro ritmo. Revisar el equipo."
+            ),
+        )
+    )
+    await logger.awarning(
+        "afe_config_mismatch",
+        device_id=str(ctx.device.id),
+        serial=ctx.device.serial_number,
+        lead_flags=ctx.lead_flags,
+    )
+
+
 _VEST_MESSAGES = {
     VestStatusEvent.SIGNAL_QUALITY_BAD: (
         "El chaleco viene registrando con mala calidad de señal desde hace {minutes} min."
@@ -763,6 +843,8 @@ async def report_device_status(
     device = ctx.device
     now = input_data.received_at
     device.last_seen_at = now
+    if device.patient_id is not None:
+        await resolve_contact_alerts(db, device.patient_id, now)
     # Igual que en la ingesta: sin `batteryPct` ni `X-Battery-Pct` el equipo no
     # midió la batería (`INTEGRACION.md` §11.1 y §11.5), y la lectura vieja no
     # puede quedar como actual.
@@ -792,6 +874,7 @@ async def report_device_status(
     # ingesta: justamente el caso que importa —la flash que no monta— es uno en
     # el que NO hay tramas, así que no hay ningún POST de ingesta donde verlo.
     await _raise_device_faults(db, ctx, now)
+    await _raise_afe_config_mismatch(db, ctx, now)
 
     # `alive` es un latido y nada más: escribe telemetría y sale antes de tocar
     # la colocación. Si siguiera de largo, `placement_ok` quedaría en `False`

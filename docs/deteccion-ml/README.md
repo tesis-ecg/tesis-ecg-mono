@@ -68,7 +68,7 @@ De `info del proyecto/02-firmware-holter.md` y `05-bateria-y-datos.md`:
 | Derivaciones de ECG | **1 canal** (CH2) | Descarta todo modelo de 12 derivaciones. El universo se reduce a *single-lead* |
 | Formato del AFE | 72 bits cada 2 ms: 24 estado de electrodos + 24 ECG + 24 impedancia | Los **24 bits de estado son un detector de ruido gratis** — ver §3.1 |
 | Batch | 1 hora, Rice-p2, ~1,7 MB | 1,8 M muestras por batch; ~43 M por estudio de 24 h |
-| Detección de QRS | Ya corre **en el firmware** (FIR 161 taps, nRF52840) | Los R-peaks del MCU **no viajan** en el payload actual. Ver §8 |
+| Detección de QRS | Ya corre **en el firmware** (FIR 161 taps, nRF52840) | Los R-peaks del MCU viajan en el bit 1 (`R_PEAK`) de los flags de cada muestra (`INTEGRACION.md` §4.5) y el motor los usa para el bSQI desde `fc047b0`. Ver §8 |
 | Electrodos | **Secos, chaleco textil** | La razón por la que el ruido es el problema #1. Ver §6.3 |
 
 ---
@@ -486,7 +486,7 @@ No se puede usar sensibilidad por clase. Las que aplican:
 | 7 | `back/pyproject.toml` no declara las dependencias de ML | `neurokit2`, `scipy` y `scikit-learn` están en el venv pero **no en `pyproject.toml`**; `numpy` solo en el grupo opcional `seed`. El entorno actual no es reproducible |
 | 8 | Los **24 bits de estado de electrodos no se usan** | Es un detector de lead-off gratis en cada frame. Con este alcance es *la primera línea del producto*, no un detalle |
 | 9 | `ECGBatch.num_channels` tiene `default=3` | El hardware entrega **1 canal de ECG**; los otros dos campos del frame son estado e impedancia. Alinear o documentar |
-| 10 | El payload no transmite los R-peaks del firmware | El nRF52840 **ya detecta QRS** (FIR 161 taps) pero `ECGChunkData` no los incluye. Ver §10 |
+| 10 | ~~El payload no transmite los R-peaks del firmware~~ **Resuelto** | Viajan en el bit 1 (`R_PEAK`) de los flags de cada muestra (`INTEGRACION.md` §4.5); el motor los usa desde `fc047b0`, corridos ~195 ms (`ml_firmware_peak_lag_ms`) porque el bit cae donde el detector confirma, no sobre el pico |
 
 ---
 

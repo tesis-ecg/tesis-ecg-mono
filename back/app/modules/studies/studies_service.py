@@ -28,7 +28,7 @@ from app.db.models.patient_report import PatientReport
 from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.study import Study, StudyStatus
 from app.db.models.study_clinical_report import StudyClinicalReport, StudyClinicalReportDraft
-from app.db.models.study_timeline_segment import StudyTimelineSegment
+from app.db.models.study_timeline_segment import StudyTimelineSegment, TimeSyncSource
 from app.db.models.user import User
 from app.ml.holter_contracts import (
     BREAK_KINDS,
@@ -503,6 +503,7 @@ async def get_study_ecg_manifest(
             anchorSource=segment.anchor_source.value,
             anchorUncertaintyMs=segment.anchor_uncertainty_ms,
             anchorMatchesBoot=segment.anchor_matches_boot,
+            timeVerified=segment.time_verified,
         )
         for segment in timeline_segments
     ]
@@ -1338,14 +1339,30 @@ def _selected_report_findings(
     return selected
 
 
+#: Largo mínimo de una tira de hallazgo: el de las tiras de las métricas. Una marca
+#: del pulsador es una sola muestra, y una tira del largo del hallazgo salía de 2 ms
+#: y sin trazado (INTEGRACION.md, pendiente 1).
+_MIN_FINDING_STRIP_MS = 10_000
+#: De una marca de síntoma, cuánto de la tira va antes de la marca: lo que el
+#: paciente sintió ya había empezado cuando apretó.
+_SYMPTOM_LEAD_MS = 7_000
+
+
 def _report_window_ranges(annotation: StudyEcgAnnotationOut) -> list[tuple[int, int]]:
     start = annotation.startEpochMs
     end = max(annotation.endEpochMs, start)
     duration = end - start
-    if duration <= 0:
-        return [(max(0, start - 500), start + 500)]
+    if duration < _MIN_FINDING_STRIP_MS:
+        if annotation.category == "patient_marker":
+            strip_start = start - _SYMPTOM_LEAD_MS
+        else:
+            strip_start = start + duration // 2 - _MIN_FINDING_STRIP_MS // 2
+        return [(strip_start, strip_start + _MIN_FINDING_STRIP_MS)]
     if duration <= 240_000:
-        return [(cursor, min(cursor + 60_000, end)) for cursor in range(start, end, 60_000)]
+        return [
+            (cursor, max(min(cursor + 60_000, end), cursor + _MIN_FINDING_STRIP_MS))
+            for cursor in range(start, end, 60_000)
+        ]
 
     latest = end - 60_000
     starts = [start, start + duration // 3, start + (duration * 2) // 3, latest]
@@ -1445,8 +1462,52 @@ def _metric_window_plans(metrics: HolterMetricsOut) -> list[StudyClinicalReportW
 
 
 def _unverified_segments(timeline: list[StudyTimelineSegment]) -> list[StudyTimelineSegment]:
-    """Los tramos cuya hora no salió de un ancla de su arranque."""
-    return [segment for segment in timeline if segment.anchor_matches_boot is not True]
+    """Los tramos cuya hora no salió de un ancla de su arranque, o salió de una `none`."""
+    return [segment for segment in timeline if not segment.time_verified]
+
+
+def _acquisition_span(
+    study: Study, timeline: list[StudyTimelineSegment], wall_ms: int
+) -> tuple[int, int, int]:
+    """Lo grabado, el lapso que cubre y lo que pasó entre la última muestra y el cierre.
+
+    Con línea de tiempo, lo grabado es la suma de sus tramos y el lapso va de la
+    primera muestra a la última. Contar las muestras a 500/s justos le restaba
+    ~8 s por hora a una señal que el equipo convierte a ~498,85, y medir hasta el
+    cierre del estudio contaba como interrupción la espera hasta cerrarlo: el
+    informe de `ee0880bc` daba 3 min 5 s de interrupciones sin un solo corte
+    (`INTEGRACION.md`, pendiente 4). Sin línea de tiempo (estudios anteriores a
+    ella) queda la cuenta de antes.
+    """
+    if not timeline:
+        return round(_recorded_ms(study)), wall_ms, 0
+    recorded = sum(max(0, segment.end_epoch_ms - segment.start_epoch_ms) for segment in timeline)
+    first_ms = min(segment.start_epoch_ms for segment in timeline)
+    last_ms = max(segment.end_epoch_ms for segment in timeline)
+    study_end_ms = int(study.started_at.timestamp() * 1000) + wall_ms
+    return recorded, last_ms - first_ms, max(0, study_end_ms - last_ms)
+
+
+def _unverified_time_message(unverified: list[StudyTimelineSegment]) -> str:
+    """Cuántos tramos quedaron con la hora estimada, y de dónde salió cada hora."""
+
+    def plural(count: int) -> str:
+        return f"{count} tramo{'s' if count != 1 else ''}"
+
+    by_http_date = sum(
+        1
+        for segment in unverified
+        if segment.anchor_matches_boot is True and segment.anchor_source is TimeSyncSource.NONE
+    )
+    by_reception = len(unverified) - by_http_date
+    parts = []
+    if by_reception:
+        parts.append(f"{plural(by_reception)} con la hora estimada por recepción")
+    if by_http_date:
+        parts.append(
+            f"{plural(by_http_date)} con la hora del servidor, sin sincronización SNTP del puente"
+        )
+    return " y ".join(parts) + ". El informe marca esas horas como estimadas."
 
 
 def _touches_any(
@@ -1742,9 +1803,9 @@ async def _clinical_report_snapshot(
     doctor, doctor_user = doctor_info if doctor_info is not None else (None, None)
     updated_by = await auth_repo.get_user_by_id(db, draft.updated_by) if draft else None
     draft_out = _draft_out(study.id, draft, updated_by)
-    recorded_ms = round(_recorded_ms(study))
     wall_ms = _duration_ms(study)
-    interruption_ms = max(0, wall_ms - recorded_ms)
+    recorded_ms, span_ms, after_last_sample_ms = _acquisition_span(study, timeline, wall_ms)
+    interruption_ms = max(0, span_ms - recorded_ms)
     # La hora de las muestras es la de los tramos: un tramo verificado no deja
     # de serlo porque `started_at` no se haya podido confirmar (un inicio que
     # cae después de su recepción, dentro de la incertidumbre del puente). Sin
@@ -1758,7 +1819,7 @@ async def _clinical_report_snapshot(
     )
 
     snapshot: dict[str, Any] = {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "version": version,
         "study": {
             "id": str(study.id),
@@ -1787,9 +1848,10 @@ async def _clinical_report_snapshot(
         "clinicalContext": draft_out.model_dump(mode="json"),
         "quality": {
             "recordedMs": recorded_ms,
-            "wallClockMs": wall_ms,
+            "wallClockMs": span_ms,
             "interruptionMs": interruption_ms,
-            "coveragePercent": round(min(100, recorded_ms / wall_ms * 100), 1) if wall_ms else 0,
+            "coveragePercent": round(min(100, recorded_ms / span_ms * 100), 1) if span_ms else 0,
+            "afterLastSampleMs": after_last_sample_ms,
             "segments": len(timeline) or 1,
             "cuts": max(0, len(timeline) - 1),
             "lastDataReceivedAt": (
@@ -1838,14 +1900,12 @@ async def _clinical_report_snapshot(
         # aparece con cada arranque del equipo que el puente no presenció, y en
         # un estudio de 15 días es casi seguro. El informe marca sus horas como
         # estimadas tramo por tramo (`unverifiedSegments`, `timeVerified`).
-        count = len(unverified)
         issues.append(
             StudyClinicalReportIssueOut(
                 code="TIME_NOT_VERIFIED",
                 message=(
-                    f"{count} tramo{'s' if count != 1 else ''} con la hora estimada por "
-                    "recepción. El informe marca esas horas como estimadas."
-                    if count
+                    _unverified_time_message(unverified)
+                    if unverified
                     else "La hora de las muestras es estimada: el estudio es anterior a la "
                     "línea de tiempo. El informe la marca como estimada."
                 ),
