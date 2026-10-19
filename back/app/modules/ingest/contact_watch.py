@@ -58,7 +58,8 @@ async def sweep_silent_devices(db: AsyncSession, now: datetime) -> list[SilentDe
     created: list[SilentDevice] = []
     for study, device in rows.tuples():
         last_seen = device.last_seen_at
-        assert last_seen is not None  # filtrado arriba; es para el tipo
+        if last_seen is None:  # filtrado arriba; es para el tipo
+            continue
         already = await db.scalar(
             select(Alert.id)
             .where(
