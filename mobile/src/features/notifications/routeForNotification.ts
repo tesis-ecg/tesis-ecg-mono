@@ -1,25 +1,20 @@
 export interface NotificationData {
-  type?: string;
-  alertId?: string;
-  occurredAt?: string;
+  type?: string
+  alertId?: string
+  occurredAt?: string
   /** Tipo de hallazgo, para encabezar el formulario con qué se detectó. */
-  kind?: string;
+  kind?: string
   /** Severidad del aviso, para pintar el encabezado del formulario. */
-  severity?: string;
+  severity?: string
 }
 
 export type NotificationRoute =
   | {
-      pathname: "/report";
-      params: {
-        alertId: string;
-        occurredAt: string;
-        kind?: string;
-        severity?: string;
-      };
+      pathname: '/report'
+      params: { alertId: string; occurredAt: string; kind?: string; severity?: string }
     }
-  | { pathname: "/(tabs)/device" }
-  | { pathname: "/notifications" };
+  | { pathname: '/(tabs)/device' }
+  | { pathname: '/notifications' }
 
 /**
  * A dónde lleva tocar una notificación.
@@ -38,26 +33,24 @@ export type NotificationRoute =
  * - Cualquier otra cosa cae en el centro de avisos: el tap nunca queda mudo y
  *   un push futuro tampoco puede mandar a una ruta inexistente.
  */
-export function routeForNotification(
-  data: NotificationData | null | undefined,
-): NotificationRoute {
+export function routeForNotification(data: NotificationData | null | undefined): NotificationRoute {
   if (
-    data?.type === "vest_misplaced" ||
-    data?.type === "battery_alert" ||
-    data?.type === "device_no_contact"
+    data?.type === 'vest_misplaced' ||
+    data?.type === 'battery_alert' ||
+    data?.type === 'device_no_contact'
   ) {
-    return { pathname: "/(tabs)/device" };
+    return { pathname: '/(tabs)/device' }
   }
-  if (data?.type === "report_request" && data.alertId && data.occurredAt) {
+  if (data?.type === 'report_request' && data.alertId && data.occurredAt) {
     return {
-      pathname: "/report",
+      pathname: '/report',
       params: {
         alertId: data.alertId,
         occurredAt: data.occurredAt,
         ...(data.kind ? { kind: data.kind } : {}),
         ...(data.severity ? { severity: data.severity } : {}),
       },
-    };
+    }
   }
-  return { pathname: "/notifications" };
+  return { pathname: '/notifications' }
 }

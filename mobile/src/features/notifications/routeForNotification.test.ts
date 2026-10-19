@@ -1,106 +1,89 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from 'vitest'
 
-import { routeForNotification } from "./routeForNotification";
+import { routeForNotification } from './routeForNotification'
 
-describe("routeForNotification", () => {
-  it("un pedido de registro abre el formulario anclado al momento del aviso", () => {
+describe('routeForNotification', () => {
+  it('un pedido de registro abre el formulario anclado al momento del aviso', () => {
     expect(
       routeForNotification({
-        type: "report_request",
-        alertId: "alert-1",
-        occurredAt: "2026-08-30T14:30:00Z",
-        kind: "afib",
+        type: 'report_request',
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
+        kind: 'afib',
       }),
     ).toEqual({
-      pathname: "/report",
+      pathname: '/report',
       // El `kind` viaja para que el formulario pueda encabezar con qué se
       // detectó: sin eso el paciente tiene que adivinar de qué le hablamos.
-      params: {
-        alertId: "alert-1",
-        occurredAt: "2026-08-30T14:30:00Z",
-        kind: "afib",
-      },
-    });
-  });
+      params: { alertId: 'alert-1', occurredAt: '2026-08-30T14:30:00Z', kind: 'afib' },
+    })
+  })
 
-  it("si el push trae la severidad, la pasa para pintar el encabezado", () => {
+  it('si el push trae la severidad, la pasa para pintar el encabezado', () => {
     expect(
       routeForNotification({
-        type: "report_request",
-        alertId: "alert-1",
-        occurredAt: "2026-08-30T14:30:00Z",
-        kind: "afib",
-        severity: "critical",
+        type: 'report_request',
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
+        kind: 'afib',
+        severity: 'critical',
       }),
     ).toEqual({
-      pathname: "/report",
+      pathname: '/report',
       params: {
-        alertId: "alert-1",
-        occurredAt: "2026-08-30T14:30:00Z",
-        kind: "afib",
-        severity: "critical",
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
+        kind: 'afib',
+        severity: 'critical',
       },
-    });
-  });
+    })
+  })
 
-  it("un aviso viejo sin tipo igual abre el formulario", () => {
+  it('un aviso viejo sin tipo igual abre el formulario', () => {
     // Los pushes que ya estaban en la bandeja antes de este cambio no traen
     // `kind`. La clave no puede viajar vacía: el formulario decide con su
     // presencia si tiene algo que nombrar.
     expect(
       routeForNotification({
-        type: "report_request",
-        alertId: "alert-1",
-        occurredAt: "2026-08-30T14:30:00Z",
+        type: 'report_request',
+        alertId: 'alert-1',
+        occurredAt: '2026-08-30T14:30:00Z',
       }),
     ).toEqual({
-      pathname: "/report",
-      params: { alertId: "alert-1", occurredAt: "2026-08-30T14:30:00Z" },
-    });
-  });
+      pathname: '/report',
+      params: { alertId: 'alert-1', occurredAt: '2026-08-30T14:30:00Z' },
+    })
+  })
 
-  it("el aviso de mala colocación lleva al estado del chaleco, no al formulario", () => {
+  it('el aviso de mala colocación lleva al estado del chaleco, no al formulario', () => {
     // No hay nada que completar: lo que tiene que hacer el paciente es
     // acomodarse el chaleco.
-    expect(
-      routeForNotification({ type: "vest_misplaced", alertId: "alert-2" }),
-    ).toEqual({
-      pathname: "/(tabs)/device",
-    });
-  });
+    expect(routeForNotification({ type: 'vest_misplaced', alertId: 'alert-2' })).toEqual({
+      pathname: '/(tabs)/device',
+    })
+  })
 
-  it("el push de batería lleva al estado del dispositivo", () => {
-    expect(
-      routeForNotification({ type: "battery_alert", alertId: "alert-3" }),
-    ).toEqual({
-      pathname: "/(tabs)/device",
-    });
-  });
+  it('el push de batería lleva al estado del dispositivo', () => {
+    expect(routeForNotification({ type: 'battery_alert', alertId: 'alert-3' })).toEqual({
+      pathname: '/(tabs)/device',
+    })
+  })
 
-  it("el push de chaleco sin contacto lleva al estado del dispositivo", () => {
-    expect(
-      routeForNotification({ type: "device_no_contact", alertId: "alert-4" }),
-    ).toEqual({
-      pathname: "/(tabs)/device",
-    });
-  });
+  it('el push de chaleco sin contacto lleva al estado del dispositivo', () => {
+    expect(routeForNotification({ type: 'device_no_contact', alertId: 'alert-4' })).toEqual({
+      pathname: '/(tabs)/device',
+    })
+  })
 
-  it("manda payloads incompletos o futuros al centro de avisos", () => {
-    const fallback = { pathname: "/notifications" };
-    expect(routeForNotification(null)).toEqual(fallback);
-    expect(routeForNotification(undefined)).toEqual(fallback);
-    expect(routeForNotification({ type: "report_request" })).toEqual(fallback);
+  it('manda payloads incompletos o futuros al centro de avisos', () => {
+    const fallback = { pathname: '/notifications' }
+    expect(routeForNotification(null)).toEqual(fallback)
+    expect(routeForNotification(undefined)).toEqual(fallback)
+    expect(routeForNotification({ type: 'report_request' })).toEqual(fallback)
+    expect(routeForNotification({ type: 'report_request', alertId: 'alert-1' })).toEqual(fallback)
     expect(
-      routeForNotification({ type: "report_request", alertId: "alert-1" }),
-    ).toEqual(fallback);
-    expect(
-      routeForNotification({
-        type: "report_request",
-        occurredAt: "2026-08-30T14:30:00Z",
-      }),
-    ).toEqual(fallback);
-    expect(
-      routeForNotification({ type: "algo_nuevo", alertId: "alert-3" }),
-    ).toEqual(fallback);
-  });
-});
+      routeForNotification({ type: 'report_request', occurredAt: '2026-08-30T14:30:00Z' }),
+    ).toEqual(fallback)
+    expect(routeForNotification({ type: 'algo_nuevo', alertId: 'alert-3' })).toEqual(fallback)
+  })
+})

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from 'zod'
 
 /**
  * Reglas del formulario de la bitácora.
@@ -11,52 +11,36 @@ import { z } from "zod";
  */
 
 /** Excluyente: junto a un síntoma da un registro que el médico no puede leer. */
-export const NO_SYMPTOMS = "sin_sintomas";
-export const OTHER = "otro";
+export const NO_SYMPTOMS = 'sin_sintomas'
+export const OTHER = 'otro'
 
 export const reportSchema = z
   .object({
-    symptoms: z
-      .array(z.string())
-      .min(1, "Elegí al menos una opción de cómo te sentiste."),
+    symptoms: z.array(z.string()).min(1, 'Elegí al menos una opción de cómo te sentiste.'),
     symptomsOther: z.string(),
-    activity: z.string().min(1, "Elegí qué estabas haciendo."),
+    activity: z.string().min(1, 'Elegí qué estabas haciendo.'),
     activityOther: z.string(),
     notes: z.string(),
   })
-  .refine(
-    (value) =>
-      !(value.symptoms.includes(NO_SYMPTOMS) && value.symptoms.length > 1),
-    {
-      message: '"No sentí nada" no se combina con otros síntomas.',
-      path: ["symptoms"],
-    },
-  )
-  .refine(
-    (value) =>
-      !value.symptoms.includes(OTHER) || value.symptomsOther.trim().length > 0,
-    {
-      message: "Contanos qué sentiste.",
-      path: ["symptomsOther"],
-    },
-  )
-  .refine(
-    (value) =>
-      value.activity !== OTHER || value.activityOther.trim().length > 0,
-    {
-      message: "Contanos qué estabas haciendo.",
-      path: ["activityOther"],
-    },
-  );
+  .refine((value) => !(value.symptoms.includes(NO_SYMPTOMS) && value.symptoms.length > 1), {
+    message: '"No sentí nada" no se combina con otros síntomas.',
+    path: ['symptoms'],
+  })
+  .refine((value) => !value.symptoms.includes(OTHER) || value.symptomsOther.trim().length > 0, {
+    message: 'Contanos qué sentiste.',
+    path: ['symptomsOther'],
+  })
+  .refine((value) => value.activity !== OTHER || value.activityOther.trim().length > 0, {
+    message: 'Contanos qué estabas haciendo.',
+    path: ['activityOther'],
+  })
 
-export type ReportFormValues = z.infer<typeof reportSchema>;
+export type ReportFormValues = z.infer<typeof reportSchema>
 
 /** El primer mensaje de error, o `null` si el formulario está completo. */
 export function validateReport(values: ReportFormValues): string | null {
-  const result = reportSchema.safeParse(values);
-  return result.success
-    ? null
-    : (result.error.issues[0]?.message ?? "Revisá los datos cargados.");
+  const result = reportSchema.safeParse(values)
+  return result.success ? null : (result.error.issues[0]?.message ?? 'Revisá los datos cargados.')
 }
 
 /**
@@ -68,10 +52,8 @@ export function validateReport(values: ReportFormValues): string | null {
  */
 export function toggleSymptom(current: string[], value: string): string[] {
   if (value === NO_SYMPTOMS) {
-    return current.includes(value) ? [] : [value];
+    return current.includes(value) ? [] : [value]
   }
-  const rest = current.filter((item) => item !== NO_SYMPTOMS);
-  return rest.includes(value)
-    ? rest.filter((item) => item !== value)
-    : [...rest, value];
+  const rest = current.filter((item) => item !== NO_SYMPTOMS)
+  return rest.includes(value) ? rest.filter((item) => item !== value) : [...rest, value]
 }

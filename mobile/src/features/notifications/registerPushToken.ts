@@ -1,10 +1,10 @@
-import Constants from "expo-constants";
-import * as Device from "expo-device";
-import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
+import Constants from 'expo-constants'
+import * as Device from 'expo-device'
+import * as Notifications from 'expo-notifications'
+import { Platform } from 'react-native'
 
-import { registerPushToken as sendToken } from "@/features/patient/api";
-import type { PushPlatform } from "@/features/patient/types";
+import { registerPushToken as sendToken } from '@/features/patient/api'
+import type { PushPlatform } from '@/features/patient/types'
 
 /**
  * Canal de Android.
@@ -15,19 +15,18 @@ import type { PushPlatform } from "@/features/patient/types";
  * el paciente se entera cuando abre el teléfono por otra cosa.
  */
 export async function ensureAndroidChannel(): Promise<void> {
-  if (Platform.OS !== "android") return;
-  await Notifications.setNotificationChannelAsync("alerts", {
-    name: "Avisos de tu estudio",
+  if (Platform.OS !== 'android') return
+  await Notifications.setNotificationChannelAsync('alerts', {
+    name: 'Avisos de tu estudio',
     importance: Notifications.AndroidImportance.MAX,
     vibrationPattern: [0, 250, 250, 250],
-    lightColor: "#0b2185",
-  });
+    lightColor: '#0b2185',
+  })
 }
 
 function projectId(): string | undefined {
-  const extra = Constants.expoConfig?.extra as
-    { eas?: { projectId?: string } } | undefined;
-  return extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+  const extra = Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined
+  return extra?.eas?.projectId ?? Constants.easConfig?.projectId
 }
 
 /**
@@ -48,30 +47,26 @@ function projectId(): string | undefined {
  */
 export async function registerForPushNotifications(): Promise<string | null> {
   try {
-    await ensureAndroidChannel();
+    await ensureAndroidChannel()
 
-    const existing = await Notifications.getPermissionsAsync();
-    const status = existing.granted
-      ? existing
-      : await Notifications.requestPermissionsAsync();
-    if (!status.granted) return null;
+    const existing = await Notifications.getPermissionsAsync()
+    const status = existing.granted ? existing : await Notifications.requestPermissionsAsync()
+    if (!status.granted) return null
 
-    const { data: token } = await Notifications.getExpoPushTokenAsync({
-      projectId: projectId(),
-    });
-    await sendToken(token, Platform.OS as PushPlatform);
-    return token;
+    const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId: projectId() })
+    await sendToken(token, Platform.OS as PushPlatform)
+    return token
   } catch (error) {
     // Silencioso en producción, ruidoso en desarrollo: sin esto, un
     // `projectId` mal configurado, un emulador sin Google Play y un permiso
     // denegado son todos el mismo `null` y no hay por dónde empezar a mirar.
     if (__DEV__) {
       console.warn(
-        "[push] no se pudo registrar el token",
-        Device.isDevice ? "" : "(emulador/simulador)",
+        '[push] no se pudo registrar el token',
+        Device.isDevice ? '' : '(emulador/simulador)',
         error,
-      );
+      )
     }
-    return null;
+    return null
   }
 }

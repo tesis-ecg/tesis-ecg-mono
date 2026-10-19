@@ -14,7 +14,7 @@
  * `POST /ingest/device-status`) y no hay nada que inferir.
  */
 
-import type { DeviceStatus } from "./types";
+import type { DeviceStatus } from './types'
 
 /**
  * Si el chaleco está mal colocado ahora mismo.
@@ -24,8 +24,6 @@ import type { DeviceStatus } from "./types";
  * información manda al paciente a acomodarse un chaleco que puede estar
  * perfecto, y repetido unas cuantas veces deja de leerse.
  */
-export function isVestMisplaced(
-  device: DeviceStatus | undefined | null,
-): boolean {
-  return device?.hasDevice === true && device.vestPlacement === "bad";
+export function isVestMisplaced(device: DeviceStatus | undefined | null): boolean {
+  return device?.hasDevice === true && device.vestPlacement === 'bad'
 }

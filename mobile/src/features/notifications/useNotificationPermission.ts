@@ -1,16 +1,16 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import * as Notifications from "expo-notifications";
-import { useCallback, useEffect } from "react";
-import { AppState } from "react-native";
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import * as Notifications from 'expo-notifications'
+import { useCallback, useEffect } from 'react'
+import { AppState } from 'react-native'
 
 interface PermissionState {
-  granted: boolean;
+  granted: boolean
   /** `false` cuando el sistema ya no vuelve a preguntar: solo queda Ajustes. */
-  canAskAgain: boolean;
-  request: () => Promise<boolean>;
+  canAskAgain: boolean
+  request: () => Promise<boolean>
 }
 
-const KEY = ["notification-permission"] as const;
+const KEY = ['notification-permission'] as const
 
 /**
  * Estado del permiso de notificaciones.
@@ -21,30 +21,29 @@ const KEY = ["notification-permission"] as const;
  * volver a foreground sin escribir estado a mano dentro de un efecto.
  */
 export function useNotificationPermission(): PermissionState {
-  const queryClient = useQueryClient();
+  const queryClient = useQueryClient()
   const { data } = useQuery({
     queryKey: KEY,
     queryFn: () => Notifications.getPermissionsAsync(),
     staleTime: 0,
-  });
+  })
 
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active")
-        void queryClient.invalidateQueries({ queryKey: KEY });
-    });
-    return () => subscription.remove();
-  }, [queryClient]);
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void queryClient.invalidateQueries({ queryKey: KEY })
+    })
+    return () => subscription.remove()
+  }, [queryClient])
 
   const request = useCallback(async () => {
-    const status = await Notifications.requestPermissionsAsync();
-    queryClient.setQueryData(KEY, status);
-    return status.granted;
-  }, [queryClient]);
+    const status = await Notifications.requestPermissionsAsync()
+    queryClient.setQueryData(KEY, status)
+    return status.granted
+  }, [queryClient])
 
   return {
     granted: data?.granted ?? false,
     canAskAgain: data?.canAskAgain ?? true,
     request,
-  };
+  }
 }

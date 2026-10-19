@@ -15,12 +15,12 @@
 
 /** `dolor_pecho` → `Dolor pecho`. Feo, pero legible; `dolor_pecho` no lo es. */
 export function humanize(value: string): string {
-  const readable = value.replace(/_/g, " ").trim();
-  if (!readable) return value;
-  return readable[0].toUpperCase() + readable.slice(1);
+  const readable = value.replace(/_/g, ' ').trim()
+  if (!readable) return value
+  return readable[0].toUpperCase() + readable.slice(1)
 }
 
 /** La etiqueta del catálogo si llegó, y si no una versión legible del slug. */
 export function labelFor(labels: Map<string, string>, value: string): string {
-  return labels.get(value) || humanize(value);
+  return labels.get(value) || humanize(value)
 }

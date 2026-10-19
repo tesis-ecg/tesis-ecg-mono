@@ -1,70 +1,57 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from 'vitest'
 
-import type { PatientAlert } from "@/features/patient/types";
-import { routeForAlert } from "./routeForAlert";
+import type { PatientAlert } from '@/features/patient/types'
+import { routeForAlert } from './routeForAlert'
 
 const base: PatientAlert = {
-  id: "alert-1",
-  kind: "tachycardia",
-  severity: "high",
-  message: "Aviso",
-  detectedAt: "2026-08-31T12:00:00Z",
+  id: 'alert-1',
+  kind: 'tachycardia',
+  severity: 'high',
+  message: 'Aviso',
+  detectedAt: '2026-08-31T12:00:00Z',
   requiresResponse: true,
   needsReport: true,
   reportId: null,
   answeredAt: null,
-};
+}
 
-describe("routeForAlert", () => {
-  it("abre el formulario para un aviso pendiente, con el tipo y la severidad", () => {
+describe('routeForAlert', () => {
+  it('abre el formulario para un aviso pendiente, con el tipo y la severidad', () => {
     // Entrando por el centro de avisos el `kind` ya está en pantalla: se pasa
     // tal cual, sin volver a pedirle nada al backend.
     expect(routeForAlert(base)).toEqual({
-      pathname: "/report",
+      pathname: '/report',
       params: {
-        alertId: "alert-1",
-        occurredAt: "2026-08-31T12:00:00Z",
-        kind: "tachycardia",
-        severity: "high",
+        alertId: 'alert-1',
+        occurredAt: '2026-08-31T12:00:00Z',
+        kind: 'tachycardia',
+        severity: 'high',
       },
-    });
-  });
+    })
+  })
 
-  it("abre la respuesta existente en modo lectura", () => {
+  it('abre la respuesta existente en modo lectura', () => {
+    expect(
+      routeForAlert({ ...base, needsReport: false, reportId: 'report-1', answeredAt: base.detectedAt }),
+    ).toEqual({ pathname: '/report-response', params: { reportId: 'report-1' } })
+  })
+
+  it('manda el aviso del chaleco a Dispositivo', () => {
     expect(
       routeForAlert({
         ...base,
-        needsReport: false,
-        reportId: "report-1",
-        answeredAt: base.detectedAt,
-      }),
-    ).toEqual({
-      pathname: "/report-response",
-      params: { reportId: "report-1" },
-    });
-  });
-
-  it("manda el aviso del chaleco a Dispositivo", () => {
-    expect(
-      routeForAlert({
-        ...base,
-        kind: "vest_misplaced",
+        kind: 'vest_misplaced',
         requiresResponse: false,
         needsReport: false,
       }),
-    ).toEqual({ pathname: "/(tabs)/device" });
-  });
+    ).toEqual({ pathname: '/(tabs)/device' })
+  })
 
-  it("manda los avisos de batería a Dispositivo", () => {
-    for (const kind of ["battery_low", "battery_critical"]) {
+  it('manda los avisos de batería a Dispositivo', () => {
+    for (const kind of ['battery_low', 'battery_critical']) {
       expect(
-        routeForAlert({
-          ...base,
-          kind,
-          requiresResponse: false,
-          needsReport: false,
-        }),
-      ).toEqual({ pathname: "/(tabs)/device" });
+        routeForAlert({ ...base, kind, requiresResponse: false, needsReport: false }),
+      ).toEqual({ pathname: '/(tabs)/device' })
     }
-  });
-});
+  })
+})
