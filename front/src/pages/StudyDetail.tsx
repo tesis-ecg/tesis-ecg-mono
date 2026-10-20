@@ -29,6 +29,7 @@ import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
 import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
+import { timeVerificationMessage } from '@/features/ecg/timeVerificationBanner'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 import { PatientReportsTable } from '@/features/studies/components/PatientReportsTable'
 import { StudyAnalysisTab } from '@/features/studies/components/StudyAnalysisTab'
@@ -55,6 +56,19 @@ export function StudyDetail() {
   // mientras el médico la mira, así que el hook la vuelve a pedir cada tanto.
   const isInProgress = studyQ.data?.status === 'in_progress'
   const ecgQ = useEcgSignal(studyHasSignal ? id : undefined, isInProgress)
+  const ecgMetadata = ecgQ.data?.metadata
+  const timeVerificationText = timeVerificationMessage(
+    ecgMetadata?.timeVerification ??
+      (ecgMetadata?.startTimeVerified === false
+        ? {
+            allVerified: false,
+            segmentCount: 0,
+            unverifiedSegmentCount: 0,
+            unverifiedDurationMs: 0,
+            maxUncertaintyMs: null,
+          }
+        : undefined),
+  )
 
   const reportsQ = useStudyPatientReports(id, isInProgress)
 
@@ -310,10 +324,8 @@ export function StudyDetail() {
                       )}
                     </div>
                   </div>
-                  {ecgQ.data.metadata?.startTimeVerified === false && (
-                    <p className="text-body3 text-amber-700">
-                      Hora de pared no verificada: faltó un ancla del mismo arranque del Holter.
-                    </p>
+                  {timeVerificationText && (
+                    <p className="text-body3 text-amber-700">{timeVerificationText}</p>
                   )}
                   <ECGPaperControls
                     paperSpeed={scale.paperSpeed}

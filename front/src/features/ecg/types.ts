@@ -24,6 +24,18 @@ export interface ECGTimelineSegment {
   anchorMatchesBoot?: boolean | null
 }
 
+/** Cuánto de la línea de tiempo tiene la hora de pared verificada. */
+export interface ECGTimeVerification {
+  /** true cuando todos los tramos tienen hora de pared verificada */
+  allVerified: boolean
+  segmentCount: number
+  unverifiedSegmentCount: number
+  /** suma de endEpochMs - startEpochMs de los tramos sin verificar */
+  unverifiedDurationMs: number
+  /** la mayor anchorUncertaintyMs entre los tramos sin verificar; null si no hay o no se conoce */
+  maxUncertaintyMs: number | null
+}
+
 export interface ECGAnnotation {
   id: string
   kind: string
@@ -99,7 +111,9 @@ export interface ECGSignal {
     /** Tamaño del bucket de la vista descargada; null si la señal es cruda. */
     overviewSamplesPerBucket: number | null
     processedSampleCount?: number
+    /** Igual a `timeVerification.allVerified`; se conserva por compatibilidad. */
     startTimeVerified?: boolean
+    timeVerification?: ECGTimeVerification
     viewKind?: 'raw' | 'filtered_visualization'
   }
 }

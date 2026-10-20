@@ -1,6 +1,7 @@
 import { api } from '@/lib/api'
 import { createApiError, isApiError } from '@/lib/apiError'
 
+import { summarizeTimeVerification } from '../timeVerification'
 import type { ECGAnnotationCategory, ECGAnnotationSeverity, ECGSignal } from '../types'
 import { createEcgDetailSource, type DetailPiece } from './ecgDetail'
 
@@ -201,6 +202,8 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
           timestampsMs[timestampsMs.length - 1] ?? startTimestamp,
         )
       : recordedEndMs
+  // Qué tramos tienen la hora de pared verificada: el visor marca solo los que no.
+  const timeVerification = summarizeTimeVerification(timeline, manifest.startTimeVerified)
 
   return {
     sampleRate: manifest.sampleRate,
@@ -233,9 +236,8 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       isSimulated: Boolean(manifest.isSimulated),
       overviewSamplesPerBucket: level?.samplesPerBucket ?? null,
       processedSampleCount,
-      startTimeVerified:
-        (manifest.startTimeVerified ?? true) &&
-        timeline.every((segment) => segment.anchorMatchesBoot === true),
+      startTimeVerified: timeVerification.allVerified,
+      timeVerification,
       viewKind: manifest.viewKind ?? 'raw',
     },
   }
