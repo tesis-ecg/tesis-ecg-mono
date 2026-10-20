@@ -183,6 +183,7 @@ const findings: StudyFindings = {
           endEpochMs: T0 + 20_000,
           confidenceScore: 0.9,
           modelVersion: 'ml-1',
+          reclassifiable: true,
           validationStatus: 'pending',
         },
       ],

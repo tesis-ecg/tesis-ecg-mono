@@ -17,8 +17,9 @@ preguntas con dos formas distintas:
 
 from __future__ import annotations
 
+import uuid
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +40,9 @@ from app.modules.studies.annotations import (
     segment_epoch_ms,
     wall_clock_resolver,
 )
+from app.modules.studies.corrections import is_reclassifiable
 from app.modules.studies.studies_schemas import (
+    StudyFindingCorrectionOut,
     StudyFindingGroupOut,
     StudyFindingOut,
     StudyFindingsInput,
@@ -64,7 +67,31 @@ def _not_found() -> HTTPException:
     )
 
 
-def _finding_out(view: EventView) -> StudyFindingOut:
+def _correction_out(
+    event: ECGEvent, names: Mapping[uuid.UUID, str]
+) -> StudyFindingCorrectionOut | None:
+    """La corrección del médico tal como se guardó, con el nombre de quien la hizo.
+
+    Un hallazgo `confirmed` sin tramo congelado (confirmación previa a esta
+    función) no tiene `correction`: se informa solo por `validationStatus`.
+    """
+    correction = event.correction
+    if not correction:
+        return None
+    label = correction.get("toLabel")
+    effective = correction.get("effectiveKind")
+    return StudyFindingCorrectionOut(
+        action=correction["action"],
+        beatLabel=label if label in ("N", "S", "V") else None,
+        effectiveKind=effective if isinstance(effective, str) else None,
+        note=event.validation_note,
+        correctedBy=event.validated_by,
+        correctedByName=names.get(event.validated_by) if event.validated_by else None,
+        correctedAt=event.validated_at,
+    )
+
+
+def finding_out(view: EventView, names: Mapping[uuid.UUID, str]) -> StudyFindingOut:
     return StudyFindingOut(
         id=view.id,
         kind=view.kind,
@@ -77,6 +104,8 @@ def _finding_out(view: EventView) -> StudyFindingOut:
         confidenceScore=view.event.confidence_score,
         modelVersion=view.event.model_version,
         validationStatus=view.event.validation_status.value,
+        correction=_correction_out(view.event, names),
+        reclassifiable=is_reclassifiable(view.event),
         clusterId=view.cluster_id,
         beatCount=view.beat_count,
     )
@@ -94,7 +123,12 @@ def _metadata_float(view: EventView, key: str) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def _build_group(key: str, views: list[EventView], items_per_group: int) -> StudyFindingGroupOut:
+def _build_group(
+    key: str,
+    views: list[EventView],
+    items_per_group: int,
+    names: Mapping[uuid.UUID, str],
+) -> StudyFindingGroupOut:
     header = next((view for view in views if view.scope == STUDY_SCOPE), None)
     items = [view for view in views if view.scope != STUDY_SCOPE]
     reference = header or views[0]
@@ -122,7 +156,7 @@ def _build_group(key: str, views: list[EventView], items_per_group: int) -> Stud
         lastOffsetMs=max(view.end_ms for view in span),
         firstEpochMs=min(view.start_epoch_ms for view in span),
         lastEpochMs=max(view.end_epoch_ms for view in span),
-        items=[_finding_out(view) for view in ranked],
+        items=[finding_out(view, names) for view in ranked],
     )
 
 
@@ -241,8 +275,12 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
             continue
         grouped.setdefault(_group_key(view), []).append(view)
 
+    names = await repo.user_names(
+        db, {event.validated_by for event in events if event.validated_by is not None}
+    )
     groups = [
-        _build_group(key, members, input_data.items_per_group) for key, members in grouped.items()
+        _build_group(key, members, input_data.items_per_group, names)
+        for key, members in grouped.items()
     ]
     # Orden total y determinístico: hace falta para que el `--check` de OpenAPI y
     # los tests del portal no dependan del orden de llegada de las filas.
@@ -273,7 +311,7 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
         modelVersion=_model_version(events),
         quality=_quality_summary(study, intervals, runs, to_epoch_ms),
         groups=groups,
-        ungrouped=[_finding_out(view) for view in ungrouped],
+        ungrouped=[finding_out(view, names) for view in ungrouped],
         totals=totals,
         truncated=truncated,
     )

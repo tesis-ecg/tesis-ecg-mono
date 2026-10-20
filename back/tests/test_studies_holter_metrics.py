@@ -143,7 +143,7 @@ async def test_el_preview_congela_las_metricas_y_suma_tiras_de_evidencia(
     first = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
     second = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
 
-    assert first["snapshot"]["schemaVersion"] == 4
+    assert first["snapshot"]["schemaVersion"] == 5
     assert first["snapshot"]["metrics"]["status"] == "ok"
     assert first["snapshotHash"] == second["snapshotHash"]
     metric_windows = [window for window in first["windows"] if window["category"] == "metric"]
@@ -216,3 +216,158 @@ def test_las_pausas_fundidas_del_motor_son_episodios_y_no_pausas() -> None:
 
     assert pauses == [(0, 1500)]
     assert episodes == [(5000, 10500), (20000, 22000), (30000, 32000)]
+
+
+# --- S y V de punta a punta con la reclasificación (#14 + #15) -------------- #
+
+
+async def _metrics(db, as_user, doctor, study) -> dict:  # type: ignore[no-untyped-def]
+    response = await as_user(await _doctor_user(db, doctor)).get(
+        f"/studies/{study.id}/holter-metrics"
+    )
+    assert response.status_code == 200
+    body: dict = response.json()
+    return body
+
+
+async def _classified_study(  # type: ignore[no-untyped-def]
+    db, make_doctor, make_patient, make_device, make_study
+):
+    """Estudio ya analizado con etiquetas del motor: un par de V (latidos 100 y 101)
+    y una V aislada (latido 300), más su hallazgo `ventricular_ectopy` sobre el par."""
+    from app.db.models.ecg_event import ECGEventType
+    from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
+    from app.ml import beat_labels as bl
+    from app.modules.ingest import beat_label_store
+    from tests.test_studies_reclassification import _finding, _study
+
+    doctor, study, batch, times = await _study(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    samples = np.round(times * RATE).astype(np.int64)
+    codes = np.full(samples.size, bl.CODE_N, dtype=np.uint8)
+    codes[[100, 101, 300]] = bl.CODE_V
+    n = samples.size
+    records = bl.build_records(
+        samples,
+        codes,
+        np.zeros(n, dtype=np.uint8),
+        np.full(n, -20, dtype=np.int64),
+        np.full(n, 25, dtype=np.int64),
+        np.zeros(n, dtype=np.int64),
+        np.full(n, 1.0, dtype=np.float32),
+        qrs_measured=np.ones(n, dtype=bool),
+        p_detected=np.zeros(n, dtype=bool),
+    )
+    total = int(study.samples_count)
+    study.ml_state = {
+        beat_label_store.STATE_KEY: beat_label_store.append_block(
+            study.id, None, records, block_start=0, block_end=total, cursor_before=0
+        )
+    }
+    study.ml_analyzed_samples = total
+    db.add(
+        SignalQualityInterval(
+            study_id=study.id,
+            batch_id=batch.id,
+            start_sample_index=0,
+            sample_count=total,
+            level=SignalQualityLevel.GOOD,
+            reason="ok",
+            window_count=1,
+            metrics=None,
+            model_version="test",
+        )
+    )
+    event = _finding(
+        batch,
+        study,
+        "ventricular_ectopy",
+        ECGEventType.ECTOPY,
+        int(samples[100]) - 50,
+        int(samples[101] - samples[100]) + 100,
+    )
+    db.add(event)
+    await db.commit()
+    return doctor, study, event
+
+
+async def test_las_metricas_s_y_v_vienen_de_las_etiquetas_del_motor(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    doctor, study, _ = await _classified_study(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+
+    body = await _metrics(db, as_user, doctor, study)
+
+    v = body["ventricular"]
+    assert body["ectopyUnavailableReason"] is None
+    assert body["analysis"]["algorithmVersion"] == 6
+    assert v["total"] == 3 and v["single"] == 1 and v["pairs"] == {"episodes": 1, "beats": 2}
+    # El par cae en un mismo minuto de reloj salvo que justo lo parta el borde
+    # (el estudio arranca "ahora"); el conteo exacto lo fija el test unitario.
+    assert v["maxPerMinute"]["value"] in (1, 2) and v["maxPerMinute"]["epochMs"] > 0
+    assert body["supraventricular"]["total"] == 0
+    assert body["heartRate"]["abnormalBeats"] == 3
+    assert body["analysis"]["classifiedBeats"] > 400 and body["analysis"]["unclassifiedBeats"] == 0
+
+
+async def test_reclasificar_una_v_como_ruido_baja_el_total_v_en_la_respuesta(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    from tests.test_studies_reclassification import _url, _user_of
+
+    doctor, study, event = await _classified_study(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    client = as_user(await _user_of(db, doctor))
+
+    noise = await client.post(_url(study, event), json={"action": "noise"})
+    assert noise.status_code == 200, noise.text
+    v = noise.json()["holterMetrics"]["ventricular"]
+    assert v["total"] == 1 and v["pairs"]["episodes"] == 0
+    assert noise.json()["holterMetrics"]["analysis"]["doctorCorrections"]["findings"] == 1
+
+    # V -> S: el par cambia de recuadro; la V aislada fuera del hallazgo queda.
+    await client.post(_url(study, event), json={"action": "reset"})
+    relabel = await client.post(_url(study, event), json={"action": "relabel", "beatLabel": "S"})
+    assert relabel.status_code == 200, relabel.text
+    metrics = relabel.json()["holterMetrics"]
+    assert metrics["ventricular"]["total"] == 1
+    assert metrics["supraventricular"]["total"] == 2
+    assert metrics["supraventricular"]["pairs"]["episodes"] == 1
+    assert metrics["analysis"]["doctorCorrections"]["relabeledBeats"] == 2
+
+    # Rechazar el hallazgo: sus latidos pasan a N.
+    await client.post(_url(study, event), json={"action": "reset"})
+    reject = await client.post(_url(study, event), json={"action": "reject"})
+    assert reject.json()["holterMetrics"]["ventricular"]["total"] == 1
+    assert reject.json()["holterMetrics"]["supraventricular"]["total"] == 0
+
+    # Es lo mismo que devuelve la ruta de métricas después.
+    again = await _metrics(db, as_user, doctor, study)
+    assert again["ventricular"] == reject.json()["holterMetrics"]["ventricular"]
+
+
+async def test_el_informe_congela_las_s_y_v_corregidas_en_el_snapshot(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    from tests.test_studies_reclassification import _url, _user_of
+
+    doctor, study, event = await _classified_study(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    client = as_user(await _user_of(db, doctor))
+    before = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
+    assert before["snapshot"]["metrics"]["ventricular"]["total"] == 3
+
+    await client.post(_url(study, event), json={"action": "noise"})
+    after = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
+
+    assert after["snapshot"]["schemaVersion"] == 5
+    assert after["snapshot"]["metrics"]["ventricular"]["total"] == 1
+    assert after["snapshot"]["metrics"]["analysis"]["doctorCorrections"]["findings"] == 1
+    # El hallazgo marcado como ruido no se informa.
+    assert all(item["kind"] != "ventricular_ectopy" for item in after["snapshot"]["findings"])
+    assert before["snapshotHash"] != after["snapshotHash"]

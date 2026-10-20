@@ -55,6 +55,7 @@ from app.modules.studies.annotations import (
     wall_clock_resolver,
 )
 from app.modules.studies.annotations import recorded_ms as _recorded_ms
+from app.modules.studies.corrections import doctor_corrections
 from app.modules.studies.studies_schemas import (
     HolterMetricsOut,
     MetricEvidenceOut,
@@ -89,6 +90,7 @@ from app.modules.studies.studies_schemas import (
     StudyListResponse,
     StudyPatientReportOut,
     StudyPatientReportsResponse,
+    ValidationStatus,
 )
 
 logger = structlog.get_logger(__name__)
@@ -270,6 +272,8 @@ def _event_annotations(
             startEpochMs=view.start_epoch_ms,
             endEpochMs=view.end_epoch_ms,
             confidenceScore=view.event.confidence_score,
+            validationStatus=cast(ValidationStatus, view.validation_status),
+            effectiveKind=view.effective_kind,
         )
         for view in views
     ]
@@ -1690,8 +1694,8 @@ async def _holter_metrics(
     # Adentro y no arriba: los dos cargan numpy, y este módulo se importa al
     # arrancar la API (`test_starting_the_api_does_not_import_numpy`).
     from app.ml.beats import legacy_chunks
-    from app.ml.holter_metrics import compute_holter_metrics
-    from app.modules.ingest.processing import load_beats
+    from app.ml.holter_metrics import _subtract_spans, compute_holter_metrics
+    from app.modules.ingest.processing import load_beat_labels, load_beats
 
     if not study.ecg_segments:
         return _metrics_unavailable("unavailable", "SIGNAL_NOT_SEGMENTED")
@@ -1703,11 +1707,17 @@ async def _holter_metrics(
     # Sin el veredicto del motor sobre toda la señal (`noise=None`), tampoco sus
     # pausas: la versión que se declara entonces no las menciona.
     engine_pauses, engine_episodes = _engine_pauses(events) if noise is not None else ([], [])
+    corrections = doctor_corrections(events)
     if noise is not None:
         # El riel del motor sale como un `lead_off`, pausas incluidas; el ruido
-        # sale de todo salvo de las pausas (`compute_holter_metrics`).
-        exclusions += _metric_rails(quality)
+        # sale de todo salvo de las pausas (`compute_holter_metrics`). Un riel
+        # que el médico descartó (`flatline` rechazada) vuelve a ser señal: se
+        # resta solo de los rieles, nunca de lo que marcó el equipo.
+        exclusions += _subtract_spans(_metric_rails(quality), corrections.readable_spans)
     beats = await asyncio.to_thread(load_beats, study)
+    # S y V salen de las etiquetas del motor, otro flujo que los latidos; las
+    # correcciones del médico se leen de los hallazgos ya cargados.
+    labels = await asyncio.to_thread(load_beat_labels, study)
     raw = await asyncio.to_thread(
         compute_holter_metrics,
         beats,
@@ -1720,6 +1730,8 @@ async def _holter_metrics(
         engine_pauses=engine_pauses,
         engine_episodes=engine_episodes,
         legacy_beats=legacy_chunks(study.ecg_beat_chunks or []),
+        labels=labels,
+        corrections=corrections,
     )
     return HolterMetricsOut.model_validate(raw)
 
@@ -1735,6 +1747,31 @@ async def get_holter_metrics(input_data: StudyIdInput, db: AsyncSession) -> Holt
         await repo.list_timeline_segments(db, study.id),
         await repo.list_quality_intervals(db, study.id),
     )
+
+
+#: Lo que un hallazgo es tras la corrección del médico y que no es un hallazgo.
+_NOT_A_FINDING_KINDS = frozenset({"normal_beats"})
+
+
+def _effective_annotations(
+    annotations: list[StudyEcgAnnotationOut],
+) -> list[StudyEcgAnnotationOut]:
+    """Las anotaciones del informe con las correcciones del médico aplicadas.
+
+    Un hallazgo que marcó como ruido o rechazó no se informa, y uno
+    reclasificado se informa por su tipo efectivo (el `kind` original queda en
+    el evento, no se pisa). Un episodio de ectopía que pasó a latidos normales
+    deja de ser un hallazgo.
+    """
+    effective: list[StudyEcgAnnotationOut] = []
+    for item in annotations:
+        if item.validationStatus in ("rejected", "noise"):
+            continue
+        kind = item.effectiveKind or item.kind
+        if kind in _NOT_A_FINDING_KINDS:
+            continue
+        effective.append(item if kind == item.kind else item.model_copy(update={"kind": kind}))
+    return effective
 
 
 def _summarize_annotations(
@@ -1781,12 +1818,14 @@ async def _clinical_report_snapshot(
     timeline = await repo.list_timeline_segments(db, study.id)
     reports = await patient_app_repo.list_reports_for_study(db, study.id)
     events = await repo.list_ecg_events(db, study.id)
-    annotations = _study_annotations(
-        study,
-        events,
-        reports,
-        wall_clock_resolver(study, timeline),
-        timeline,
+    annotations = _effective_annotations(
+        _study_annotations(
+            study,
+            events,
+            reports,
+            wall_clock_resolver(study, timeline),
+            timeline,
+        )
     )
     metrics = await _holter_metrics(
         study, events, timeline, await repo.list_quality_intervals(db, study.id)
@@ -1819,7 +1858,7 @@ async def _clinical_report_snapshot(
     )
 
     snapshot: dict[str, Any] = {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "version": version,
         "study": {
             "id": str(study.id),

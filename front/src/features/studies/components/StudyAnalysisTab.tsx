@@ -7,6 +7,7 @@ import {
   Clock,
   Gauge,
   HeartPulse,
+  Pencil,
   ScanHeart,
   Timer,
   TrendingDown,
@@ -14,7 +15,7 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import { EmptyState } from '@/components/EmptyState'
 import { Spinner } from '@/components/Spinner'
@@ -28,11 +29,17 @@ import {
   formatAnnotationDuration,
 } from '@/features/ecg/annotationMeta'
 import { formatDate, formatDuration, formatMetricValue } from '@/features/ecg/clinicalReportFormat'
-import { metricsStatusText } from '@/features/ecg/clinicalReportSummary'
+import { ectopyUnavailableText, metricsStatusText } from '@/features/ecg/clinicalReportSummary'
 import type { ECGAnnotation } from '@/features/ecg/types'
+import {
+  FindingCorrectionStatus,
+  FindingReclassifyDialog,
+} from '@/features/studies/components/FindingReclassifyDialog'
+import { isReclassifiable } from '@/features/studies/findingReclassification'
 import { useHolterMetrics } from '@/features/studies/hooks/useHolterMetrics'
 import { useStudyFindings } from '@/features/studies/hooks/useStudyFindings'
 import type {
+  HolterEctopy,
   HolterMetrics,
   MetricEvidence,
   Study,
@@ -132,7 +139,7 @@ export function StudyAnalysisTab({ study, onLocate }: StudyAnalysisTabProps) {
       )}
 
       {findings.data ? (
-        <FindingsCard findings={findings.data} onLocate={onLocate} />
+        <FindingsCard studyId={study.id} findings={findings.data} onLocate={onLocate} />
       ) : findings.isLoading ? (
         <Card className="p-6">
           <Spinner label="Cargando hallazgos…" />
@@ -290,7 +297,14 @@ function QualityCard({
 // Ritmo y variabilidad
 // --------------------------------------------------------------------------- //
 
-type EvidenceKind = 'hr_min' | 'hr_max' | 'pause_longest'
+type EvidenceKind =
+  | 'hr_min'
+  | 'hr_max'
+  | 'pause_longest'
+  | 's_max_minute'
+  | 'v_max_minute'
+  | 's_longest_run'
+  | 'v_longest_run'
 
 /**
  * La evidencia de una métrica como anotación, para reusar el mismo salto que
@@ -351,7 +365,7 @@ function RhythmCard({
   const time = metrics.hrvTime
   const analysis = metrics.analysis
 
-  const locate = (kind: EvidenceKind, evidence: MetricEvidence | null | undefined) =>
+  const locate: LocateEvidence = (kind, evidence) =>
     evidence ? (
       <Button
         variant="ghost"
@@ -437,7 +451,155 @@ function RhythmCard({
           value={analysis ? formatDuration(analysis.excludedMs) : formatMetricValue(null)}
         />
       </dl>
+
+      <div className="grid grid-cols-1 gap-5 border-t border-border pt-5 lg:grid-cols-2">
+        <EctopySection
+          letter="S"
+          title="Supraventriculares (S)"
+          ectopy={metrics.supraventricular}
+          unavailableReason={metrics.ectopyUnavailableReason}
+          locate={locate}
+        />
+        <EctopySection
+          letter="V"
+          title="Ventriculares (V)"
+          ectopy={metrics.ventricular}
+          unavailableReason={metrics.ectopyUnavailableReason}
+          locate={locate}
+        />
+      </div>
+
+      {analysis && <ClassificationCoverage analysis={analysis} />}
     </Card>
+  )
+}
+
+type LocateEvidence = (kind: EvidenceKind, evidence: MetricEvidence | null | undefined) => ReactNode
+
+/** Latidos por episodio: "3 episodios · 7 latidos". */
+function episodeCount(count: { episodes: number; beats: number }): string {
+  return `${plural(count.episodes, 'episodio', 'episodios')} · ${plural(count.beats, 'latido', 'latidos')}`
+}
+
+/**
+ * Los eventos S o V del estudio: total, cómo se agrupan, carga por mil y los
+ * dos máximos con su evidencia clickeable. Sin clasificación no hay cifras, y
+ * se dice por qué: un 0 se leería como "no hubo ectopia".
+ */
+function EctopySection({
+  letter,
+  title,
+  ectopy,
+  unavailableReason,
+  locate,
+}: {
+  letter: 'S' | 'V'
+  title: string
+  ectopy: HolterEctopy | null | undefined
+  unavailableReason: string | null | undefined
+  locate: LocateEvidence
+}) {
+  const lower = letter.toLowerCase() as 's' | 'v'
+  return (
+    <section aria-label={title} className="flex flex-col gap-3" data-ectopy={letter}>
+      <h3 className="text-body3 font-medium tracking-wide text-gray-500 uppercase">{title}</h3>
+      {!ectopy ? (
+        <p className="text-body3 rounded-lg border border-info-300 bg-info-100 px-4 py-3 text-info-700">
+          No disponible. {ectopyUnavailableText(unavailableReason ?? 'ECTOPY_UNAVAILABLE')}
+        </p>
+      ) : (
+        <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <AnalysisMetric
+            icon={Activity}
+            label={`${letter} total`}
+            value={formatMetricValue(ectopy.total)}
+            hint={`Aisladas: ${formatMetricValue(ectopy.single)}`}
+          />
+          <AnalysisMetric
+            icon={Activity}
+            label={`${letter} por mil`}
+            value={formatMetricValue(ectopy.perThousand, 1)}
+            hint="sobre los latidos clasificados"
+          />
+          <AnalysisMetric
+            icon={Activity}
+            label={`Pares ${letter}`}
+            value={episodeCount(ectopy.pairs)}
+          />
+          <AnalysisMetric
+            icon={Activity}
+            label={`Corridas ${letter} (3 o más)`}
+            value={episodeCount(ectopy.runs)}
+          />
+          <AnalysisMetric
+            icon={Activity}
+            label="Bigeminismo"
+            value={episodeCount(ectopy.bigeminy)}
+          />
+          <AnalysisMetric
+            icon={Activity}
+            label="Trigeminismo"
+            value={episodeCount(ectopy.trigeminy)}
+          />
+          <AnalysisMetric
+            icon={TrendingUp}
+            label={`Máx. ${letter} en 1 min`}
+            value={formatMetricValue(ectopy.maxPerMinute?.value)}
+            hint={ectopy.maxPerMinute ? formatDate(ectopy.maxPerMinute.epochMs) : undefined}
+            action={locate(`${lower}_max_minute`, ectopy.maxPerMinute)}
+          />
+          <AnalysisMetric
+            icon={Timer}
+            label={`Corrida ${letter} más larga`}
+            value={
+              ectopy.longestRun ? plural(ectopy.longestRun.value ?? 0, 'latido', 'latidos') : '—'
+            }
+            hint={ectopy.longestRun ? formatDate(ectopy.longestRun.epochMs) : undefined}
+            action={locate(`${lower}_longest_run`, ectopy.longestRun)}
+          />
+        </dl>
+      )}
+    </section>
+  )
+}
+
+/**
+ * Sobre qué se calcularon S y V: dos detectores de latidos no coinciden al
+ * latido, así que los clasificados no son los mismos que "latidos totales". Y
+ * qué cambió el médico respecto del análisis automático.
+ */
+function ClassificationCoverage({
+  analysis,
+}: {
+  analysis: NonNullable<HolterMetrics['analysis']>
+}) {
+  const classified = analysis.classifiedBeats
+  const unclassified = analysis.unclassifiedBeats
+  const corrections = analysis.doctorCorrections
+  const corrected =
+    (corrections?.findings ?? 0) + (corrections?.relabeledBeats ?? 0) + (corrections?.noiseMs ?? 0)
+  if (classified == null && !corrected) return null
+  return (
+    <div className="text-body3 flex flex-col gap-1 text-gray-600" data-classification-coverage>
+      {classified != null && (
+        <p>
+          Latidos clasificados (N, S y V): {formatMetricValue(classified)}
+          {unclassified ? ` · ${formatMetricValue(unclassified)} en ruido o no clasificables` : ''}.
+        </p>
+      )}
+      {corrected > 0 && corrections && (
+        <p>
+          Correcciones del médico incorporadas:{' '}
+          {plural(corrections.findings ?? 0, 'hallazgo', 'hallazgos')} ·{' '}
+          {plural(
+            corrections.relabeledBeats ?? 0,
+            'latido reclasificado',
+            'latidos reclasificados',
+          )}{' '}
+          · {formatDuration(corrections.noiseMs ?? 0)} marcados como ruido.
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -500,9 +662,11 @@ function groupSummary(group: StudyFindingGroup): string {
 }
 
 function FindingsCard({
+  studyId,
   findings,
   onLocate,
 }: {
+  studyId: string
   findings: StudyFindings
   onLocate: (annotation: ECGAnnotation) => void
 }) {
@@ -545,7 +709,12 @@ function FindingsCard({
           {groups.length > 0 && (
             <ul className="flex flex-col gap-2" aria-label="Hallazgos agrupados">
               {groups.map((group) => (
-                <FindingGroupRow key={group.key} group={group} onLocate={onLocate} />
+                <FindingGroupRow
+                  key={group.key}
+                  studyId={studyId}
+                  group={group}
+                  onLocate={onLocate}
+                />
               ))}
             </ul>
           )}
@@ -558,7 +727,12 @@ function FindingsCard({
               <ul className="flex flex-col gap-1">
                 {ungrouped.map((finding) => (
                   <li key={finding.id}>
-                    <FindingItemButton finding={finding} onLocate={onLocate} showLabel />
+                    <FindingItem
+                      studyId={studyId}
+                      finding={finding}
+                      onLocate={onLocate}
+                      showLabel
+                    />
                   </li>
                 ))}
               </ul>
@@ -571,9 +745,11 @@ function FindingsCard({
 }
 
 function FindingGroupRow({
+  studyId,
   group,
   onLocate,
 }: {
+  studyId: string
   group: StudyFindingGroup
   onLocate: (annotation: ECGAnnotation) => void
 }) {
@@ -614,12 +790,56 @@ function FindingGroupRow({
         <ul className="ml-5 border-l-2 border-primary-100 pl-2.5">
           {items.map((item) => (
             <li key={item.id}>
-              <FindingItemButton finding={item} onLocate={onLocate} />
+              <FindingItem studyId={studyId} finding={item} onLocate={onLocate} />
             </li>
           ))}
         </ul>
       )}
     </li>
+  )
+}
+
+/** Un episodio con su botón para reclasificarlo y, si ya se corrigió, el estado de la corrección. */
+function FindingItem({
+  studyId,
+  finding,
+  onLocate,
+  showLabel = false,
+}: {
+  studyId: string
+  finding: StudyFinding
+  onLocate: (annotation: ECGAnnotation) => void
+  showLabel?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const label = annotationLabel(finding.kind)
+  const when = formatDate(finding.startEpochMs)
+  return (
+    <div className="flex items-start gap-1" data-finding-id={finding.id}>
+      <FindingItemButton finding={finding} onLocate={onLocate} showLabel={showLabel} />
+      {isReclassifiable(finding) && (
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mt-1 shrink-0"
+            aria-label={`Reclasificar ${label} del ${when}`}
+            onClick={() => setOpen(true)}
+          >
+            <Pencil className="size-3.5" aria-hidden />
+            Reclasificar
+          </Button>
+          {open && (
+            <FindingReclassifyDialog
+              studyId={studyId}
+              finding={finding}
+              open
+              onOpenChange={setOpen}
+            />
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
@@ -641,7 +861,7 @@ function FindingItemButton({
       aria-label={`Ver ${label} del ${when} en el ECG`}
       onClick={() => onLocate(findingAnnotation(finding))}
       className={cn(
-        'w-full cursor-pointer rounded-sm p-2 text-left transition-colors hover:bg-gray-50',
+        'min-w-0 flex-1 cursor-pointer rounded-sm p-2 text-left transition-colors hover:bg-gray-50',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
       )}
     >
@@ -651,6 +871,7 @@ function FindingItemButton({
         {finding.confidenceScore != null &&
           ` · confianza ${Math.round(finding.confidenceScore * 100)}%`}
       </span>
+      <FindingCorrectionStatus finding={finding} />
     </button>
   )
 }

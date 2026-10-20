@@ -14,6 +14,7 @@ Todo acá es determinista: mismo `seed`, misma señal, byte a byte.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -126,3 +127,81 @@ def synth_ecg(
 def to_microvolts(signal_mv: np.ndarray) -> list[int]:
     """A µV enteros, que es lo que entrega el AFE y espera el codificador."""
     return [int(round(value * 1000.0)) for value in signal_mv]
+
+
+def synth_conduction(
+    r_times_s: Sequence[float],
+    *,
+    duration_s: float,
+    p_to_r_s: float | Sequence[float | None] | None = 0.16,
+    extra_p_s: Sequence[float] = (),
+    wide: frozenset[int] = frozenset(),
+    noise_uv: float = 6.0,
+    seed: int = 7,
+    sample_rate: int = SAMPLE_RATE,
+    firmware_lag_ms: float = FIRMWARE_R_PEAK_LAG_MS,
+) -> SynthResult:
+    """ECG con los QRS y las ondas P en tiempos **independientes**.
+
+    `synth_ecg` pega la P al QRS; para el PR, los bloqueos y la disociación hace
+    falta poder mover cada onda por su cuenta. `r_times_s` son los picos R. La P
+    de cada latido cae `p_to_r_s` antes de su R (un número para todos, una lista
+    por latido, o `None` para latidos sin P); `extra_p_s` son ondas P sueltas,
+    sin QRS: un latido no conducido, o la actividad auricular de un bloqueo
+    completo. `wide` son los índices de latidos ventriculares: QRS tres veces más
+    ancho, T invertida y más alto, como el ectópico de `synth_ecg`.
+    """
+    rng = np.random.default_rng(seed)
+    n = int(duration_s * sample_rate)
+    signal = np.zeros(n, dtype=np.float64)
+    flags = np.zeros(n, dtype=np.uint8)
+    lag = int(firmware_lag_ms * sample_rate / 1000.0)
+    half = sample_rate // 2
+
+    def add(center_s: float, gaussians: list[tuple[float, float, float]]) -> None:
+        center = int(round(center_s * sample_rate))
+        low, high = max(center - half, 0), min(center + half, n)
+        if high <= low:
+            return
+        t = (np.arange(low, high) - center) / sample_rate
+        for offset, sigma, height in gaussians:
+            signal[low:high] += height * np.exp(-0.5 * ((t - offset) / sigma) ** 2)
+
+    def pr_of(index: int) -> float | None:
+        if p_to_r_s is None or isinstance(p_to_r_s, float | int):
+            return p_to_r_s
+        return p_to_r_s[index]
+
+    rpeaks: list[int] = []
+    ectopics: list[int] = []
+    for index, time_s in enumerate(r_times_s):
+        ventricular = index in wide
+        width = 3.0 if ventricular else 1.0
+        amp = 1.3 if ventricular else 1.0
+        add(
+            time_s,
+            [
+                (-0.02, 0.010 * width, -0.15 * amp),
+                (0.0, 0.012 * width, 1.0 * amp),
+                (0.025, 0.012 * width, -0.25 * amp),
+                (0.20, 0.045, -0.25 if ventricular else 0.35),
+            ],
+        )
+        lead = pr_of(index)
+        if lead is not None:
+            add(time_s - lead, [(0.0, 0.025, 0.12)])
+        center = int(round(time_s * sample_rate))
+        if center + lag < n:
+            flags[center + lag] |= FLAG_R_PEAK
+        rpeaks.append(center)
+        if ventricular:
+            ectopics.append(center)
+    for time_s in extra_p_s:
+        add(time_s, [(0.0, 0.025, 0.12)])
+    signal += rng.normal(0.0, noise_uv / 1000.0, n)
+    return SynthResult(
+        signal_mv=signal.astype(np.float32),
+        flags=flags,
+        rpeaks=np.array(rpeaks, dtype=np.int64),
+        ectopic_peaks=np.array(ectopics, dtype=np.int64),
+    )

@@ -24,6 +24,7 @@ produce hallazgos, no entra en los totales y ninguna API lo lee.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -34,10 +35,13 @@ from app.db.models.ecg_event import ECGEventSeverity, ECGEventType
 from app.db.models.signal_quality import SignalQualityLevel
 from app.ml import morphology
 from app.ml.arrhythmia import detect_rhythm
+from app.ml.beat_classification import BeatThresholds, classify_block
+from app.ml.beat_labels import BeatLabelRecords
 from app.ml.contracts import (
     EpisodeBudget,
     Finding,
     Flags,
+    Floats,
     Indices,
     Mask,
     QualityReport,
@@ -46,8 +50,22 @@ from app.ml.contracts import (
     RhythmThresholds,
     Signal,
 )
-from app.ml.episodes import RECURRENT_KIND, apply_refractory, enforce_budget, group_beats
-from app.ml.hrv import build_rr, expected_rr, prematurity
+from app.ml.ectopy import (
+    KIND_SUPRAVENTRICULAR,
+    KIND_VENTRICULAR,
+    RUN_KINDS,
+    SUSTAINED_SECONDS,
+    alert_for_run,
+    run_severity,
+)
+from app.ml.episodes import (
+    ANOMALY_KIND,
+    RECURRENT_KIND,
+    apply_refractory,
+    enforce_budget,
+    group_beats,
+)
+from app.ml.hrv import RRSeries, build_rr, expected_rr, prematurity
 from app.ml.intervals import IntervalMeasurement, IntervalThresholds, measure_intervals
 from app.ml.morphology import BeatAssignment, BeatMatrix, TemplateBank
 from app.ml.quality import (
@@ -107,6 +125,11 @@ class PipelineConfig:
     #: Umbrales de la medición de intervalos. `None` la apaga: no se filtra ni
     #: se delinea nada (`ml_interval_measurements_enabled`).
     intervals: IntervalThresholds | None = None
+    #: Umbrales de la clasificación por latido (`beat_classification`). `None` la
+    #: apaga —sin etiquetas, sin hallazgos de ectopia ni de conducción—: es el
+    #: interruptor de emergencia (`ml_beat_classification_enabled`) y lo que
+    #: usan los tests que no la necesitan.
+    beats: BeatThresholds | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +157,11 @@ class PipelineResult:
     #: Plantillas cuyo encabezado de foco hay que dar de baja: pasaron a ser la
     #: dominante, el latido del paciente (`morphology.hand_over_dominance`).
     retracted_headers: tuple[int, ...] = ()
+    #: Una etiqueta por R detectado de la parte nueva (`beat_labels`), con
+    #: `sample_index` absoluto, o None si la clasificación está apagada. Un
+    #: bloque sin latidos devuelve un arreglo vacío, que no es lo mismo: es un
+    #: bloque clasificado.
+    beat_labels: BeatLabelRecords | None = None
 
 
 def build_config(
@@ -189,6 +217,12 @@ def build_config(
         # Database (`tools/physionet/README.md`): no se exponen como settings
         # porque moverlos invalida esa evidencia.
         intervals=IntervalThresholds() if settings.ml_interval_measurements_enabled else None,
+        beats=BeatThresholds(
+            dissimilarity_v=2.0 * (1.0 - settings.ml_template_match_threshold),
+            dissimilarity_v_soft=1.0 - settings.ml_template_match_threshold,
+        )
+        if settings.ml_beat_classification_enabled
+        else None,
     )
 
 
@@ -416,6 +450,11 @@ def analyze_batch(
         assignment = morphology.score_only(bank, beats, match_threshold=config.match_threshold)
 
     retracted: tuple[int, ...] = ()
+    n_peaks = int(detected_peaks.size)
+    # Por R del bloque, para la clasificación por latido: la disimilitud contra la
+    # dominante y el score de morfología. NaN donde el latido no se extrajo.
+    peak_dissimilarity = np.full(n_peaks, np.nan, dtype=np.float32)
+    peak_scores = np.full(n_peaks, np.nan, dtype=np.float32)
     if beats.n_beats:
         beat_prematurity = prematurity(rr)
         # Los latidos del contexto también se puntúan —contra el banco, sin
@@ -433,23 +472,26 @@ def analyze_batch(
         ).cluster_ids
         # Contra la plantilla DOMINANTE, no contra la asignada: ver
         # `morphology.dissimilarity_to_dominant`. Y a la frecuencia de cada
-        # latido: sin eso, a 155 lpm los ±250 ms traían la T del latido anterior
-        # y la propia llegaba antes, y la taquicardia sinusal de una escalera
-        # salía entera como morfología atípica.
+        # latido: sin eso, a 155 lpm los ±250 ms traían la T del latido
+        # anterior y la propia llegaba antes, y la taquicardia sinusal de una
+        # escalera salía entera como morfología atípica.
         grouped_prematurity = beat_prematurity[grouped.beat_index]
-        scores = morphology.anomaly_score(
-            morphology.dissimilarity_to_dominant(
-                updated_bank,
-                grouped,
-                morphology.BeatRate(
-                    expected_rr=beat_expected_rr[grouped.beat_index],
-                    prematurity=grouped_prematurity,
-                    sample_rate=sample_rate,
-                ),
+        grouped_dissimilarity = morphology.dissimilarity_to_dominant(
+            updated_bank,
+            grouped,
+            morphology.BeatRate(
+                expected_rr=beat_expected_rr[grouped.beat_index],
+                prematurity=grouped_prematurity,
+                sample_rate=sample_rate,
             ),
+        )
+        scores = morphology.anomaly_score(
+            grouped_dissimilarity,
             grouped_prematurity,
             match_threshold=config.match_threshold,
         )
+        peak_dissimilarity[grouped.beat_index] = grouped_dissimilarity
+        peak_scores[grouped.beat_index] = scores
         positive = scores >= config.anomaly_score_min
         if folds:
             # Cuántos de los latidos que se acaban de plegar pudieron puntuar y
@@ -484,6 +526,35 @@ def analyze_batch(
                 owned=np.arange(grouped.n_beats) >= previous.n_beats,
             )
         )
+
+    amplitude = _memoized(
+        lambda: _amplitude_signal(signal_mv, flags, sample_rate, config.quality.mains_hz)
+    )
+    classified: BeatLabelRecords | None = None
+    if config.beats is not None:
+        classified, classification_findings = _classify(
+            cleaned=cleaned,
+            amplitude=amplitude,
+            detected_peaks=detected_peaks,
+            analyzable=analyzable,
+            rr=rr,
+            expected=beat_expected_rr,
+            extracted=extracted,
+            owned_beats=owned,
+            in_context=in_context,
+            assignment=assignment,
+            bank=updated_bank,
+            peak_dissimilarity=peak_dissimilarity,
+            peak_scores=peak_scores,
+            firmware_peaks=firmware_peaks,
+            context=context,
+            end=end,
+            start_sample_index=start_sample_index,
+            config=config,
+            thresholds=config.beats,
+        )
+        findings = _merge_classification(findings, classification_findings, config=config)
+        classified = _shift_labels(classified, start_sample_index)
 
     findings, score_floor = enforce_budget(
         findings + quality_findings, budget=config.budget, existing_anomalies=existing_anomalies
@@ -524,8 +595,7 @@ def analyze_batch(
     )
     measurement = (
         _measure_intervals(
-            signal_mv,
-            flags,
+            amplitude,
             cleaned,
             detected_peaks,
             analyzable,
@@ -550,7 +620,198 @@ def analyze_batch(
         totals=totals,
         intervals=measurement,
         retracted_headers=retracted,
+        beat_labels=classified,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Clasificación por latido
+# --------------------------------------------------------------------------- #
+
+
+def _classify(
+    *,
+    cleaned: Signal,
+    amplitude: Callable[[], Signal],
+    detected_peaks: Indices,
+    analyzable: Mask,
+    rr: RRSeries,
+    expected: Floats,
+    extracted: BeatMatrix,
+    owned_beats: Mask,
+    in_context: Mask,
+    assignment: BeatAssignment,
+    bank: TemplateBank,
+    peak_dissimilarity: np.ndarray,
+    peak_scores: np.ndarray,
+    firmware_peaks: Indices,
+    context: int,
+    end: int,
+    start_sample_index: int,
+    config: PipelineConfig,
+    thresholds: BeatThresholds,
+) -> tuple[BeatLabelRecords, list[Finding]]:
+    """Etiqueta los R del bloque y arma los hallazgos de ectopia y conducción.
+
+    **Qué latidos informa el bloque** es la misma partición que usa la
+    morfología (`owned` de `analyze_batch`): el R con su ventana de ±250 ms
+    terminando después del borde izquierdo y hasta el derecho, es decir el R en
+    `(context - post, end - post]`. Así cada latido se etiqueta en un solo
+    bloque aunque los contextos lo vuelvan a ver. Se decide por el R y no por
+    haber podido extraer la ventana: los X y los Q también son del bloque.
+
+    Los latidos del contexto derecho que se pudieron extraer se puntúan acá
+    contra el banco ya actualizado, sin plegarlos: no se informan, pero con su
+    etiqueta una corrida o un bigeminismo no se corta en el borde del bloque.
+    """
+    sample_rate = config.sample_rate
+    post = int(round(morphology.BEAT_POST_MS * sample_rate / 1000))
+    owned_peaks = (detected_peaks + post > context) & (detected_peaks + post <= end)
+    beat_prematurity = prematurity(rr)
+    dissimilarity = peak_dissimilarity.copy()
+    scores = peak_scores.copy()
+    ahead_mask = ~in_context & ~owned_beats
+    if ahead_mask.any():
+        ahead = morphology.select_beats(extracted, ahead_mask)
+        ahead_prematurity = beat_prematurity[ahead.beat_index]
+        ahead_dissimilarity = morphology.dissimilarity_to_dominant(
+            bank,
+            ahead,
+            morphology.BeatRate(
+                expected_rr=expected[ahead.beat_index],
+                prematurity=ahead_prematurity,
+                sample_rate=sample_rate,
+            ),
+        )
+        dissimilarity[ahead.beat_index] = ahead_dissimilarity
+        scores[ahead.beat_index] = morphology.anomaly_score(
+            ahead_dissimilarity, ahead_prematurity, match_threshold=config.match_threshold
+        )
+    # La señal de análisis solo se filtra si algún R cae en señal buena: sin
+    # eso no hay QRS que medir (todos son X) y el filtrado sería costo muerto.
+    on_good_signal = bool(detected_peaks.size) and bool(
+        analyzable[np.clip(detected_peaks, 0, analyzable.size - 1)].any()
+    )
+    classification = classify_block(
+        cleaned=cleaned,
+        amplitude=amplitude() if on_good_signal else np.empty(0, dtype=np.float32),
+        rpeaks=detected_peaks,
+        analyzable=analyzable,
+        rr=rr,
+        expected_rr=expected,
+        prematurity=beat_prematurity,
+        dissimilarity=dissimilarity,
+        morphology_scores=scores,
+        dominant=_dominant_mask(
+            detected_peaks.size, extracted, owned_beats, assignment, bank, config.match_threshold
+        ),
+        owned=owned_peaks,
+        firmware_peaks=firmware_peaks,
+        firmware_tolerance=config.quality.bsqi_tolerance_samples,
+        origin=start_sample_index,
+        sample_rate=sample_rate,
+        budget=config.budget,
+        thresholds=thresholds,
+    )
+    return classification.records, list(classification.findings)
+
+
+def _shift_labels(records: BeatLabelRecords, offset: int) -> BeatLabelRecords:
+    """Traslada `sample_index` de las coordenadas del lote a las del estudio."""
+    shifted = records.copy()
+    shifted["sample_index"] += offset
+    return shifted
+
+
+def _covered_fraction(start: int, end: int, spans: list[tuple[int, int]]) -> float:
+    """Fracción de `[start, end)` que cubre la unión de `spans`."""
+    if end <= start:
+        return 0.0
+    covered, cursor = 0, start
+    for low, high in sorted(spans):
+        low, high = max(low, cursor), min(high, end)
+        if high > low:
+            covered += high - low
+            cursor = high
+    return covered / (end - start)
+
+
+#: Una taquicardia de ritmo cubierta por una corrida S o V al menos en esta
+#: fracción es la misma cosa vista dos veces: se informa la corrida.
+TACHYCARDIA_COVERED_BY_RUN = 0.80
+
+
+def rescale_run(finding: Finding, sample_rate: int) -> Finding:
+    """La corrida con severidad, aviso y push según su duración **actual**.
+
+    La duración de una corrida cambia cuando se funden dos del mismo bloque
+    (`apply_refractory`) o cuando la persistencia la empalma con la del bloque
+    anterior; sostenida (30 s) es la que decide TPS HIGH y TPV CRITICAL.
+    """
+    seconds = finding.length_samples / sample_rate
+    sustained = seconds >= SUSTAINED_SECONDS
+    severity = run_severity(finding.kind, sustained)
+    metadata = {**finding.metadata, "sustained": int(sustained)}
+    return replace(
+        finding,
+        severity=severity,
+        alert_message=alert_for_run(finding.kind, severity),
+        push=finding.push or sustained,
+        metadata=metadata,
+    )
+
+
+def _merge_classification(
+    findings: list[Finding], classified: list[Finding], *, config: PipelineConfig
+) -> list[Finding]:
+    """Suma los hallazgos de la clasificación sin pintar dos bandas sobre lo mismo.
+
+    - Las corridas y los bloqueos de ritmo pasan por la refractariedad (se
+      funden si están a menos de la ventana), como pausa y taquicardia, y las
+      corridas recalculan su severidad con la duración fundida.
+    - Un `morphology_anomaly` cuyos latidos positivos son todos S o V y están
+      cubiertos por un episodio o una corrida se omite: ya lo cuenta ése.
+    - Una `tachycardia` cubierta en un 80 % o más por una corrida tampoco.
+    """
+    sample_rate = config.sample_rate
+    refractory_kinds = RUN_KINDS | {"av_block_mobitz_1", "av_block_mobitz_2", "av_block_complete"}
+    rhythm_like = [item for item in classified if item.kind in refractory_kinds]
+    others = [item for item in classified if item.kind not in refractory_kinds]
+    fused = apply_refractory(
+        rhythm_like,
+        sample_rate=sample_rate,
+        refractory_seconds=config.budget.refractory_seconds,
+    )
+    fused = [rescale_run(item, sample_rate) if item.kind in RUN_KINDS else item for item in fused]
+
+    ectopy = [
+        item
+        for item in (*fused, *others)
+        if item.kind in RUN_KINDS or item.kind in (KIND_VENTRICULAR, KIND_SUPRAVENTRICULAR)
+    ]
+    spans = [(item.start_sample, item.start_sample + item.length_samples) for item in ectopy]
+    runs = [
+        (item.start_sample, item.start_sample + item.length_samples)
+        for item in ectopy
+        if item.kind in RUN_KINDS
+    ]
+    kept: list[Finding] = []
+    for item in findings:
+        if (
+            item.kind == "tachycardia"
+            and _covered_fraction(item.start_sample, item.start_sample + item.length_samples, runs)
+            >= TACHYCARDIA_COVERED_BY_RUN
+        ):
+            continue
+        if item.kind == ANOMALY_KIND and item.beat_samples and _is_all_covered(item, spans):
+            continue
+        kept.append(item)
+    return [*kept, *fused, *others]
+
+
+def _is_all_covered(finding: Finding, spans: list[tuple[int, int]]) -> bool:
+    """Todos los latidos del hallazgo caen dentro de alguno de `spans`."""
+    return all(any(low <= sample <= high for low, high in spans) for sample in finding.beat_samples)
 
 
 # --------------------------------------------------------------------------- #
@@ -567,8 +828,7 @@ _AMPLITUDE_HIGHPASS_ORDER = 5
 
 
 def _measure_intervals(
-    signal_mv: Signal,
-    flags: Flags,
+    amplitude: Callable[[], Signal],
     cleaned: Signal,
     rpeaks: Indices,
     analyzable: Mask,
@@ -615,7 +875,7 @@ def _measure_intervals(
             return None
         return measure_intervals(
             cleaned,
-            _amplitude_signal(signal_mv, flags, config.sample_rate, config.quality.mains_hz),
+            amplitude(),
             rpeaks,
             analyzable,
             config.sample_rate,
@@ -649,6 +909,23 @@ def _dominant_mask(
     scored = morphology.score_only(bank, others, match_threshold=match_threshold)
     mask[others.beat_index] = scored.cluster_ids == dominant.cluster_id
     return mask
+
+
+def _memoized(compute: Callable[[], Signal]) -> Callable[[], Signal]:
+    """Una función sin argumentos que calcula una vez y recuerda el resultado.
+
+    La señal de análisis (`_amplitude_signal`) la piden la medición de
+    intervalos y la clasificación por latido: filtrar el bloque dos veces es
+    costo puro, y filtrarlo cuando ninguna de las dos lo necesita, también.
+    """
+    cache: list[Signal] = []
+
+    def get() -> Signal:
+        if not cache:
+            cache.append(compute())
+        return cache[0]
+
+    return get
 
 
 def _amplitude_signal(signal_mv: Signal, flags: Flags, sample_rate: int, mains_hz: float) -> Signal:
@@ -721,6 +998,7 @@ def _shift(finding: Finding, offset: int) -> Finding:
         alert_message=finding.alert_message,
         metadata=finding.metadata,
         beat_samples=tuple(sample + offset for sample in finding.beat_samples),
+        push=finding.push,
     )
 
 

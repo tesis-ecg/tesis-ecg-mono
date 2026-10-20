@@ -2,6 +2,7 @@ import type { jsPDF } from 'jspdf'
 
 import type { HolterMetrics } from '@/features/studies/types'
 import type {
+  HolterDoctorCorrectionsOut,
   HolterEctopyOut,
   HolterStChannelOut,
   HolterStKindOut,
@@ -52,6 +53,26 @@ export function metricsStatusText(metrics: HolterMetrics | null | undefined): st
       return 'Sin datos analizables.'
     default:
       return 'El estudio no tiene señal analizable.'
+  }
+}
+
+/**
+ * Por qué no hay cifras de S y V, en palabras del médico. Nunca se muestran
+ * ceros en su lugar: un 0 se leería como "no hubo ectopia".
+ */
+export function ectopyUnavailableText(reason: string | null | undefined): string | null {
+  switch (reason) {
+    case null:
+    case undefined:
+      return null
+    case 'BEAT_CLASSIFICATION_UNAVAILABLE':
+      return 'Este estudio se analizó antes de la clasificación de latidos: no hay cifras de S y V.'
+    case 'BEAT_CLASSIFICATION_PARTIAL':
+      return 'La clasificación de latidos cubre solo una parte del estudio: no se informan cifras de S y V para no subestimarlas.'
+    case 'BEAT_CLASSIFICATION_PENDING':
+      return 'La clasificación de latidos todavía no cubre el estudio. Se completa a medida que llegan los lotes.'
+    default:
+      return 'Requiere clasificación de latidos (normal / supraventricular / ventricular), que no está disponible.'
   }
 }
 
@@ -288,8 +309,7 @@ export function drawSummaryPage(doc: jsPDF, input: ClinicalReportInput, startY: 
   rows(doc, left, y + BOX_TITLE + 5, COLUMN, ectopyRows(metrics?.supraventricular, 'S', 'SVE'))
   rows(doc, right, y + BOX_TITLE + 5, COLUMN, ectopyRows(metrics?.ventricular, 'V', 'VE'))
   if (metrics?.ectopyUnavailableReason) {
-    const text =
-      'N/D: requiere clasificación de latidos (normal / supraventricular / ventricular), que todavía no está disponible.'
+    const text = `N/D: ${ectopyUnavailableText(metrics.ectopyUnavailableReason)}`
     note(doc, left, y + rowB - 4.5, COLUMN, text)
     note(doc, right, y + rowB - 4.5, COLUMN, text)
   }
@@ -628,6 +648,9 @@ const METHOD_HARDWARE =
  * el veredicto del motor el backend informa la 4.
  */
 export function metricsMethodNote(algorithmVersion: number | null | undefined): string {
+  if (algorithmVersion === 6) {
+    return `${METHOD_DETECTION_NK} Se excluyen los tramos con electrodo suelto, señal no analizable o saturación, y los que el análisis automático clasifica como ruido o artefacto. Los latidos en señal buena se clasifican como normales (N), supraventriculares (S) o ventriculares (V) con una sola derivación: S es un latido que llega al menos un 20 % antes de lo esperado, con QRS angosto y la forma habitual del paciente; V, un latido de forma claramente distinta de la habitual, o algo distinta y además prematuro o con un QRS ancho frente a un QRS habitual angosto. Un QRS ancho solo no alcanza para V, y un prematuro ancho con la forma habitual no se clasifica. Son categorías de soporte a la decisión, no un diagnóstico. Las cifras de S y V incorporan las correcciones del médico (reclasificaciones, ruido y descartes) con su fecha. Una pausa en tramos con ruido cuenta solo si el análisis automático la confirma.`
+  }
   if (algorithmVersion === 5) {
     return `${METHOD_DETECTION_NK} Se excluyen los tramos con electrodo suelto, señal no analizable o saturación, y los que el análisis automático de calidad de señal clasifica como ruido o artefacto. Una pausa en esos tramos cuenta solo si el análisis automático la confirma con su propia regla, que distingue una asistolia del ruido; las demás se informan aparte, como pausas en ruido sin confirmar. Un corte o hueco del registro nunca se cuenta como pausa.`
   }
@@ -636,6 +659,14 @@ export function metricsMethodNote(algorithmVersion: number | null | undefined): 
     return `${METHOD_DETECTION} Se excluyen los tramos con electrodo suelto, señal no analizable o saturación, y los que el análisis automático de calidad de señal clasifica como ruido o artefacto. Las pausas se buscan también en esos tramos, porque una asistolia no se distingue del ruido: cada una debe verificarse en su tira. Un corte o hueco del registro nunca se cuenta como pausa.`
   }
   return `${METHOD_DETECTION} ${METHOD_HARDWARE}`
+}
+
+/** Qué cambió el médico respecto del análisis automático, si cambió algo. */
+function correctionsNote(corrections: HolterDoctorCorrectionsOut | undefined): string {
+  if (!corrections) return ''
+  const { findings = 0, noiseMs = 0, relabeledBeats = 0 } = corrections
+  if (findings === 0 && noiseMs === 0 && relabeledBeats === 0) return ''
+  return `Correcciones del médico incorporadas: ${formatMetricValue(findings)} hallazgo${findings === 1 ? '' : 's'} corregido${findings === 1 ? '' : 's'} · ${formatMetricValue(relabeledBeats)} latidos reclasificados · ${formatDuration(noiseMs)} marcados como ruido.`
 }
 
 function pauseList(items: MetricEvidenceOut[]): string {
@@ -667,10 +698,15 @@ export function drawTrendsPage(doc: jsPDF, metrics: HolterMetrics, startY: numbe
   const heart = metrics.heartRate
   const method = [
     metricsMethodNote(analysis?.algorithmVersion),
-    `FC mínima y máxima: promedio móvil de ${heart?.windowBeats ?? 8} intervalos NN consecutivos. La VFC se calcula sobre intervalos RR filtrados (300–2000 ms y ±20 % de la mediana local): todavía no hay clasificación de latidos, así que los ectópicos se descartan por ese filtro y no por su morfología.`,
+    `FC mínima y máxima: promedio móvil de ${heart?.windowBeats ?? 8} intervalos NN consecutivos. La VFC se calcula sobre intervalos RR filtrados (300–2000 ms y ±20 % de la mediana local): ${
+      analysis?.algorithmVersion === 6
+        ? 'los latidos S y V clasificados no se excluyen de la VFC: solo se descartan los que no pasan ese filtro.'
+        : 'todavía no hay clasificación de latidos, así que los ectópicos se descartan por ese filtro y no por su morfología.'
+    }`,
     analysis
       ? `Tiempo analizado: ${formatDuration(analysis.analyzedMs)} · excluido por calidad: ${formatDuration(analysis.excludedMs)} · intervalos RR válidos: ${formatMetricValue(analysis.rrIntervals)} · NN: ${formatMetricValue(analysis.nnIntervals)} · algoritmo v${analysis.algorithmVersion}.`
       : '',
+    correctionsNote(analysis?.doctorCorrections),
     metrics.pauses?.items.length ? `Pausas registradas: ${pauseList(metrics.pauses.items)}.` : '',
     metrics.pauses?.noisyItems?.length
       ? `Pausas en tramos con ruido, no confirmadas por el análisis automático (no cuentan en las pausas): ${pauseList(metrics.pauses.noisyItems)}.`

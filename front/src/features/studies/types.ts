@@ -1,7 +1,11 @@
 import type { PatientStudySessionStatus } from '@/features/patients/types'
 import type {
+  HolterEctopyOut,
   HolterMetricsOut,
   MetricEvidenceOut,
+  ReclassificationOut,
+  ReclassificationRequest as ReclassificationRequestOut,
+  StudyFindingCorrectionOut,
   StudyFindingGroupOut,
   StudyFindingOut,
   StudyFindingsOut,
@@ -11,6 +15,9 @@ import type {
 
 /** Métricas del informe Holter (`GET /studies/:id/holter-metrics`). */
 export type HolterMetrics = HolterMetricsOut
+
+/** Eventos S o V del estudio: conteos, agrupaciones, carga y máximos con su evidencia. */
+export type HolterEctopy = HolterEctopyOut
 
 /** Dónde ocurrió una métrica (FC mínima, pausa más larga…), para ir a verla. */
 export type MetricEvidence = MetricEvidenceOut
@@ -28,6 +35,15 @@ export type StudyFindingGroup = StudyFindingGroupOut
 
 /** Un episodio concreto, con su hora de pared para llevar el visor ahí. */
 export type StudyFinding = StudyFindingOut
+
+/** Qué corrigió el médico de un hallazgo: acción, tipo efectivo, quién y cuándo. */
+export type StudyFindingCorrection = StudyFindingCorrectionOut
+
+/** Cuerpo de `POST /studies/:id/findings/:findingId/reclassification`. */
+export type ReclassificationRequest = ReclassificationRequestOut
+
+/** Respuesta de la reclasificación: el hallazgo corregido y las métricas recalculadas. */
+export type Reclassification = ReclassificationOut
 
 /** Cuánto del registro pudo evaluar el motor, y con qué nivel de calidad. */
 export type StudyQualitySummary = StudyQualitySummaryOut

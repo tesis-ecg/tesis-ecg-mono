@@ -6,10 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.study import StudyStatus
 from app.dependencies.auth_dependencies import RoleScope, get_doctor_scope
 from app.dependencies.common_dependencies import get_db
-from app.modules.studies import findings_service
+from app.modules.studies import findings_service, reclassification_service
 from app.modules.studies import studies_service as service
 from app.modules.studies.studies_schemas import (
     HolterMetricsOut,
+    ReclassificationInput,
+    ReclassificationOut,
+    ReclassificationRequest,
     SimulateAnomalyInput,
     SimulateAnomalyOut,
     SimulateAnomalyRequest,
@@ -345,6 +348,35 @@ async def get_study_findings(
             study_id=study_id,
             actor_id=scope.user.id,
             items_per_group=items_per_group,
+        ),
+        db,
+    )
+
+
+@router.post(
+    "/{study_id}/findings/{finding_id}/reclassification",
+    response_model=ReclassificationOut,
+)
+async def reclassify_finding(
+    study_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    data: ReclassificationRequest,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> ReclassificationOut:
+    """El médico confirma, descarta, marca como ruido o reclasifica un hallazgo.
+
+    Mismo permiso que finalizar el informe (`get_doctor_scope`: el médico dueño
+    del paciente, o un admin). Devuelve el hallazgo corregido y las métricas
+    Holter recalculadas con la corrección.
+    """
+    return await reclassification_service.reclassify_finding(
+        ReclassificationInput(
+            doctor_id=scope.doctor_id,
+            study_id=study_id,
+            finding_id=finding_id,
+            actor_id=scope.user.id,
+            data=data,
         ),
         db,
     )

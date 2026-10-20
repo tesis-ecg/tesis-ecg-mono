@@ -55,16 +55,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.s3 import get_object, put_object
 from app.db.models.alert import Alert, AlertSeverity
-from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
+from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventValidation
 from app.db.models.ecg_interval_measurement import ECGIntervalMeasurement
 from app.db.models.signal_quality import SignalQualityInterval
 from app.db.models.study import Study
 from app.ml import morphology
 from app.ml.contracts import Finding
-from app.ml.episodes import _merge_metadata, open_edges
+from app.ml.ectopy import RUN_KINDS, SUSTAINED_SECONDS, alert_for_run, run_severity
+from app.ml.episodes import COMPETING_TYPES, _merge_metadata, open_edges
 from app.ml.morphology import TemplateBank
 from app.ml.pipeline import PIPELINE_VERSION, PipelineConfig, PipelineResult, empty_bank
 from app.ml.totals import summary_from_totals
+from app.modules.ingest import beat_label_store
 from app.modules.ingest.pushable import PUSH_RANK, Pushable, most_severe
 
 #: Predicado de `uq_ecg_event_dedupe`. Postgres **no infiere un índice parcial**
@@ -170,13 +172,16 @@ def store_bank(
     totals: Mapping[str, float] | None = None,
     *,
     merged: bool = False,
+    beat_labels: Mapping[str, Any] | None = None,
 ) -> None:
     """Escribe los centroides en S3 y la metadata liviana en `study.ml_state`.
 
     `totals` son los del estudio ya combinados; sin ellos se conservan los que
     había, que es lo que necesita la fusión del cierre (no analiza señal nueva).
     `bank_to_state` arma el estado desde cero, así que cualquier clave que no
-    sea del banco se tiene que volver a poner acá o se pierde.
+    sea del banco se tiene que volver a poner acá o se pierde: los totales y la
+    lista de etiquetas por latido (`beat_label_store`). Sin `beat_labels` se
+    conserva la que había, que es lo que necesita la fusión del cierre.
     """
     previous: dict[str, Any] = study.ml_state or {}
     kept = dict(previous.get("totals") or {}) if totals is None else dict(totals)
@@ -187,6 +192,9 @@ def store_bank(
         state["templatesKey"] = key
     state["totals"] = kept
     state["metrics"] = study_metrics(kept, bank)
+    labels = beat_labels if beat_labels is not None else previous.get(beat_label_store.STATE_KEY)
+    if labels is not None:
+        state[beat_label_store.STATE_KEY] = dict(labels)
     # Reasignación y no mutación: SQLAlchemy no detecta cambios in-place sobre un
     # JSONB y el UPDATE no se emitiría.
     study.ml_state = state
@@ -198,13 +206,16 @@ def store_bank(
 
 
 async def count_anomalies(db: AsyncSession, study_id: uuid.UUID) -> int:
-    """Anomalías por episodio ya escritas para el estudio (sin los encabezados)."""
+    """Anomalías y ectópicas por episodio ya escritas para el estudio (sin los encabezados).
+
+    Las dos comparten el tope por estudio (`episodes.enforce_budget`).
+    """
     total = await db.scalar(
         select(func.count())
         .select_from(ECGEvent)
         .where(
             ECGEvent.study_id == study_id,
-            ECGEvent.event_type == ECGEventType.ANOMALY,
+            ECGEvent.event_type.in_(sorted(COMPETING_TYPES)),
             ECGEvent.deleted_at.is_(None),
             ECGEvent.model_version.is_not(None),
             ECGEvent.event_metadata["scope"].astext == "batch",
@@ -246,11 +257,23 @@ def _event_row(
 
 
 #: Los que el motor funde con `episodes.apply_refractory` dentro de un bloque:
-#: los de ritmo, los únicos que avisan al paciente. A través del borde se
+#: los de ritmo y las corridas y bloqueos, los únicos que avisan al paciente. A través del borde se
 #: empalman con la misma ventana. Los de calidad y los de morfología no pasan
 #: por la refractariedad (`pipeline.analyze_batch` explica por qué) y se
 #: empalman solo si se tocan o se solapan.
-_REFRACTORY_KINDS = frozenset({"tachycardia", "bradycardia", "pause"})
+_REFRACTORY_KINDS = frozenset(
+    {
+        "tachycardia",
+        "bradycardia",
+        "pause",
+        # Las de la clasificación por latido que se funden dentro del bloque
+        # con la misma ventana (`pipeline._merge_classification`).
+        *RUN_KINDS,
+        "av_block_mobitz_1",
+        "av_block_mobitz_2",
+        "av_block_complete",
+    }
+)
 
 
 def _stitchable(finding: Finding) -> bool:
@@ -305,6 +328,9 @@ async def _stitch_candidates(
             ECGEvent.study_id == study.id,
             ECGEvent.deleted_at.is_(None),
             ECGEvent.model_version.is_not(None),
+            # El motor nunca modifica, empalma ni retira un hallazgo que el médico
+            # ya corrigió: su tramo está congelado en la corrección.
+            ECGEvent.validation_status == ECGEventValidation.PENDING,
             ECGEvent.event_metadata["scope"].astext == "batch",
             ECGEvent.event_metadata["kind"].astext.in_(sorted(kinds)),
             ECGEvent.timestamp_in_recording >= scope.run_start / sample_rate - 1.0,
@@ -426,6 +452,17 @@ def _stitch(
         (finding.severity, *(event.severity for event in matches)),
         key=lambda value: _SEVERITY_RANK[value],
     )
+    if finding.kind in RUN_KINDS:
+        # La severidad de una corrida es función de su duración: al empalmar,
+        # la unión puede cruzar los 30 s (sostenida) aunque ninguna de las
+        # partes lo hiciera.
+        sustained = length / sample_rate >= SUSTAINED_SECONDS
+        survivor.severity = max(
+            run_severity(finding.kind, sustained),
+            survivor.severity,
+            key=lambda value: _SEVERITY_RANK[value],
+        )
+        metadata["sustained"] = int(sustained)
     now = datetime.now(UTC)
     for other in absorbed:
         other.deleted_at = now
@@ -470,6 +507,7 @@ async def persist_analysis(
                 ),
                 ECGEvent.event_metadata["scope"].astext == "study",
                 ECGEvent.deleted_at.is_(None),
+                ECGEvent.validation_status == ECGEventValidation.PENDING,
             )
             .values(deleted_at=datetime.now(UTC))
         )
@@ -487,6 +525,8 @@ async def persist_analysis(
             statement.on_conflict_do_update(
                 index_elements=[ECGEvent.study_id, ECGEvent.dedupe_key],
                 index_where=_DEDUPE_WHERE,
+                # Un encabezado que el médico ya corrigió no se vuelve a escribir.
+                where=ECGEvent.validation_status == ECGEventValidation.PENDING,
                 set_={
                     "duration_seconds": statement.excluded.duration_seconds,
                     "confidence_score": statement.excluded.confidence_score,
@@ -662,7 +702,11 @@ async def _create_alerts(
         db.add(alert)
         await db.flush()
         rank = PUSH_RANK.get(finding.severity)
-        if rank is not None and finding.start_sample + finding.length_samples >= push_from:
+        if (
+            rank is not None
+            and finding.push
+            and finding.start_sample + finding.length_samples >= push_from
+        ):
             pushable = most_severe(
                 pushable, Pushable(rank=rank, alert_id=alert.id, kind=finding.kind)
             )
@@ -696,12 +740,21 @@ async def _escalation_alerts(
     El push, con la misma regla de antigüedad que `_create_alerts`, sobre el
     final del evento ya empalmado.
     """
-    asking = [(finding, event) for finding, event in extended if finding.alert_message]
+    # Una corrida que el empalme sube de severidad (TPS sostenida) puede no
+    # traer aviso en el bloque nuevo: el texto sale de su tipo y su severidad
+    # actual (`ectopy.alert_for_run`).
+    asking = [
+        (finding, event, finding.alert_message or alert_for_run(finding.kind, event.severity))
+        for finding, event in extended
+    ]
+    asking = [item for item in asking if item[2]]
     if not asking:
         return None
     existing: dict[uuid.UUID, Alert] = {}
     for alert in (
-        await db.scalars(select(Alert).where(Alert.event_id.in_([event.id for _, event in asking])))
+        await db.scalars(
+            select(Alert).where(Alert.event_id.in_([event.id for _, event, _ in asking]))
+        )
     ).all():
         if alert.event_id is None:
             continue
@@ -710,7 +763,7 @@ async def _escalation_alerts(
             existing[alert.event_id] = alert
 
     pushable: Pushable | None = None
-    for finding, event in asking:
+    for finding, event, message in asking:
         severity = event.severity
         current = existing.get(event.id)
         if current is None:
@@ -719,21 +772,25 @@ async def _escalation_alerts(
                 event_id=event.id,
                 kind=finding.kind,
                 severity=AlertSeverity[severity.name],
-                message=finding.alert_message,
+                message=message,
             )
             db.add(current)
             await db.flush()
             existing[event.id] = current
         elif _alert_rank(current) < _SEVERITY_RANK[severity]:
             current.severity = AlertSeverity[severity.name]
-            current.message = finding.alert_message or current.message
+            current.message = message or current.message
             current.seen_at = None
             current.acknowledged_at = None
             current.acknowledged_by = None
         else:
             continue
         rank = PUSH_RANK.get(severity)
-        if rank is not None and _span(event)[1] >= push_from:
+        # Una corrida que el empalme lleva a sostenida avisa aunque el bloque
+        # nuevo no lo pidiera: sostenida ya no necesita que el firmware confirme
+        # los R. El resto, solo si el hallazgo lo pide (`Finding.push`).
+        pushes = finding.push or (finding.kind in RUN_KINDS and severity != finding.severity)
+        if rank is not None and pushes and _span(event)[1] >= push_from:
             pushable = most_severe(
                 pushable, Pushable(rank=rank, alert_id=current.id, kind=finding.kind)
             )
@@ -810,6 +867,8 @@ async def consolidate_morphologies(db: AsyncSession, study: Study) -> dict[int, 
                     ECGEvent.study_id == study.id,
                     ECGEvent.deleted_at.is_(None),
                     ECGEvent.model_version.is_not(None),
+                    # Un hallazgo corregido por el médico no se toca.
+                    ECGEvent.validation_status == ECGEventValidation.PENDING,
                 )
             )
         ).all()

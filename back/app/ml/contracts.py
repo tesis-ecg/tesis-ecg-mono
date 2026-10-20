@@ -155,6 +155,12 @@ class Finding:
     beat_count: int | None = None
     alert_message: str | None = None
     metadata: dict[str, float | int | str] = field(default_factory=dict)
+    #: Si el aviso (`alert_message`) además debe llegar como push al paciente.
+    #: Falso deja la alerta en la bandeja del médico sin despertar a nadie: lo
+    #: usan los hallazgos que el dato de una derivación respalda poco (una
+    #: corrida ventricular que el firmware no confirma, un bloqueo sin una P
+    #: consistente). Por omisión avisa, como siempre.
+    push: bool = True
     #: El R de cada latido que cuenta `beat_count`, en las mismas coordenadas
     #: que `start_sample`. No se escribe: es lo que deja a la persistencia
     #: sumar **exacto** los latidos de un episodio que se empalma a través de

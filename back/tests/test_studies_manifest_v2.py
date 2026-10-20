@@ -165,6 +165,9 @@ async def test_a_legacy_seeded_study_still_returns_raw(
         # responde a nada ni trae texto propio.
         "linkedAnnotationId": None,
         "description": None,
+        # Sin veredicto del médico: el hallazgo está como lo dejó el motor.
+        "validationStatus": "pending",
+        "effectiveKind": None,
     }
     started_ms = manifest["startTimestamp"]
     assert manifest["annotations"][0]["startEpochMs"] == started_ms + 1250

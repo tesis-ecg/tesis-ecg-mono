@@ -638,3 +638,26 @@ gel**, en derivaciones variadas (MLII solo en 12 registros), y los latidos anota
 los eligió el anotador, así que son latidos limpios. Alcanza para
 elegir el delineador y descartar los que no sirven; no para afirmar que el QT
 del chaleco tiene este bias.
+
+## Clasificación por latido (N, S, V), ancho del QRS y PR
+
+```bash
+cd back
+uv run --with wfdb python -m tools.physionet.evaluate --beat-classes --jobs 8 --baseline
+uv run --with wfdb python -m tools.physionet.evaluate --qrs --pr
+```
+
+`--beat-classes` (`beat_classes.py`) corre el motor sobre MIT-BIH **por bloques, como en
+producción** (300 s con 60 s de contexto y 30 s de contexto derecho, banco enhebrado) y puntúa
+las etiquetas que persiste con el mapeo AAMI EC57 (N = N, L, R, e, j; S = A, a, J, S; V = V, E;
+sin los registros con marcapasos 102, 104, 107 y 217). Informa Se y PPV por clase, el PPV sin
+contar los R que el detector inventó, y qué fracción cae en X (ruido) y Q. `--baseline` agrega la
+Se y el PPV del detector de R solo, para ver que clasificar no empeoró la detección.
+
+`--qrs` y `--pr` (`qrs_validation.py`) miden el ancho del QRS y el PR contra las marcas de
+`q1c` de la QT Database, con el gate de |sesgo| <= 20 ms del ancho. Los números y lo que se
+ajustó con estas marcas están en `docs/deteccion-ml/README.md`, sección 11.
+
+`tools.vest.evaluate` suma una guarda sobre las capturas de voluntarios sanos: ni episodios de V
+ni TPV, y a lo sumo 3 latidos etiquetados V.
+

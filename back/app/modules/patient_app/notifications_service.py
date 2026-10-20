@@ -42,6 +42,13 @@ _ANOMALY_TITLE_BY_KIND = {
     "afib": "Tu chaleco registró un ritmo irregular",
     "pvc": "Tu chaleco registró un latido adelantado",
     "pause": "Tu chaleco registró una pausa en el ritmo",
+    # Los de la clasificación por latido que avisan (`app/ml/ectopy.py`,
+    # `app/ml/conduction.py`). Sin jerga y sin diagnóstico: una derivación no
+    # alcanza para afirmarlo.
+    "vt_run": "Tu chaleco registró varios latidos seguidos muy rápidos",
+    "svt_run": "Tu chaleco registró varios latidos seguidos muy rápidos",
+    "av_block_mobitz_2": "Tu chaleco registró un latido que faltó en el ritmo",
+    "av_block_complete": "Tu chaleco registró un ritmo lento e irregular",
     "noise": "Un tramo de tu registro salió con ruido",
     "symptom_marker": "Marcaste un síntoma en el chaleco",
 }

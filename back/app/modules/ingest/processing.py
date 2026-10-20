@@ -46,6 +46,7 @@ from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.study import Study, StudyStatus
 from app.db.models.study_timeline_segment import StudyTimelineSegment
+from app.ml.beat_labels import BeatLabelStream
 from app.ml.beats import DETECTOR, analyze_window, decode_beats, encode_beats, legacy_chunks
 from app.ml.decompression import (
     FLAG_ADC_SATURATED,
@@ -65,8 +66,8 @@ from app.ml.pipeline import analyze_batch, build_config
 from app.ml.quality import sample_runs
 from app.ml.status_flags import has_backlog_overflow, has_corrupt_frame
 from app.ml.totals import combine_totals
+from app.modules.ingest import beat_label_store, ml_persistence, timeline
 from app.modules.ingest import ingest_repository as repo
-from app.modules.ingest import ml_persistence, timeline
 from app.modules.ingest.pushable import PUSH_RANK, Pushable, most_severe
 from app.modules.ingest.visual_filter import CONTEXT_SECONDS, filter_visualization
 from app.modules.patient_app.notifications_service import (
@@ -1127,6 +1128,15 @@ def load_beats(study: Study) -> np.ndarray:
     return np.concatenate(parts)
 
 
+def load_beat_labels(study: Study) -> BeatLabelStream | None:
+    """Las etiquetas por latido del estudio (`app/ml/beat_labels.py`), o None si no hay.
+
+    **Bloqueante** (S3): llamar desde un hilo. Es el flujo del que salen las
+    métricas S y V; FC, VFC, ST y pausas siguen saliendo de `load_beats`.
+    """
+    return beat_label_store.load_beat_labels(study)
+
+
 # --------------------------------------------------------------------------- #
 # Motor de detección por bloques
 # --------------------------------------------------------------------------- #
@@ -1354,6 +1364,7 @@ async def append_ml_analysis(
     state: dict[str, Any] = study.ml_state or {}
     score_floor = float(state.get("scoreFloor", 0.0))
     totals: dict[str, float] = dict(state.get("totals") or {})
+    labels_state: dict[str, Any] | None = state.get(beat_label_store.STATE_KEY)
     bank: TemplateBank | None = None
     splices: list[tuple[int, int, str]] = []
     segments: list[dict[str, Any]] = []
@@ -1370,7 +1381,9 @@ async def append_ml_analysis(
         if analyzed == budget or (
             analyzed and block_started - started + last_block_seconds > ML_PASS_BUDGET_SECONDS
         ):
-            return _finish_ml_pass(study, bank, last_end, totals, written, pushable, True)
+            return _finish_ml_pass(
+                study, bank, last_end, totals, written, pushable, True, labels_state
+            )
         if block_start > last_end:
             _log_skipped(study, last_end, block_start)
         read_start = max(run.start_sample_index, block_start - context)
@@ -1421,6 +1434,16 @@ async def append_ml_analysis(
         count, block_pushable = await ml_persistence.persist_analysis(
             db, study, result, rate, scope
         )
+        if result.beat_labels is not None:
+            labels_state = await asyncio.to_thread(
+                beat_label_store.append_block,
+                study.id,
+                labels_state,
+                result.beat_labels,
+                block_start=block_start,
+                block_end=block_end,
+                cursor_before=last_end,
+            )
         written += count
         pushable = most_severe(pushable, block_pushable)
         bank = result.bank
@@ -1438,7 +1461,7 @@ async def append_ml_analysis(
         # cada vista.
         _log_skipped(study, last_end, study.samples_count)
         study.ml_analyzed_samples = last_end = study.samples_count
-    return _finish_ml_pass(study, bank, last_end, totals, written, pushable, False)
+    return _finish_ml_pass(study, bank, last_end, totals, written, pushable, False, labels_state)
 
 
 def _log_skipped(study: Study, start: int, end: int) -> None:
@@ -1458,9 +1481,10 @@ def _finish_ml_pass(
     written: int,
     pushable: Pushable | None,
     pending: bool,
+    labels_state: dict[str, Any] | None = None,
 ) -> MlPass:
     if bank is not None:
-        ml_persistence.store_bank(study, bank, last_end, totals)
+        ml_persistence.store_bank(study, bank, last_end, totals, beat_labels=labels_state)
     return MlPass(written=written, pushable=pushable, pending=pending)
 
 
@@ -2009,6 +2033,19 @@ async def _finalize_closed_study(study: Study, session: AsyncSession) -> None:
                 failure_event="beat_compaction_failed",
                 cursor=study.beats_analyzed_samples,
             )
+        # Las etiquetas por latido, fundidas en un chunk. Guardada igual que la
+        # compactación de latidos: si falla, el estudio queda con sus chunks por
+        # nivel, que se leen igual.
+        fused = await _guarded(
+            session,
+            study,
+            lambda: asyncio.to_thread(beat_label_store.fuse_all, study),
+            fallback=None,
+            failure_event="beat_label_compaction_failed",
+            cursor=study.ml_analyzed_samples,
+        )
+        if fused is not None:
+            study.ml_state = {**(study.ml_state or {}), beat_label_store.STATE_KEY: fused}
         study.ecg_pyramid_levels = await asyncio.to_thread(compact_pyramid, study, force=True)
         if study.filter_view_enabled:
             study.ecg_filtered_pyramid_levels = await asyncio.to_thread(

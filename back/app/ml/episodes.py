@@ -178,6 +178,8 @@ def apply_refractory(
             if beat_samples
             else (previous.beat_count or 0) + (finding.beat_count or 0),
             alert_message=previous.alert_message or finding.alert_message,
+            # Se avisa al paciente si alguno de los dos lo pedía.
+            push=previous.push or finding.push,
             metadata=open_edges(
                 _merge_metadata(previous.metadata, finding.metadata, length, sample_rate),
                 [
@@ -261,6 +263,10 @@ def open_edges(
     return metadata
 
 
+#: Tipos que comparten el tope de anomalías por estudio (`enforce_budget`,
+#: `ml_persistence.count_anomalies`).
+COMPETING_TYPES = frozenset({ECGEventType.ANOMALY, ECGEventType.ECTOPY})
+
 _SEVERITY_RANK = {
     ECGEventSeverity.LOW: 0,
     ECGEventSeverity.MEDIUM: 1,
@@ -284,6 +290,11 @@ def enforce_budget(
     Los hallazgos de ritmo y de calidad **no** compiten contra el tope de
     anomalías: su cardinalidad natural es de decenas y ahogarlos con morfologías
     escondería justo lo que más importa.
+
+    Las ectópicas (S y V, `ECGEventType.ECTOPY`) **sí** compiten, con las
+    anomalías de morfología: son cientos por estudio y miran los mismos latidos.
+    Comparten el tope por estudio y el piso móvil. Las corridas y la conducción
+    son de ritmo y no compiten.
     """
     if not findings:
         return [], budget.score_floor
@@ -300,7 +311,7 @@ def enforce_budget(
     floor = budget.score_floor
 
     for finding in ordered:
-        is_anomaly = finding.event_type is ECGEventType.ANOMALY and finding.scope == "batch"
+        is_anomaly = finding.event_type in COMPETING_TYPES and finding.scope == "batch"
         if is_anomaly and (finding.score or 0.0) < budget.score_floor:
             continue
         used = per_kind.get(finding.kind, 0)

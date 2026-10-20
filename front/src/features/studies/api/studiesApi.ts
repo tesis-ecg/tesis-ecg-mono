@@ -2,6 +2,8 @@ import { api } from '@/lib/api'
 
 import type {
   HolterMetrics,
+  Reclassification,
+  ReclassificationRequest,
   Study,
   StudyClinicalReportDraft,
   StudyClinicalReportDraftUpdate,
@@ -130,5 +132,23 @@ export async function downloadStudyClinicalReport(id: string, reportId: string):
   const { data } = await api.get<Blob>(`/studies/${id}/clinical-reports/${reportId}/pdf`, {
     responseType: 'blob',
   })
+  return data
+}
+
+/**
+ * Reclasifica un hallazgo del motor (confirmar, descartar, ruido, otro tipo o
+ * restablecer). El original no se pisa: el backend guarda la corrección aparte,
+ * con quién y cuándo, y responde con el hallazgo y las métricas Holter ya
+ * recalculadas con esa corrección.
+ */
+export async function reclassifyFinding(
+  studyId: string,
+  findingId: string,
+  body: ReclassificationRequest,
+): Promise<Reclassification> {
+  const { data } = await api.post<Reclassification>(
+    `/studies/${studyId}/findings/${findingId}/reclassification`,
+    body,
+  )
   return data
 }

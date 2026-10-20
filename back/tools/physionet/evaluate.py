@@ -553,6 +553,16 @@ def main() -> int:
         from tools.physionet import qtdb
 
         return qtdb.main([arg for arg in sys.argv[1:] if arg != "--qtdb"])
+    if "--beat-classes" in sys.argv[1:]:
+        # Se/PPV de N, S y V (AAMI EC57): tiene su propia CLI (ver beat_classes.py).
+        from tools.physionet import beat_classes
+
+        return beat_classes.main([arg for arg in sys.argv[1:] if arg != "--beat-classes"])
+    if "--qrs" in sys.argv[1:] or "--pr" in sys.argv[1:]:
+        # Ancho del QRS y PR contra QTDB: tiene su propia CLI (ver qrs_validation.py).
+        from tools.physionet import qrs_validation
+
+        return qrs_validation.main(sys.argv[1:])
     if "--detectors" in sys.argv[1:]:
         # Se/PPV de los dos detectores de R: tiene su propia CLI (ver DETECTORS.md).
         from tools.physionet import detectors
@@ -563,6 +573,15 @@ def main() -> int:
     parser.add_argument("--records", nargs="*", default=None)
     parser.add_argument("--qtdb", action="store_true", help="delineación vs. QTDB (ver README)")
     parser.add_argument("--detectors", action="store_true", help="Se/PPV de R (ver DETECTORS.md)")
+    parser.add_argument(
+        "--beat-classes",
+        action="store_true",
+        help="Se/PPV de N, S y V, AAMI EC57 (beat_classes.py)",
+    )
+    parser.add_argument(
+        "--qrs", action="store_true", help="ancho del QRS contra QTDB (qrs_validation.py)"
+    )
+    parser.add_argument("--pr", action="store_true", help="PR contra QTDB (qrs_validation.py)")
     parser.add_argument(
         "--stage1",
         action="store_true",

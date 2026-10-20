@@ -237,6 +237,50 @@ describe('getStudyEcg', () => {
     expect(signal.durationMs).toBe(6)
   })
 
+  it('dibuja los hallazgos con la corrección del médico, como el informe', async () => {
+    installDecoderWorker()
+    const finding = {
+      category: 'clinical' as const,
+      severity: 'high' as const,
+      startOffsetMs: 1000,
+      endOffsetMs: 1500,
+      confidenceScore: null,
+    }
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: manifest({
+        sampleCount: 4,
+        levels: [level({ samplesPerBucket: 16, pointCount: 4 })],
+        annotations: [
+          { ...finding, id: 'as-is', kind: 'vt_run', validationStatus: 'pending' },
+          { ...finding, id: 'noise', kind: 'vt_run', validationStatus: 'noise' },
+          { ...finding, id: 'rejected', kind: 'pause', validationStatus: 'rejected' },
+          {
+            ...finding,
+            id: 'relabeled',
+            kind: 'vt_run',
+            validationStatus: 'reclassified',
+            effectiveKind: 'svt_run',
+          },
+          {
+            ...finding,
+            id: 'to-normal',
+            kind: 'ventricular_ectopy',
+            validationStatus: 'reclassified',
+            effectiveKind: 'normal_beats',
+          },
+        ],
+      }),
+    })
+    globalThis.fetch = vi.fn(async () => floatResponse([1, 2, 3, 4])) as typeof fetch
+
+    const signal = await getStudyEcg('study-id')
+
+    expect(signal.annotations.map(({ id, kind }) => [id, kind])).toEqual([
+      ['as-is', 'vt_run'],
+      ['relabeled', 'svt_run'],
+    ])
+  })
+
   it('convierte las anotaciones relativas del manifest a timestamps absolutos', async () => {
     installDecoderWorker()
     vi.spyOn(api, 'get').mockResolvedValue({

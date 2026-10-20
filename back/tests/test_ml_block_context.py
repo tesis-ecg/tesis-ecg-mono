@@ -234,7 +234,11 @@ def test_un_par_de_ectopicos_a_caballo_del_borde_es_un_solo_episodio() -> None:
     y 119,9 s con el borde en 120 s). Sin morfología recurrente, un grupo de un
     latido no llega al mínimo de dos: agrupando solo los latidos nuevos, cada
     bloque veía uno y el par se perdía. El segundo bloque agrupa también los del
-    contexto y lo informa entero, con el inicio en el contexto."""
+    contexto y lo informa entero, con el inicio en el contexto.
+
+    Con la clasificación por latido, un par de V es un episodio de ectopia
+    ventricular y no una anomalía de morfología (`pipeline._merge_classification`
+    omite la que ya cuenta el episodio): el par se cuenta una sola vez."""
     from tests.test_ml_blocks import _ecg, _latidos
 
     latidos = sorted(
@@ -248,7 +252,7 @@ def test_un_par_de_ectopicos_a_caballo_del_borde_es_un_solo_episodio() -> None:
         return [
             (f.start_sample, f.length_samples, f.beat_count)
             for f in result.findings
-            if f.kind == "morphology_anomaly"
+            if f.kind in ("morphology_anomaly", "ventricular_ectopy")
         ]
 
     [entero] = episodios(_analyze(signal_mv, flags))
