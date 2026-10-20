@@ -12,6 +12,7 @@ cambia.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 #: Tramos cuyos latidos no se cuentan (reglas de `INTEGRACION.md` §4.5).
 EXCLUSION_KINDS = frozenset({"lead_off", "sqi_unanalyzable", "adc_saturated"})
@@ -77,6 +78,48 @@ QUALITY_EXCLUSION_REASONS = frozenset({"psqi", "ksqi", "bassqi"})
 #: 1 enteras.
 HARDWARE_QUALITY_REASONS = frozenset({"flatline"})
 ECTOPY_UNAVAILABLE = "BEAT_CLASSIFICATION_UNAVAILABLE"
+#: El motor clasificó solo parte del estudio (se analizó en parte antes de que
+#: existieran las etiquetas): las cifras S y V serían de un tramo y no del
+#: registro, así que no se informan.
+BEAT_CLASSIFICATION_PARTIAL = "BEAT_CLASSIFICATION_PARTIAL"
+#: El motor todavía no llegó a clasificar la señal que ya tienen los latidos.
+BEAT_CLASSIFICATION_PENDING = "BEAT_CLASSIFICATION_PENDING"
+
+#: Clase de un latido (AAMI EC57): N normal, S supraventricular, V ventricular.
+BeatClass = Literal["N", "S", "V"]
+
+#: Qué clase de latido representa cada tipo de hallazgo reclasificable. Es lo que
+#: el médico "cambia" cuando reclasifica: los latidos de esa clase dentro del
+#: tramo del hallazgo. `tachycardia` es N porque una taquicardia sinusal son
+#: latidos normales rápidos; reclasificarla a S o V es decir que no lo eran.
+BEAT_LABEL_BY_KIND: dict[str, BeatClass] = {
+    "ventricular_ectopy": "V",
+    "vt_run": "V",
+    "supraventricular_ectopy": "S",
+    "svt_run": "S",
+    "tachycardia": "N",
+}
+
+#: Qué pasa a ser un hallazgo al reclasificarlo: `(kind, clase destino)` -> `kind`
+#: efectivo. El `kind` original nunca se pisa; este es el que ven el manifest y el
+#: resumen del informe. Un episodio de ectopía pasado a N deja de ser ectopía
+#: (`normal_beats`); una corrida pasada a N es una taquicardia común.
+RELABEL_EFFECTIVE_KIND: dict[tuple[str, BeatClass], str] = {
+    ("ventricular_ectopy", "S"): "supraventricular_ectopy",
+    ("ventricular_ectopy", "N"): "normal_beats",
+    ("supraventricular_ectopy", "V"): "ventricular_ectopy",
+    ("supraventricular_ectopy", "N"): "normal_beats",
+    ("vt_run", "S"): "svt_run",
+    ("vt_run", "N"): "tachycardia",
+    ("svt_run", "V"): "vt_run",
+    ("svt_run", "N"): "tachycardia",
+    ("tachycardia", "S"): "svt_run",
+    ("tachycardia", "V"): "vt_run",
+}
+
+#: Hallazgos de ruido del motor: rechazarlos (el médico dice "esto sí se lee")
+#: devuelve su tramo a las métricas.
+NOISE_FINDING_KINDS = frozenset({"noise_burst", "flatline"})
 
 
 @dataclass(frozen=True)
@@ -87,3 +130,38 @@ class TimelineRun:
     sample_count: int
     start_epoch_ms: int
     end_epoch_ms: int
+
+
+@dataclass(frozen=True)
+class BeatRelabel:
+    """Cambia la clase de los latidos con el R en `[start_sample, end_sample)`.
+
+    Solo cambia los que hoy tienen `from_label`: reclasificar un episodio V a S
+    deja en paz a los N que lo intercalan (bigeminismo).
+    """
+
+    start_sample: int
+    end_sample: int
+    from_label: BeatClass
+    to_label: BeatClass
+
+
+@dataclass(frozen=True)
+class DoctorCorrections:
+    """Lo que el médico corrigió, listo para el recálculo de métricas.
+
+    Todos los tramos son `(inicio, fin)` en muestras absolutas, fin exclusivo:
+    la misma coordenada de `exclusions` y `noise` en `compute_holter_metrics`.
+    El tramo es el que quedó congelado al corregir.
+    """
+
+    #: Tramos que el médico marcó como ruido: salen de todo (latidos, RR, pausas).
+    noise_spans: tuple[tuple[int, int], ...] = ()
+    #: Hallazgos de ruido del motor que el médico rechazó: se restan del ruido.
+    readable_spans: tuple[tuple[int, int], ...] = ()
+    #: Pausas del detector que el médico rechazó: no cuentan.
+    rejected_pause_spans: tuple[tuple[int, int], ...] = ()
+    #: Ordenadas por `validated_at`: la última corrección sobre un latido gana.
+    relabels: tuple[BeatRelabel, ...] = ()
+    #: Hallazgos con una corrección que cambia alguna cifra.
+    corrected_findings: int = 0

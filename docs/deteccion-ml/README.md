@@ -568,6 +568,108 @@ Hoy **no existe ningún ticket** que cubra nada de esto.
 
 ---
 
+## 11. Clasificación por latido, ectopia y conducción
+
+Lo que el motor agrega sobre la Etapa 2: cada latido detectado queda con una etiqueta
+(**N** normal, **S** supraventricular, **V** ventricular, **X** en ruido, **Q** no
+clasificable), su QRS medido (inicio, fin, ancho, alto) y, donde se ve, su onda P y su PR. De
+ahí salen los hallazgos de ectopia y de conducción y, aparte, las métricas S y V del informe
+Holter. Corre dentro de `pipeline.analyze_batch`, detrás del gate y del banco de plantillas
+(`app/ml/beat_classification.py`); lo apaga `ml_beat_classification_enabled`.
+
+**Una derivación, electrodos secos.** Todo corre solo sobre latidos en ventanas GOOD, y donde
+el dato no alcanza para el diagnóstico el hallazgo se llama "posible ...". Nada de lo que no
+se vio se informa: un latido sin P clara no tiene PR (nunca un PR inventado).
+
+### 11.1 Qué se persiste
+
+`app/ml/beat_labels.py`: 20 B por latido (`sample_index` absoluto, etiqueta, evidencia en bits,
+inicio y fin del QRS y inicio de la P relativos al R, amplitud pico a pico). Los ms se derivan.
+Un objeto de S3 por bloque del motor (`studies/{id}/ml/beats.{inicio}.f1.bin`), listados en
+`study.ml_state["beatLabels"]` y fundidos por niveles (24 chunks del mismo nivel → 1 del
+siguiente; al cerrar, uno solo). Es **otro flujo** que `beats.py`: aquél lo escribe una pasada
+sin gate ni banco y no puede clasificar. FC, VFC, ST y pausas siguen saliendo de `beats.py`;
+S, V y "latidos anormales", de las etiquetas. `PIPELINE_VERSION` no cambia (descartaría el banco
+de los estudios en curso); el clasificador tiene su versión (`CLASSIFIER_VERSION`).
+
+Un estudio analizado en parte antes del despliegue, o con la clasificación apagada durante
+un tramo, tiene `fromSample` posterior al inicio de su señal: sus S y V quedan "no disponibles"
+con razón explícita, nunca en cero.
+
+### 11.2 Casos de Requerimientos §3 y sus umbrales
+
+| Caso | Regla | Umbrales (constantes) | Severidad | Aviso |
+|---|---|---|---|---|
+| Etiqueta **V** | QRS ancho **y** forma algo distinta de la dominante angosta; o forma muy distinta; o distinta con prematuridad o QRS ancho; o prematuro + pausa compensatoria + forma algo distinta | QRS >= 120 ms y >= mediana de la dominante + 40 ms; disimilitud 0,10 / 0,20 / 0,50 | | |
+| Etiqueta **S** | prematuro (R-R previo <= 80 % del esperado), QRS angosto, forma parecida | `hrv.ECTOPIC_PREMATURITY` = 0,8 | | |
+| Etiqueta **X / Q** | R en ventana no GOOD / GOOD sin ventana de ±250 ms, sin QRS medible, ruido de alta frecuencia > 10 % de la amplitud, o complejo < 30 % de la dominante (una P o T tomada por R) | `MAX_NOISE_RATIO`, `MIN_RELATIVE_AMPLITUDE` | | |
+| Agrupaciones (S y V por separado) | aislada; par; corrida (>= 3); bigeminismo (>= 3 ciclos N,X); trigeminismo (>= 3 ciclos N,N,X). X, Q y huecos de señal cortan | `ectopy.CYCLES_MIN` | | |
+| 4. TPV / TPS | corrida >= 3 de V / S a > 100 lpm; sostenida >= 30 s | `RUN_MIN_BPM`, `SUSTAINED_SECONDS` | TPV HIGH (sostenida CRITICAL); TPS MEDIUM (sostenida HIGH) | TPV siempre, push solo si sostenida o >= 80 % de sus R los confirma el firmware; TPS solo sostenida |
+| 7. Extrasístoles | episodio de >= 2 S / V (`supraventricular_ectopy`, `ventricular_ectopy`) | `EPISODE_MIN_BEATS` | LOW; MEDIUM con un par o >= 3 ciclos de bi/trigeminismo | no |
+| 5. PR | PR = inicio de P → inicio de QRS, mediana de 30 s con >= 10 latidos, dispersión <= 20 ms, repartidos en >= 15 s | `LONG_PR_MS` = 200, `SHORT_PR_MS` = 120 | BAV 1.er grado LOW; PR corto LOW | no |
+| 1. Bloqueos | Mobitz I: PR previo creciente y el siguiente más corto; Mobitz II: PR constante; en ambos, una P bloqueada en un R-R de 1,7-2,6x | `BLOCKED_*`, `MOBITZ_*` | Mobitz I MEDIUM; Mobitz II HIGH | Mobitz II, con la guarda de P (`Finding.push`) |
+| 1. "Posible BAV completo" | QRS regular < 50 lpm y una cadena de P regular (Rayleigh >= 0,85) más rápida y sin relación de fase con los QRS | `COMPLETE_*` | CRITICAL | sí; push con >= 14 P y concentración >= 0,93 |
+| 1. QRS ancho sostenido ("posible bloqueo de rama") | mediana de 30 s del ancho de la dominante >= 120 ms | `WIDE_QRS_MS` | MEDIUM | no |
+| 6. QT | sin cambios: dato de investigación (`intervals.py`) | | | |
+
+Los hallazgos nuevos usan los tipos `ECTOPY` y `CONDUCTION` (`metadata.kind` lleva el detalle).
+Las ectópicas comparten el tope de anomalías por estudio (`episodes.COMPETING_TYPES`); las
+corridas y la conducción son de ritmo. Un `morphology_anomaly` cuyos latidos ya cuenta un
+episodio, y una `tachycardia` cubierta en >= 80 % por una corrida, no se emiten. El empalme entre
+bloques sube la severidad de una corrida al cruzar los 30 s. **El motor no modifica, empalma ni
+retira un hallazgo que el médico corrigió.**
+
+### 11.3 Validación
+
+Reproducible con `uv run --with wfdb python -m tools.physionet.evaluate`:
+
+- `--qrs --pr` (QT Database, marcas `q1c`, una derivación por vez, réplica de producción):
+  sesgo del ancho del QRS **−3,9 ms** (derivación 0) y **+1,3 ms** (1), MAE 17-18 ms, mediana por
+  registro +2 / +5 ms: **pasa el gate de 20 ms**. PR: sesgo −1,4 / +2,0 ms, MAE 14-16 ms,
+  cobertura 75 % / 55 % de los latidos con P anotada. **Cuatro constantes del QRS y dos del PR se
+  eligieron mirando estas mismas marcas** (ver el docstring de `qrs_validation.py`): el sesgo es
+  optimista, no una validación independiente.
+- `--beat-classes` (MIT-BIH, AAMI EC57, sin los registros con marcapasos, por bloques como en
+  producción): **V** Se 0,760, PPV 0,641 (0,752 sin contar los 1.221 R que el detector inventó);
+  **S** Se 0,079, PPV 0,154 (excluyendo el 232, que aporta la mitad de las S anotadas: Se 0,154);
+  **N** Se 0,797, PPV 0,975. **La detección de R no cambió**: Se 0,9879 / PPV 0,9795 contra
+  0,9882 / 0,9799 del detector solo (la diferencia es el corte por bloques). 15,5 % de los latidos
+  quedan en X (el gate rechaza registros enteros: 115, 209, 220) y 1,6 % en Q.
+- `tools/vest/evaluate.py` (capturas del chaleco): en las siete capturas de voluntarios sanos,
+  **0 hallazgos de V y TPV** y como mucho 3 latidos V (0,2 %); mediana de QRS 78-98 ms y de PR
+  180-190 ms. Sin hallazgos de conducción en ninguna captura.
+- Costo: **+15 %** de CPU sobre un bloque sintético de 300 s con contexto (mediana de tres rondas;
+  el test `slow` exige < 30 %). Sobre señal real, con el gate y el banco costando más, la
+  proporción es menor.
+
+### 11.4 Lo que falla, a conciencia
+
+- **S es débil.** La prematuridad se mide contra la mediana local de 32 R-R: no ve una S que
+  llega "a tiempo" en un ritmo irregular, y en una fibrilación auricular marca como S lo que es
+  irregularidad. Hay 1.206 S falsas en MIT-BIH, la mayoría en los registros 203 y 201. Una taquicardia
+  supraventricular sostenida no se distingue de una sinusal (mismo QRS, a tiempo): `svt_run` es
+  una corrida corta; la sostenida la cubre `tachycardia`.
+- **Desvíos del diseño, por los datos.** (a) Un QRS ancho **solo** no vuelve V a un latido: medido
+  sobre electrodos secos oscila 20-60 ms y daba "QRS de 170 ms" en latidos idénticos a la
+  dominante (capturas `seco_limpia`, `seco_ajustado`: 12 y 30 V falsas). Hace falta además una
+  forma algo distinta. (b) La forma distinta con disimilitud moderada (0,20-0,50) necesita
+  prematuridad o QRS ancho: sin eso, un paciente cuyos latidos normales cambian de forma
+  (MIT-BIH 230) era 40 % ventricular. (c) La P y el PR no salen del delineador `prominence` de
+  NeuroKit (siempre devuelve una P, haya o no) sino de un filtro de diferencia de gaussianas con
+  umbral de ruido; `intervals.py` no se tocó.
+- **PR corto casi no se detecta**: la respuesta del filtro de P se mezcla con la subida del
+  QRS, y una P a menos de ~46 ms del inicio del QRS no se ve. La regla existe y está probada,
+  pero con señal real rara vez va a disparar.
+- **Bloqueo AV de 2.º y 3.er grado** son lo más exigente que se le pide a la P, y el detector de R
+  de NeuroKit toma a veces por QRS una P que queda sola en un R-R largo: esas detecciones se
+  descartan (complejo < 30 % de la dominante) y la conducción razona sobre los QRS verdaderos.
+  Los dos hallazgos están ejercitados con señal sintética, **no hay señal real con bloqueos
+  para validarlos**.
+- Los R del último cuarto de segundo de un estudio no se etiquetan (la partición por bloque es la
+  de la morfología: ventana de ±250 ms entera).
+
+---
+
 ## Referencias
 
 - `Requerimientos.md` — Módulos 2, 3, 4 y 6

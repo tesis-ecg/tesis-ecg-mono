@@ -22,11 +22,24 @@ Reglas que atraviesan todo el módulo:
   informe. Las pausas se buscan entonces con las exclusiones del hardware
   solamente —como en la versión 1— y el médico las verifica en su tira. Un
   riel no es ruido sino señal que falta: entra con el hardware y sí corta.
-- **Sin clasificación de latidos.** Todavía no hay motor que distinga latidos
-  normales, supraventriculares y ventriculares (req. 3). Las métricas S y V y los
-  latidos anormales quedan en `None`. La VFC usa como NN los RR que pasan el
-  filtro de artefactos y ectópicos habitual: rango fisiológico y no más de 20 %
-  de diferencia con la mediana local.
+- **Clasificación de latidos (S y V).** Salen de **otro flujo** que la FC, la VFC
+  y el ST: las etiquetas por latido del motor (`beat_labels.py`), que lo
+  produce con el gate de calidad y el banco de plantillas que la pasada de
+  latidos no tiene. Son dos detectores distintos: `classifiedBeats` (N + S + V)
+  no coincide con `totalBeats`, y el «por mil» de S y V es sobre lo clasificado.
+  Los patrones (aislada, par, corrida, bigeminismo, trigeminismo) los define
+  `ectopy.ectopy_patterns`, la misma función que usa el motor para sus
+  hallazgos. Un estudio sin etiquetas (formato viejo, analizado en parte antes
+  del clasificador) informa S y V como no disponibles con una razón; nunca ceros.
+  La VFC usa como NN los RR que pasan el filtro de artefactos y ectópicos
+  habitual: rango fisiológico y no más de 20 % de diferencia con la mediana
+  local.
+- **Correcciones del médico** (`DoctorCorrections`, #15). El ruido que marcó
+  entra con las exclusiones del hardware (sale de todo, pausas incluidas), un
+  hallazgo de ruido del motor que rechazó se resta del ruido, una pausa que
+  rechazó no cuenta y las reclasificaciones re-etiquetan los latidos de su
+  tramo antes de contar. Sobre un latido, la última corrección gana; el ruido
+  del médico gana sobre cualquier reetiqueta.
 
 Los valores se redondean a una cantidad fija de decimales: el informe final
 congela este resultado en un snapshot cuyo hash tiene que ser reproducible.
@@ -35,12 +48,17 @@ congela este resultado en un snapshot cuyo hash tiene que ser reproducible.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 from scipy.ndimage import median_filter
 
 from app.ml import hrv
+from app.ml.beat_labels import CODE_N, CODE_S, CODE_V, BeatLabelStream
+from app.ml.ectopy import EctopyPatterns, ectopy_patterns
+from app.ml.holter_contracts import BEAT_CLASSIFICATION_PARTIAL as BEAT_CLASSIFICATION_PARTIAL
+from app.ml.holter_contracts import BEAT_CLASSIFICATION_PENDING as BEAT_CLASSIFICATION_PENDING
 
 # Viven en un módulo sin numpy porque `studies_service` los importa al arrancar
 # la API; se reexportan para que este siga siendo el lugar donde buscarlos.
@@ -49,6 +67,7 @@ from app.ml.holter_contracts import ECTOPY_UNAVAILABLE as ECTOPY_UNAVAILABLE
 from app.ml.holter_contracts import EXCLUSION_KINDS as EXCLUSION_KINDS
 from app.ml.holter_contracts import HARDWARE_QUALITY_REASONS as HARDWARE_QUALITY_REASONS
 from app.ml.holter_contracts import QUALITY_EXCLUSION_REASONS as QUALITY_EXCLUSION_REASONS
+from app.ml.holter_contracts import DoctorCorrections as DoctorCorrections
 from app.ml.holter_contracts import TimelineRun as TimelineRun
 
 #: Viaja en `analysis.algorithmVersion` y queda congelado en el snapshot del
@@ -74,6 +93,11 @@ from app.ml.holter_contracts import TimelineRun as TimelineRun
 #:   ruido cuenta solo si el motor la confirmó con su regla del hueco quieto;
 #:   si no, se informa aparte (`noisyCount`, `noisyItems`; pendiente 3).
 #:
+#: - 6: la 5 con las S y V del clasificador de latidos (`beat_labels.py`) y las
+#:   correcciones del médico (ruido, pausas rechazadas, reclasificaciones). Sin
+#:   etiquetas utilizables (formato viejo, parciales o pendientes) se informa la
+#:   5: la nota de método no puede afirmar una clasificación que no se usó.
+#:
 #: Es la versión vigente. Un cálculo concreto informa la 4 si no recibió el
 #: veredicto del motor (`noise=None`: apagado, o una señal que no evaluó
 #: entera), porque entonces la nota de método no puede afirmar una exclusión
@@ -84,7 +108,9 @@ from app.ml.holter_contracts import TimelineRun as TimelineRun
 #: (`legacy_beats`: analizado antes de la 4 y sin `backfill_beat_analysis
 #: --reset`) se calcula y se declara como antes: la 3, o la 1 sin el motor. La
 #: nota de método no puede nombrar un detector que no produjo esos latidos.
-ALGORITHM_VERSION = 5
+ALGORITHM_VERSION = 6
+#: La 6 sin clasificación de latidos utilizable.
+ALGORITHM_VERSION_WITHOUT_CLASSIFICATION = 5
 #: Versión que se informa cuando el motor no cubrió la señal.
 ALGORITHM_VERSION_WITHOUT_ENGINE = 4
 #: Las mismas dos, para los latidos del Pan-Tompkins.
@@ -140,10 +166,12 @@ def _epoch_mapper(runs: Sequence[TimelineRun]) -> Callable[[np.ndarray], np.ndar
     return resolve
 
 
-def _algorithm_version(with_engine: bool, legacy_beats: bool) -> int:
+def _algorithm_version(with_engine: bool, legacy_beats: bool, classified: bool = False) -> int:
     if legacy_beats:
         return LEGACY_ALGORITHM_VERSION if with_engine else LEGACY_ALGORITHM_VERSION_WITHOUT_ENGINE
-    return ALGORITHM_VERSION if with_engine else ALGORITHM_VERSION_WITHOUT_ENGINE
+    if not with_engine:
+        return ALGORITHM_VERSION_WITHOUT_ENGINE
+    return ALGORITHM_VERSION if classified else ALGORITHM_VERSION_WITHOUT_CLASSIFICATION
 
 
 def _merge_spans(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -154,6 +182,25 @@ def _merge_spans(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
         else:
             merged.append((start, end))
     return merged
+
+
+def _subtract_spans(
+    spans: Sequence[tuple[int, int]], cuts: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """`spans` sin los tramos de `cuts` (ambos se funden antes)."""
+    remaining = _merge_spans(spans)
+    for cut_start, cut_end in _merge_spans(cuts):
+        pieces: list[tuple[int, int]] = []
+        for start, end in remaining:
+            if cut_end <= start or cut_start >= end:
+                pieces.append((start, end))
+                continue
+            if start < cut_start:
+                pieces.append((start, cut_start))
+            if cut_end < end:
+                pieces.append((cut_end, end))
+        remaining = pieces
+    return remaining
 
 
 def _overlap(spans: list[tuple[int, int]], start: int, end: int) -> int:
@@ -358,6 +405,150 @@ def _valid_rr(
     return np.diff(samples) * 1000 / rate, segment[1:] == segment[:-1]
 
 
+@dataclass(frozen=True)
+class _Classification:
+    """Lo que salió de las etiquetas por latido, ya con las correcciones."""
+
+    reason: str | None
+    supraventricular: dict[str, Any] | None = None
+    ventricular: dict[str, Any] | None = None
+    classified_until: int = 0
+    classified: int = 0
+    unclassified: int = 0
+    relabeled: int = 0
+    abnormal: int = 0
+
+
+def _ectopy_block(
+    patterns: EctopyPatterns,
+    code: int,
+    labels: np.ndarray,
+    samples: np.ndarray,
+    epochs: np.ndarray,
+    classified: int,
+    rate: int,
+) -> dict[str, Any]:
+    """El recuadro S o V en el formato de `HolterEctopyOut`, con su evidencia."""
+    longest = None
+    if patterns.runs.shape[0]:
+        sizes = patterns.runs[:, 1] - patterns.runs[:, 0] + 1
+        first, last = patterns.runs[int(np.argmax(sizes))]
+        longest = _evidence(
+            float(sizes.max()),
+            samples[first],
+            epochs[first],
+            duration_ms=int(round((samples[last] - samples[first]) * 1000 / rate)),
+        )
+    peak = None
+    index = np.flatnonzero(labels == code)
+    if index.size:
+        # Ventana deslizante de 60 s que arranca en cada latido; en un empate, la
+        # primera. Con minutos de reloj, 10 latidos que cruzan el cambio de
+        # minuto contaban 5 + 5 y el máximo salía por debajo del real.
+        index = index[np.argsort(epochs[index], kind="stable")]
+        times = epochs[index]
+        counts = np.searchsorted(times, times + _MS_PER_MINUTE, side="left") - np.arange(index.size)
+        best = int(np.argmax(counts))
+        first = int(index[best])
+        last = int(index[best + counts[best] - 1])
+        peak = _evidence(
+            float(counts[best]),
+            samples[first],
+            epochs[first],
+            duration_ms=int(epochs[last] - epochs[first]),
+        )
+    return {
+        "total": patterns.total,
+        "single": patterns.single,
+        "pairs": {"episodes": patterns.pairs, "beats": patterns.pair_beats},
+        "bigeminy": {
+            "episodes": patterns.bigeminy_episodes,
+            "beats": patterns.bigeminy_beats,
+        },
+        "trigeminy": {
+            "episodes": patterns.trigeminy_episodes,
+            "beats": patterns.trigeminy_beats,
+        },
+        "runs": {"episodes": int(patterns.runs.shape[0]), "beats": patterns.run_beats},
+        "longestRun": longest,
+        "perThousand": _round(1000 * patterns.total / classified, 1),
+        "maxPerMinute": peak,
+    }
+
+
+def _classify(
+    labels: BeatLabelStream | None,
+    corrections: DoctorCorrections,
+    *,
+    usable: bool,
+    excluded: list[tuple[int, int]],
+    runs: Sequence[TimelineRun],
+    breaks: Sequence[int],
+    rate: int,
+    analyzed_until: int,
+    to_epoch: Callable[[np.ndarray], np.ndarray],
+) -> _Classification:
+    """Las cifras S y V, o la razón por la que no se pueden dar.
+
+    - Sin etiquetas, o con latidos del formato viejo: `ECTOPY_UNAVAILABLE`.
+    - Etiquetas que no cubren desde el inicio del estudio, o una señal que el
+      motor no evaluó entera (`usable` falso): `BEAT_CLASSIFICATION_PARTIAL`.
+      Contar S y V de un tramo y llamarlo el registro es peor que no darlas.
+    - Etiquetas que todavía no llegaron a ninguna señal, o sin un solo latido
+      clasificable: `BEAT_CLASSIFICATION_PENDING`.
+
+    Con el estudio abierto el clasificador va unos bloques detrás de los
+    latidos: se cuenta lo clasificado hasta `classifiedUntilSample` y esa
+    cobertura viaja en `analysis`, en vez de dejar S y V en blanco hasta el cierre.
+    Los latidos son los de las etiquetas, **sin los excluidos** (hardware, ruido
+    del motor y ruido del médico), y los vínculos entre latidos contiguos son
+    los mismos RR válidos que usa la FC: un hueco o una exclusión corta un patrón.
+    """
+    if labels is None:
+        return _Classification(ECTOPY_UNAVAILABLE)
+    if not usable or labels.from_sample > min(run.start_sample for run in runs):
+        return _Classification(BEAT_CLASSIFICATION_PARTIAL)
+    until = min(labels.until_sample, analyzed_until)
+    if until <= labels.from_sample:
+        return _Classification(BEAT_CLASSIFICATION_PENDING)
+
+    records = labels.records
+    samples = records["sample_index"].astype(np.int64)
+    order = np.argsort(samples, kind="stable")
+    records, samples = records[order], samples[order]
+    keep = (samples < until) & _outside(samples, excluded)
+    records, samples = records[keep], samples[keep]
+    codes = records["label"].astype(np.uint8)
+    original = codes.copy()
+    for relabel in corrections.relabels:
+        hit = (
+            (samples >= relabel.start_sample)
+            & (samples < relabel.end_sample)
+            & (codes == ord(relabel.from_label))
+        )
+        codes[hit] = ord(relabel.to_label)
+
+    classified = int(np.isin(codes, (CODE_N, CODE_S, CODE_V)).sum())
+    if classified == 0:
+        return _Classification(BEAT_CLASSIFICATION_PENDING, classified_until=until)
+    _, contiguous = _valid_rr(samples, runs, excluded, breaks, rate)
+    epochs = to_epoch(samples)
+    s_patterns = ectopy_patterns(codes, contiguous, "S")
+    v_patterns = ectopy_patterns(codes, contiguous, "V")
+    return _Classification(
+        None,
+        supraventricular=_ectopy_block(
+            s_patterns, CODE_S, codes, samples, epochs, classified, rate
+        ),
+        ventricular=_ectopy_block(v_patterns, CODE_V, codes, samples, epochs, classified, rate),
+        classified_until=until,
+        classified=classified,
+        unclassified=int(codes.size - classified),
+        relabeled=int((codes != original).sum()),
+        abnormal=s_patterns.total + v_patterns.total,
+    )
+
+
 def compute_holter_metrics(
     beats: np.ndarray,
     runs: Sequence[TimelineRun],
@@ -370,6 +561,8 @@ def compute_holter_metrics(
     engine_pauses: Sequence[tuple[int, int]] = (),
     engine_episodes: Sequence[tuple[int, int]] = (),
     legacy_beats: bool = False,
+    labels: BeatLabelStream | None = None,
+    corrections: DoctorCorrections | None = None,
 ) -> dict[str, Any]:
     """Métricas del informe en el formato de `HolterMetricsOut` (camelCase).
 
@@ -401,12 +594,23 @@ def compute_holter_metrics(
 
     `legacy_beats` declara latidos del Pan-Tompkins: se calcula como la versión
     3 (o la 1), sin las pausas del motor y con las pausas en ruido contadas.
+
+    `labels` son las etiquetas por latido del motor (de ahí salen S, V y los
+    latidos anormales; ver el docstring del módulo) y `corrections` lo que el
+    médico corrigió: se aplican antes de calcular nada, así que el resultado es
+    el de los datos ya corregidos y no hay una segunda vía que pueda discrepar.
     """
     if not runs:
         raise ValueError("compute_holter_metrics necesita al menos un tramo")
     to_epoch = _epoch_mapper(runs)
-    hardware = _clip_spans(exclusions, analyzed_until)
+    doctor = corrections or DoctorCorrections()
+    # El ruido del médico es una exclusión del hardware: sale de todo, pausas
+    # incluidas. Un ruido del motor que rechazó vuelve a ser señal legible.
+    hardware = _clip_spans([*exclusions, *doctor.noise_spans], analyzed_until)
+    if noise is not None:
+        noise = _subtract_spans(noise, doctor.readable_spans)
     excluded = _clip_spans([*hardware, *(noise or ())], analyzed_until)
+    rejected_pauses = _merge_spans(doctor.rejected_pause_spans)
 
     analyzable_samples = 0
     for run in runs:
@@ -433,13 +637,40 @@ def compute_holter_metrics(
     samples, st_levels = samples[kept], st_levels[kept]
     epochs = to_epoch(samples)
 
+    classification = (
+        _Classification(ECTOPY_UNAVAILABLE)
+        if legacy_beats
+        else _classify(
+            labels,
+            doctor,
+            usable=noise is not None,
+            excluded=excluded,
+            runs=runs,
+            breaks=breaks,
+            rate=rate,
+            analyzed_until=analyzed_until,
+            to_epoch=to_epoch,
+        )
+    )
     analysis = {
-        "algorithmVersion": _algorithm_version(noise is not None, legacy_beats),
+        "algorithmVersion": _algorithm_version(
+            noise is not None, legacy_beats, classification.reason is None
+        ),
         "analyzedUntilSample": int(analyzed_until),
         "analyzedMs": analyzed_ms,
         "excludedMs": int(sum(e - s for s, e in excluded) * 1000 / rate),
         "rrIntervals": 0,
         "nnIntervals": 0,
+        "classifiedUntilSample": classification.classified_until,
+        "classifiedBeats": classification.classified,
+        "unclassifiedBeats": classification.unclassified,
+        "doctorCorrections": {
+            "findings": doctor.corrected_findings,
+            "noiseMs": int(
+                sum(e - s for s, e in _clip_spans(doctor.noise_spans, analyzed_until)) * 1000 / rate
+            ),
+            "relabeledBeats": classification.relabeled,
+        },
     }
     result: dict[str, Any] = {
         "status": "ok",
@@ -454,9 +685,9 @@ def compute_holter_metrics(
             "noisyCount": 0,
             "noisyItems": [],
         },
-        "supraventricular": None,
-        "ventricular": None,
-        "ectopyUnavailableReason": ECTOPY_UNAVAILABLE,
+        "supraventricular": classification.supraventricular,
+        "ventricular": classification.ventricular,
+        "ectopyUnavailableReason": classification.reason,
         "hrvTime": None,
         "hrvFrequency": None,
         "st": [_st_channel(samples, epochs, st_levels, 1, "Canal 1 (LL-RA)")],
@@ -493,7 +724,9 @@ def compute_holter_metrics(
         [
             (start, end)
             for start, end in _merge_spans(engine_pauses)
-            if start < analyzed_until and (end - start) * 1000 / rate > PAUSE_MS
+            if start < analyzed_until
+            and (end - start) * 1000 / rate > PAUSE_MS
+            and not _overlap(rejected_pauses, start, end)
         ]
         if with_engine
         else []
@@ -509,7 +742,7 @@ def compute_holter_metrics(
     noisy_items: list[dict[str, Any]] = []
     for k in pause_index:
         opens, closes = int(pause_samples[k]), int(pause_samples[k + 1])
-        if _overlap(confirmed, opens, closes):
+        if _overlap(confirmed, opens, closes) or _overlap(rejected_pauses, opens, closes):
             continue
         item = _evidence(
             pause_rr[k], pause_samples[k], pause_epochs[k], duration_ms=int(round(pause_rr[k]))
@@ -556,8 +789,12 @@ def compute_holter_metrics(
         "min": None,
         "max": None,
         "totalBeats": int(samples.size),
-        "abnormalBeats": None,
-        "abnormalPerThousand": None,
+        "abnormalBeats": classification.abnormal if classification.reason is None else None,
+        "abnormalPerThousand": (
+            _round(1000 * classification.abnormal / classification.classified, 1)
+            if classification.reason is None
+            else None
+        ),
         "windowBeats": HR_WINDOW_BEATS,
     }
     if window_hr.size:

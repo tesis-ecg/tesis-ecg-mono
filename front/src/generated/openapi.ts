@@ -165,6 +165,10 @@ export interface HolterAnalysisOut {
   "excludedMs": number
   "rrIntervals": number
   "nnIntervals": number
+  "classifiedUntilSample"?: number
+  "classifiedBeats"?: number
+  "unclassifiedBeats"?: number
+  "doctorCorrections"?: HolterDoctorCorrectionsOut
 }
 
 export interface HolterApiKeyOut {
@@ -196,6 +200,12 @@ export interface HolterCreateRequest {
   "firmwareVersion"?: string | null
 }
 
+export interface HolterDoctorCorrectionsOut {
+  "findings"?: number
+  "noiseMs"?: number
+  "relabeledBeats"?: number
+}
+
 export interface HolterEctopyCountOut {
   "episodes": number
   "beats": number
@@ -208,6 +218,7 @@ export interface HolterEctopyOut {
   "bigeminy": HolterEctopyCountOut
   "trigeminy": HolterEctopyCountOut
   "runs": HolterEctopyCountOut
+  "longestRun"?: MetricEvidenceOut | null
   "perThousand": number
   "maxPerMinute": MetricEvidenceOut | null
 }
@@ -601,6 +612,17 @@ export interface ReassignHolterRequest {
   "patientId": string
 }
 
+export interface ReclassificationOut {
+  "finding": StudyFindingOut
+  "holterMetrics": HolterMetricsOut
+}
+
+export interface ReclassificationRequest {
+  "action": "confirm" | "reject" | "noise" | "relabel" | "reset"
+  "beatLabel"?: "N" | "S" | "V" | null
+  "note"?: string | null
+}
+
 export interface RegisterRequest {
   "email": string
   "password": string
@@ -742,6 +764,8 @@ export interface StudyEcgAnnotationOut {
   "confidenceScore": number | null
   "linkedAnnotationId"?: string | null
   "description"?: string | null
+  "validationStatus"?: "pending" | "confirmed" | "rejected" | "uncertain" | "noise" | "reclassified"
+  "effectiveKind"?: string | null
 }
 
 export interface StudyEcgLevelChunkOut {
@@ -840,6 +864,16 @@ export interface StudyEcgTimelineSegmentOut {
   "timeVerified"?: boolean
 }
 
+export interface StudyFindingCorrectionOut {
+  "action": "confirm" | "reject" | "noise" | "relabel"
+  "beatLabel": "N" | "S" | "V" | null
+  "effectiveKind": string | null
+  "note": string | null
+  "correctedBy": string | null
+  "correctedByName": string | null
+  "correctedAt": string | null
+}
+
 export interface StudyFindingGroupOut {
   "key": string
   "kind": string
@@ -867,7 +901,9 @@ export interface StudyFindingOut {
   "endEpochMs": number
   "confidenceScore": number | null
   "modelVersion": string | null
-  "validationStatus": "pending" | "confirmed" | "rejected" | "uncertain"
+  "validationStatus": "pending" | "confirmed" | "rejected" | "uncertain" | "noise" | "reclassified"
+  "correction"?: StudyFindingCorrectionOut | null
+  "reclassifiable"?: boolean
   "clusterId"?: number | null
   "beatCount"?: number | null
   "description"?: string | null

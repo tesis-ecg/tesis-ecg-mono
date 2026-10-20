@@ -435,3 +435,31 @@ async def get_responsible_doctor(
         return None
     doctor, user = row
     return doctor, user
+
+
+async def get_study_event_for_update(
+    db: AsyncSession, study_id: uuid.UUID, event_id: uuid.UUID
+) -> ECGEvent | None:
+    """El hallazgo **de ese estudio**, bloqueado, o `None` si no existe o está borrado.
+
+    Filtra por `ecg_event.study_id` y no por el lote: un id de otro estudio (o de
+    un seed legacy sin `study_id`) es "no encontrado", no "no reclasificable".
+    """
+    result = await db.execute(
+        select(ECGEvent)
+        .where(
+            ECGEvent.id == event_id,
+            ECGEvent.study_id == study_id,
+            ECGEvent.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    return result.scalar_one_or_none()
+
+
+async def user_names(db: AsyncSession, user_ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
+    """`id -> nombre completo` de quienes corrigieron hallazgos."""
+    if not user_ids:
+        return {}
+    rows = await db.execute(select(User.id, User.full_name).where(User.id.in_(user_ids)))
+    return {user_id: name for user_id, name in rows.all()}

@@ -3,8 +3,17 @@
 import numpy as np
 import pytest
 
+from app.ml.beat_labels import CLASSIFIER_VERSION, BeatLabelStream, build_records
 from app.ml.beats import BEAT_DTYPE
-from app.ml.holter_metrics import PAUSE_MS, TimelineRun, compute_holter_metrics
+from app.ml.holter_contracts import BeatRelabel
+from app.ml.holter_metrics import (
+    ALGORITHM_VERSION,
+    ALGORITHM_VERSION_WITHOUT_CLASSIFICATION,
+    PAUSE_MS,
+    DoctorCorrections,
+    TimelineRun,
+    compute_holter_metrics,
+)
 
 RATE = 500
 START_EPOCH = 1_760_000_400_000  # una hora en punto: 2025-10-09 09:00 UTC
@@ -274,3 +283,303 @@ def test_los_latidos_del_pan_tompkins_se_declaran_y_calculan_como_la_version_3()
     assert version(legacy_beats=True) == 1
     assert version(noise=[]) == 5
     assert version() == 4
+
+
+# --- S y V desde las etiquetas del motor (req. 4) --------------------------- #
+
+
+def _labelled(
+    pattern: str, *, rr_s: float = 0.8, from_sample: int = 0, until: int | None = None
+) -> tuple[np.ndarray, BeatLabelStream]:
+    """Latidos a RR constante y su flujo de etiquetas; un carácter por latido.
+
+    Un guion bajo es un latido `Q` (no clasificable) en el flujo.
+    """
+    beats = _beats(np.full(len(pattern) - 1, rr_s))
+    codes = np.array([ord("Q" if c == "_" else c) for c in pattern], dtype=np.uint8)
+    n = codes.size
+    records = build_records(
+        beats["sample_index"],
+        codes,
+        np.zeros(n, dtype=np.uint8),
+        np.full(n, -20, dtype=np.int64),
+        np.full(n, 25, dtype=np.int64),
+        np.zeros(n, dtype=np.int64),
+        np.full(n, 1.0, dtype=np.float32),
+        qrs_measured=np.ones(n, dtype=bool),
+        p_detected=np.zeros(n, dtype=bool),
+    )
+    total = int(beats["sample_index"][-1]) + RATE
+    stream = BeatLabelStream(
+        records=records,
+        from_sample=from_sample,
+        until_sample=total if until is None else until,
+        classifier=CLASSIFIER_VERSION,
+    )
+    return beats, stream
+
+
+def _with_labels(pattern: str, **kwargs: object) -> dict:
+    beats, stream = _labelled(pattern)
+    total = int(beats["sample_index"][-1]) + RATE
+    return compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        kwargs.pop("exclusions", []),  # type: ignore[arg-type]
+        [],
+        RATE,
+        total,
+        noise=[],
+        labels=stream,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_las_metricas_s_y_v_cuentan_cada_patron_con_su_evidencia() -> None:
+    #       aislada  par   corrida   bigeminismo (3 ciclos)  trigeminismo (3 ciclos)
+    pattern = "NNVNN" + "NNVVNN" + "NNVVVNN" + "NNNVNVNVNN" + "NNNNVNNVNNVNNN" + "NNSNNNSSN"
+    metrics = _with_labels(pattern)
+
+    v, s = metrics["ventricular"], metrics["supraventricular"]
+    assert metrics["ectopyUnavailableReason"] is None
+    assert v["total"] == 1 + 2 + 3 + 3 + 3
+    assert v["pairs"] == {"episodes": 1, "beats": 2}
+    assert v["runs"] == {"episodes": 1, "beats": 3}
+    assert v["bigeminy"] == {"episodes": 1, "beats": 3}
+    assert v["trigeminy"] == {"episodes": 1, "beats": 3}
+    # Las aisladas incluyen las de un bigeminismo o trigeminismo (ectopy.py).
+    assert v["single"] == 1 + 3 + 3
+    assert s["total"] == 3 and s["single"] == 1 and s["pairs"]["episodes"] == 1
+    classified = len(pattern)
+    assert v["perThousand"] == round(1000 * v["total"] / classified, 1)
+    heart = metrics["heartRate"]
+    assert heart["abnormalBeats"] == v["total"] + s["total"]
+    assert heart["abnormalPerThousand"] == round(1000 * (v["total"] + s["total"]) / classified, 1)
+    assert metrics["analysis"]["classifiedBeats"] == classified
+    assert metrics["analysis"]["unclassifiedBeats"] == 0
+    # La corrida más larga: tres latidos, con la muestra del primero.
+    assert v["longestRun"]["value"] == 3
+    assert v["longestRun"]["durationMs"] == 1600
+    assert v["longestRun"]["epochMs"] >= START_EPOCH
+
+
+def test_el_maximo_por_minuto_es_la_ventana_de_60_s_con_mas_latidos() -> None:
+    # 0,8 s de RR: 75 latidos por minuto. Dos V en el minuto 0, cuatro en el minuto 1.
+    pattern = "N" * 10 + "VN" + "VN" + "N" * 80 + "VNVNVNVN" + "N" * 20
+    v = _with_labels(pattern)["ventricular"]
+
+    assert v["maxPerMinute"]["value"] == 4
+    assert v["maxPerMinute"]["epochMs"] // 60_000 == (START_EPOCH + 60_000) // 60_000
+    assert v["maxPerMinute"]["durationMs"] > 0
+
+
+def test_el_maximo_por_minuto_no_se_parte_en_el_cambio_de_minuto() -> None:
+    """Cinco V entre los 56 y los 62,4 s: con minutos de reloj eran 3 + 2."""
+    pattern = "N" * 70 + "VNVNVNVNV" + "N" * 40
+    v = _with_labels(pattern)["ventricular"]
+
+    assert v["maxPerMinute"]["value"] == 5
+    assert v["maxPerMinute"]["epochMs"] == START_EPOCH + 70 * 800
+    assert v["maxPerMinute"]["durationMs"] == 8 * 800
+
+
+def test_los_latidos_en_ruido_o_sin_clasificar_cortan_los_patrones_y_se_cuentan() -> None:
+    metrics = _with_labels("NNVXVNNVQVNN")
+
+    v = metrics["ventricular"]
+    assert v["total"] == 4 and v["pairs"]["episodes"] == 0 and v["single"] == 4
+    assert metrics["analysis"]["unclassifiedBeats"] == 2
+    assert metrics["analysis"]["classifiedBeats"] == 10
+
+
+def test_un_hueco_del_registro_corta_el_patron_entre_dos_v() -> None:
+    beats, stream = _labelled("NNVVNN")
+    total = int(beats["sample_index"][-1]) + RATE
+    first_v = int(beats["sample_index"][2])
+    metrics = compute_holter_metrics(
+        beats, [_run(0, total)], [], [first_v + 100], RATE, total, noise=[], labels=stream
+    )
+
+    assert metrics["ventricular"]["pairs"]["episodes"] == 0
+    assert metrics["ventricular"]["single"] == 2
+
+
+@pytest.mark.parametrize(("with_labels", "legacy"), [(False, False), (True, True)])
+def test_sin_etiquetas_o_con_latidos_viejos_s_y_v_no_estan_disponibles(
+    with_labels: bool, legacy: bool
+) -> None:
+    beats, stream = _labelled("N" * 40)
+    total = int(beats["sample_index"][-1]) + RATE
+    metrics = compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        noise=[],
+        legacy_beats=legacy,
+        labels=stream if with_labels else None,
+    )
+
+    assert metrics["supraventricular"] is None and metrics["ventricular"] is None
+    assert metrics["ectopyUnavailableReason"] == "BEAT_CLASSIFICATION_UNAVAILABLE"
+    assert metrics["heartRate"]["abnormalBeats"] is None
+    assert metrics["analysis"]["classifiedBeats"] == 0
+
+
+def test_etiquetas_que_no_cubren_el_estudio_desde_el_inicio_son_parciales_no_ceros() -> None:
+    beats, stream = _labelled("N" * 40, from_sample=RATE * 10)
+    total = int(beats["sample_index"][-1]) + RATE
+    metrics = compute_holter_metrics(
+        beats, [_run(0, total)], [], [], RATE, total, noise=[], labels=stream
+    )
+
+    assert metrics["ventricular"] is None
+    assert metrics["ectopyUnavailableReason"] == "BEAT_CLASSIFICATION_PARTIAL"
+
+
+def test_etiquetas_sin_cobertura_todavia_son_pendientes() -> None:
+    beats, stream = _labelled("N" * 40, until=0)
+    total = int(beats["sample_index"][-1]) + RATE
+    metrics = compute_holter_metrics(
+        beats, [_run(0, total)], [], [], RATE, total, noise=[], labels=stream
+    )
+
+    assert metrics["ventricular"] is None
+    assert metrics["ectopyUnavailableReason"] == "BEAT_CLASSIFICATION_PENDING"
+
+
+def test_la_version_es_la_6_solo_si_se_uso_la_clasificacion() -> None:
+    with_labels = _with_labels("N" * 20 + "V" + "N" * 20)
+    beats, _ = _labelled("N" * 40)
+    total = int(beats["sample_index"][-1]) + RATE
+    without = compute_holter_metrics(beats, [_run(0, total)], [], [], RATE, total, noise=[])
+
+    assert with_labels["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 6
+    assert without["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_CLASSIFICATION
+
+
+def test_reclasificar_los_v_de_un_tramo_a_n_baja_el_total_y_cuenta_los_latidos() -> None:
+    beats, stream = _labelled("NNVNNNNVVNN")
+    samples = beats["sample_index"]
+    total = int(samples[-1]) + RATE
+    # Los V del par (índices 7 y 8) pasan a N; el aislado (2) queda.
+    correction = DoctorCorrections(
+        relabels=(BeatRelabel(int(samples[7]), int(samples[8]) + 1, "V", "N"),),
+        corrected_findings=1,
+    )
+    metrics = compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        noise=[],
+        labels=stream,
+        corrections=correction,
+    )
+
+    assert metrics["ventricular"]["total"] == 1
+    assert metrics["ventricular"]["pairs"]["episodes"] == 0
+    assert metrics["analysis"]["doctorCorrections"] == {
+        "findings": 1,
+        "noiseMs": 0,
+        "relabeledBeats": 2,
+    }
+
+
+def test_reclasificar_de_v_a_s_mueve_los_latidos_de_recuadro() -> None:
+    beats, stream = _labelled("NNVVNNN")
+    samples = beats["sample_index"]
+    total = int(samples[-1]) + RATE
+    correction = DoctorCorrections(
+        relabels=(BeatRelabel(0, total, "V", "S"),), corrected_findings=1
+    )
+    metrics = compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        noise=[],
+        labels=stream,
+        corrections=correction,
+    )
+
+    assert metrics["ventricular"]["total"] == 0
+    assert metrics["supraventricular"]["total"] == 2
+    assert metrics["supraventricular"]["pairs"]["episodes"] == 1
+
+
+def test_el_ruido_del_medico_saca_los_latidos_y_gana_sobre_una_reetiqueta() -> None:
+    beats, stream = _labelled("NNVNNVVNNN")
+    samples = beats["sample_index"]
+    total = int(samples[-1]) + RATE
+    span = (int(samples[5]), int(samples[6]) + 1)
+    correction = DoctorCorrections(
+        noise_spans=(span,),
+        relabels=(BeatRelabel(span[0], span[1], "V", "S"),),
+        corrected_findings=2,
+    )
+    metrics = compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        noise=[],
+        labels=stream,
+        corrections=correction,
+    )
+
+    assert metrics["ventricular"]["total"] == 1
+    assert metrics["supraventricular"]["total"] == 0
+    assert metrics["heartRate"]["totalBeats"] == 8
+    assert metrics["analysis"]["classifiedBeats"] == 8
+    assert metrics["analysis"]["doctorCorrections"]["noiseMs"] > 0
+    assert metrics["analysis"]["doctorCorrections"]["relabeledBeats"] == 0
+
+
+def test_rechazar_un_ruido_del_motor_lo_devuelve_a_las_metricas() -> None:
+    beats = _beats(np.full(99, 0.8))
+    total = int(beats["sample_index"][-1]) + RATE
+    noise = [(2000, 4000)]
+    base = compute_holter_metrics(beats, [_run(0, total)], [], [], RATE, total, noise=noise)
+    readable = compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        noise=noise,
+        corrections=DoctorCorrections(readable_spans=((2000, 4000),), corrected_findings=1),
+    )
+
+    assert readable["heartRate"]["totalBeats"] > base["heartRate"]["totalBeats"]
+    assert readable["analysis"]["excludedMs"] == 0
+
+
+def test_rechazar_una_pausa_del_detector_la_saca_de_la_cuenta() -> None:
+    rr = np.full(60, 0.8)
+    rr[30] = 3.0
+    beats = _beats(rr)
+    total = int(beats["sample_index"][-1]) + RATE
+    open_, close = int(beats["sample_index"][30]), int(beats["sample_index"][31])
+    base = _metrics(beats, [_run(0, total)])
+    rejected = compute_holter_metrics(
+        beats,
+        [_run(0, total)],
+        [],
+        [],
+        RATE,
+        total,
+        corrections=DoctorCorrections(rejected_pause_spans=((open_, close),), corrected_findings=1),
+    )
+
+    assert base["pauses"]["count"] == 1
+    assert rejected["pauses"]["count"] == 0

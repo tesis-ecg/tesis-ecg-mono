@@ -2,6 +2,7 @@ import { jsPDF } from 'jspdf'
 
 import type {
   HolterMetrics,
+  MetricEvidence,
   StudyClinicalReportFindingSummary,
   StudyClinicalReportWindowPlan,
 } from '@/features/studies/types'
@@ -418,6 +419,14 @@ function metricWindowValue(
   if (plan.kind === 'pause_longest') {
     return `R-R de ${formatMetricValue(plan.findingDurationMs / 1000, 2, 's')}`
   }
+  // Evidencia de S y V: la cuenta del minuto con más latidos, o los latidos de la corrida.
+  const ectopy = {
+    s_max_minute: [metrics?.supraventricular?.maxPerMinute, 'latidos S en 1 min'],
+    v_max_minute: [metrics?.ventricular?.maxPerMinute, 'latidos V en 1 min'],
+    s_longest_run: [metrics?.supraventricular?.longestRun, 'latidos S seguidos'],
+    v_longest_run: [metrics?.ventricular?.longestRun, 'latidos V seguidos'],
+  }[plan.kind] as [MetricEvidence | null | undefined, string] | undefined
+  if (ectopy) return `${formatMetricValue(ectopy[0]?.value)} ${ectopy[1]}`
   const evidence = plan.kind === 'hr_min' ? metrics?.heartRate?.min : metrics?.heartRate?.max
   const window = metrics?.heartRate?.windowBeats ?? 8
   return `${formatMetricValue(evidence?.value, 0, 'lpm')} (promedio de ${window} latidos)`

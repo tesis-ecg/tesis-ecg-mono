@@ -37,6 +37,10 @@ const KIND_LABEL: Record<string, string> = {
   hr_min: 'FC mínima',
   hr_max: 'FC máxima',
   pause_longest: 'Pausa más larga',
+  s_max_minute: 'Máximo de S en 1 min',
+  v_max_minute: 'Máximo de V en 1 min',
+  s_longest_run: 'Corrida S más larga',
+  v_longest_run: 'Corrida V más larga',
   tachycardia: 'Taquicardia',
   bradycardia: 'Bradicardia',
   afib: 'Fibrilación auricular',
@@ -66,6 +70,22 @@ const KIND_LABEL: Record<string, string> = {
   // "extrasístole" sería un diagnóstico que ningún dato del sistema respalda.
   morphology_anomaly: 'Latido de morfología atípica',
   recurrent_morphology: 'Morfología recurrente',
+  // Clasificación por latido y conducción (`back/app/ml/beat_classification.py`,
+  // `conduction.py`). Con una sola derivación y electrodos secos no se distingue
+  // izquierda de derecha ni se descartan otras causas: donde el dato no alcanza,
+  // el nombre dice "posible".
+  ventricular_ectopy: 'Extrasístoles ventriculares (V)',
+  supraventricular_ectopy: 'Extrasístoles supraventriculares (S)',
+  svt_run: 'Posible taquicardia paroxística supraventricular (TPS)',
+  vt_run: 'Posible taquicardia paroxística ventricular (TPV)',
+  av_block_first_degree: 'Bloqueo AV de 1.er grado (PR largo)',
+  av_block_mobitz_1: 'Bloqueo AV de 2.º grado, Mobitz I',
+  av_block_mobitz_2: 'Bloqueo AV de 2.º grado, Mobitz II',
+  av_block_complete: 'Posible bloqueo AV completo',
+  wide_qrs_sustained: 'QRS ancho sostenido (posible bloqueo de rama)',
+  short_pr: 'PR corto',
+  // Solo aparece como tipo efectivo de una reclasificación a N.
+  normal_beats: 'Latidos normales',
   flatline: 'Señal plana',
   noise_burst: 'Ruido en la señal',
   other: 'Hallazgo',

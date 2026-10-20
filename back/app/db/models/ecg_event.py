@@ -28,6 +28,14 @@ class ECGEventType(enum.StrEnum):
     #: supervisado puede afirmar: "este latido no se parece a los tuyos". Llamarlo
     #: `PVC` sería un diagnóstico que ningún dato del sistema respalda.
     ANOMALY = "ANOMALY"
+    #: Ectopía supraventricular o ventricular por latido (`metadata.kind`
+    #: `supraventricular_ectopy` / `ventricular_ectopy`). No es `PVC`: con una
+    #: sola derivación y electrodos secos, "extrasístole ventricular" sería un
+    #: diagnóstico que el dato no respalda.
+    ECTOPY = "ECTOPY"
+    #: Trastornos de conducción (bloqueos AV, QRS ancho sostenido, PR corto). El
+    #: detalle viaja en `metadata.kind`; con `OTHER` caerían en "technical".
+    CONDUCTION = "CONDUCTION"
     OTHER = "OTHER"
 
 
@@ -51,6 +59,10 @@ class ECGEventValidation(enum.StrEnum):
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
     UNCERTAIN = "uncertain"
+    #: El médico marcó el tramo como ruido (Grupo A): sale de todas las métricas.
+    NOISE = "noise"
+    #: El médico le cambió la clase a los latidos del hallazgo (V, S o N).
+    RECLASSIFIED = "reclassified"
 
 
 class ECGEvent(TimestampMixin, Base):
@@ -127,10 +139,16 @@ class ECGEvent(TimestampMixin, Base):
         nullable=False,
     )
     validated_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("doctor.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("user.id"), nullable=True
     )
     validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     validation_note: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: Corrección del médico, aparte del hallazgo original (`event_type` y
+    #: `metadata.kind` no se pisan nunca): `{action, fromLabel, toLabel,
+    #: effectiveKind, spanStart, spanEnd}`. El tramo (`spanStart/End`, muestras
+    #: absolutas) queda **congelado** al corregir, así que el recálculo de métricas
+    #: no depende de que el motor vuelva a mover el hallazgo. NULL = sin corrección.
+    correction: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     batch: Mapped[ECGBatch] = relationship(back_populates="events")
     study: Mapped[Study | None] = relationship()

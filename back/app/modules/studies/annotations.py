@@ -62,6 +62,10 @@ CLINICAL_EVENT_TYPES = {
     # hallazgos la muestra como detalle de infraestructura en vez de como lo que
     # es: el hallazgo principal que produce el motor.
     ECGEventType.ANOMALY,
+    # Ectopías y trastornos de conducción del clasificador por latido: clínicos
+    # por tipo. Con `OTHER` caerían en `technical`.
+    ECGEventType.ECTOPY,
+    ECGEventType.CONDUCTION,
 }
 
 ANNOTATION_SEVERITY: dict[ECGEventSeverity, AnnotationSeverity] = {
@@ -206,6 +210,20 @@ class EventView:
     @property
     def drawable(self) -> bool:
         return self.scope != STUDY_SCOPE
+
+    @property
+    def validation_status(self) -> str:
+        return self.event.validation_status.value
+
+    @property
+    def effective_kind(self) -> str | None:
+        """Lo que el hallazgo es tras la corrección del médico (`kind` no se pisa).
+
+        `None` si no hay corrección, o si ya no se afirma (rechazado o ruido).
+        """
+        correction = self.event.correction
+        value = correction.get("effectiveKind") if correction else None
+        return value if isinstance(value, str) else None
 
     @property
     def cluster_id(self) -> int | None:

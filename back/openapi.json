@@ -795,6 +795,19 @@
             "title": "Analyzeduntilsample",
             "type": "integer"
           },
+          "classifiedBeats": {
+            "default": 0,
+            "title": "Classifiedbeats",
+            "type": "integer"
+          },
+          "classifiedUntilSample": {
+            "default": 0,
+            "title": "Classifieduntilsample",
+            "type": "integer"
+          },
+          "doctorCorrections": {
+            "$ref": "#/components/schemas/HolterDoctorCorrectionsOut"
+          },
           "excludedMs": {
             "title": "Excludedms",
             "type": "integer"
@@ -805,6 +818,11 @@
           },
           "rrIntervals": {
             "title": "Rrintervals",
+            "type": "integer"
+          },
+          "unclassifiedBeats": {
+            "default": 0,
+            "title": "Unclassifiedbeats",
             "type": "integer"
           }
         },
@@ -1011,6 +1029,28 @@
         "title": "HolterCreateRequest",
         "type": "object"
       },
+      "HolterDoctorCorrectionsOut": {
+        "description": "Cuánto de las cifras viene de la corrección del médico y no del motor.",
+        "properties": {
+          "findings": {
+            "default": 0,
+            "title": "Findings",
+            "type": "integer"
+          },
+          "noiseMs": {
+            "default": 0,
+            "title": "Noisems",
+            "type": "integer"
+          },
+          "relabeledBeats": {
+            "default": 0,
+            "title": "Relabeledbeats",
+            "type": "integer"
+          }
+        },
+        "title": "HolterDoctorCorrectionsOut",
+        "type": "object"
+      },
       "HolterEctopyCountOut": {
         "properties": {
           "beats": {
@@ -1030,10 +1070,20 @@
         "type": "object"
       },
       "HolterEctopyOut": {
-        "description": "Contrato de los recuadros S y V. Hoy siempre llega `None`: requiere el\nmotor de clasificación de latidos (req. 3).",
+        "description": "Los recuadros S y V (req. 4), con su evidencia (req. 5).\n\nLlega `None` en `HolterMetricsOut` cuando no hay clasificación de latidos\npara el estudio (`ectopyUnavailableReason` dice por qué).",
         "properties": {
           "bigeminy": {
             "$ref": "#/components/schemas/HolterEctopyCountOut"
+          },
+          "longestRun": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricEvidenceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "maxPerMinute": {
             "anyOf": [
@@ -3587,6 +3637,71 @@
         "title": "ReassignHolterRequest",
         "type": "object"
       },
+      "ReclassificationOut": {
+        "properties": {
+          "finding": {
+            "$ref": "#/components/schemas/StudyFindingOut"
+          },
+          "holterMetrics": {
+            "$ref": "#/components/schemas/HolterMetricsOut"
+          }
+        },
+        "required": [
+          "finding",
+          "holterMetrics"
+        ],
+        "title": "ReclassificationOut",
+        "type": "object"
+      },
+      "ReclassificationRequest": {
+        "description": "Lo que el médico decide sobre un hallazgo (req. 5).",
+        "properties": {
+          "action": {
+            "enum": [
+              "confirm",
+              "reject",
+              "noise",
+              "relabel",
+              "reset"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "beatLabel": {
+            "anyOf": [
+              {
+                "enum": [
+                  "N",
+                  "S",
+                  "V"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beatlabel"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ReclassificationRequest",
+        "type": "object"
+      },
       "RegisterRequest": {
         "properties": {
           "email": {
@@ -4414,6 +4529,17 @@
             ],
             "title": "Description"
           },
+          "effectiveKind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effectivekind"
+          },
           "endEpochMs": {
             "title": "Endepochms",
             "type": "integer"
@@ -4460,6 +4586,19 @@
           "startOffsetMs": {
             "title": "Startoffsetms",
             "type": "integer"
+          },
+          "validationStatus": {
+            "default": "pending",
+            "enum": [
+              "pending",
+              "confirmed",
+              "rejected",
+              "uncertain",
+              "noise",
+              "reclassified"
+            ],
+            "title": "Validationstatus",
+            "type": "string"
           }
         },
         "required": [
@@ -4983,6 +5122,105 @@
         "title": "StudyEcgTimelineSegmentOut",
         "type": "object"
       },
+      "StudyFindingCorrectionOut": {
+        "description": "Quién corrigió un hallazgo, cuándo y a qué.",
+        "properties": {
+          "action": {
+            "enum": [
+              "confirm",
+              "reject",
+              "noise",
+              "relabel"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "beatLabel": {
+            "anyOf": [
+              {
+                "enum": [
+                  "N",
+                  "S",
+                  "V"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beatlabel"
+          },
+          "correctedAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correctedat"
+          },
+          "correctedBy": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correctedby"
+          },
+          "correctedByName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correctedbyname"
+          },
+          "effectiveKind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effectivekind"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "action",
+          "beatLabel",
+          "effectiveKind",
+          "note",
+          "correctedBy",
+          "correctedByName",
+          "correctedAt"
+        ],
+        "title": "StudyFindingCorrectionOut",
+        "type": "object"
+      },
       "StudyFindingGroupOut": {
         "description": "Una morfología recurrente, o todos los hallazgos de un mismo tipo.\n\nAgrupar no es cosmético: 412 latidos de la misma forma son **un** hallazgo\ncon 412 ocurrencias, no 412 filas. Sin esto, el panel del médico es\nilegible y la herramienta no se usa.",
         "properties": {
@@ -5135,6 +5373,16 @@
             ],
             "title": "Confidencescore"
           },
+          "correction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StudyFindingCorrectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "description": {
             "anyOf": [
               {
@@ -5174,6 +5422,11 @@
             ],
             "title": "Modelversion"
           },
+          "reclassifiable": {
+            "default": false,
+            "title": "Reclassifiable",
+            "type": "boolean"
+          },
           "severity": {
             "enum": [
               "low",
@@ -5197,7 +5450,9 @@
               "pending",
               "confirmed",
               "rejected",
-              "uncertain"
+              "uncertain",
+              "noise",
+              "reclassified"
             ],
             "title": "Validationstatus",
             "type": "string"
@@ -11314,6 +11569,102 @@
           }
         },
         "summary": "Get Study Findings",
+        "tags": [
+          "studies"
+        ]
+      }
+    },
+    "/studies/{study_id}/findings/{finding_id}/reclassification": {
+      "post": {
+        "description": "El médico confirma, descarta, marca como ruido o reclasifica un hallazgo.\n\nMismo permiso que finalizar el informe (`get_doctor_scope`: el médico dueño\ndel paciente, o un admin). Devuelve el hallazgo corregido y las métricas\nHolter recalculadas con la corrección.",
+        "operationId": "reclassify_finding_studies__study_id__findings__finding_id__reclassification_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Finding Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReclassificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReclassificationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reclassify Finding",
         "tags": [
           "studies"
         ]

@@ -300,6 +300,13 @@ class Settings(BaseSettings):
     #: tesis con `app.scripts.export_interval_measurements`. Cuesta ~0,03 s por
     #: bloque de 5 min; en falso no se calcula nada.
     ml_interval_measurements_enabled: bool = True
+    #: Clasificación por latido (N, S, V, X, Q), ancho y alto del QRS, PR, y los
+    #: hallazgos de ectopia y conducción que salen de ahí
+    #: (`app/ml/beat_classification.py`). Es lo que alimenta las métricas S y V
+    #: del informe Holter. Interruptor de emergencia: en falso el motor sigue
+    #: como antes, sin etiquetas, y el informe dice que S y V no están
+    #: disponibles. Costo medido: ver `tests/test_ml_beat_classification.py`.
+    ml_beat_classification_enabled: bool = True
 
     @property
     def is_secure_environment(self) -> bool:

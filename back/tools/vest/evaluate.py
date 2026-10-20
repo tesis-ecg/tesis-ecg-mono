@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.core.config import settings  # noqa: E402
 from app.db.models.signal_quality import SignalQualityLevel  # noqa: E402
+from app.ml import beat_labels as bl  # noqa: E402
 from app.ml.contracts import QualityWindow  # noqa: E402
 from app.ml.decompression import (  # noqa: E402
     FLAG_ADC_SATURATED,
@@ -169,6 +170,11 @@ class CaptureResult:
     metrics: dict[str, float]
     #: Pausas que salieron por la regla de hueco quieto (`app/ml/quiet_gap.py`).
     quiet_gap_pauses: int
+    #: Etiquetas por latido del motor (N, S, V, X, Q) y mediana del ancho del QRS
+    #: y del PR en ms (NaN si no se midió); ver `app/ml/beat_classification.py`.
+    labels: collections.Counter[str]
+    qrs_ms: float
+    pr_ms: float
     #: Falso si las ventanas recalculadas no coinciden con las que devolvió
     #: `analyze_batch`. No debería pasar nunca: es la misma cuenta.
     consistent: bool
@@ -218,6 +224,11 @@ def run_capture(path: Path, mains_hz: float | None) -> CaptureResult:
         (item.start_sample, item.length_samples, item.level, item.reason)
         for item, _ in result.quality_intervals
     ]
+    labels = collections.Counter(
+        chr(code)
+        for code in (result.beat_labels["label"] if result.beat_labels is not None else [])
+    )
+    records = result.beat_labels
     return CaptureResult(
         name=path.stem,
         duration_s=signal.size / SAMPLE_RATE,
@@ -230,6 +241,13 @@ def run_capture(path: Path, mains_hz: float | None) -> CaptureResult:
             for finding in result.findings
             if finding.kind == "pause" and finding.metadata.get("quietGap")
         ),
+        labels=labels,
+        qrs_ms=float(np.nanmedian(bl.qrs_ms(records, SAMPLE_RATE)))
+        if records is not None and records.size
+        else float("nan"),
+        pr_ms=float(np.nanmedian(bl.pr_ms(records, SAMPLE_RATE)))
+        if records is not None and records.size
+        else float("nan"),
         consistent=recomputed == returned,
     )
 
@@ -290,6 +308,13 @@ def print_capture(result: CaptureResult, *, timeline: bool) -> None:
         f" (hueco quieto {result.quiet_gap_pauses})"
         f" · taquicardias {result.findings['tachycardia']}"
         f" · bradicardias {result.findings['bradycardia']}"
+    )
+    print(
+        f"  latidos   {_counter(result.labels)}"
+        f" · QRS {_fmt(result.qrs_ms, 0)} ms · PR {_fmt(result.pr_ms, 0)} ms"
+        f" · ectopia {result.findings['ventricular_ectopy']} V"
+        f" / {result.findings['supraventricular_ectopy']} S"
+        f" · corridas {result.findings['vt_run']} TPV / {result.findings['svt_run']} TPS"
     )
     if not result.consistent:
         print("  ⚠ las ventanas recalculadas no coinciden con las de analyze_batch")
@@ -402,6 +427,29 @@ def no_rhythm() -> Check:
     return check
 
 
+#: Hallazgos de la clasificación por latido que un voluntario sano no puede tener.
+VENTRICULAR_KINDS = ("ventricular_ectopy", "vt_run")
+
+
+def no_ventricular(max_labelled: int) -> Check:
+    """Ni TPV ni episodios de V, y a lo sumo `max_labelled` latidos etiquetados V.
+
+    Los voluntarios de las capturas no tienen ectopia ventricular. Un solo latido
+    V suelto puede ser un artefacto que pasó el gate (se tolera hasta
+    `max_labelled`, un 0,2 % de los latidos); un episodio o una corrida, no.
+    """
+
+    def check(result: CaptureResult) -> tuple[bool, str]:
+        episodes = sum(result.findings[kind] for kind in VENTRICULAR_KINDS)
+        labelled = result.labels["V"]
+        detail = (
+            f"{labelled} latidos V ({sum(result.labels.values())} en total), {episodes} hallazgos"
+        )
+        return episodes == 0 and labelled <= max_labelled, detail
+
+    return check
+
+
 def all_reason(reason: str) -> Check:
     def check(result: CaptureResult) -> tuple[bool, str]:
         matching = sum(1 for window in result.windows if window.reason == reason)
@@ -441,6 +489,18 @@ NOISY_CAPTURES = (
     "movimiento_con_puente",
 )
 
+#: Capturas de un voluntario sano en reposo con contacto bueno: ninguna ectopia
+#: ventricular real. Ahí un V o una TPV es un falso positivo del clasificador.
+HEALTHY_CAPTURES = (
+    "seco_limpia",
+    "seco_ajustado",
+    "gel_limpia",
+    "gel_reposo",
+    "router_limpia_20261011",
+    "reposo_3h_20261014",
+    "onda_p_reposo_20261013",
+)
+
 #: Guardas de regresión: **no salen del plan** sino de lo que el motor da hoy,
 #: revisado ventana por ventana contra la bitácora de cada captura (README de
 #: `capturas/`). Fijan las dos direcciones en que un cambio de Q o de umbral
@@ -459,6 +519,10 @@ REGRESSION: tuple[tuple[str, str, Check], ...] = (
         all_good_inside(((130.0, 210.0), (380.0, 450.0))),
     ),
     *((f"captura_canal2_{name}", "0 hallazgos de ritmo", no_rhythm()) for name in NOISY_CAPTURES),
+    *(
+        (f"captura_canal2_{name}", "sin V ni TPV (voluntario sano)", no_ventricular(3))
+        for name in HEALTHY_CAPTURES
+    ),
 )
 
 

@@ -104,6 +104,7 @@ function findings(overrides: Partial<StudyFindings> = {}): StudyFindings {
             endEpochMs: T0 + 630_000,
             confidenceScore: 0.9,
             modelVersion: 'ml-1',
+            reclassifiable: true,
             validationStatus: 'pending',
           },
           {
@@ -117,6 +118,7 @@ function findings(overrides: Partial<StudyFindings> = {}): StudyFindings {
             endEpochMs: T0 + 1_230_000,
             confidenceScore: 0.8,
             modelVersion: 'ml-1',
+            reclassifiable: true,
             validationStatus: 'pending',
           },
         ],
@@ -424,5 +426,98 @@ describe('StudyAnalysisTab', () => {
 
     expect(hooks.findings).toHaveBeenLastCalledWith('study-1', true)
     expect(hooks.metrics).toHaveBeenLastCalledWith('study-1', true)
+  })
+
+  describe('eventos S y V', () => {
+    const ectopy = (total: number): NonNullable<HolterMetrics['ventricular']> => ({
+      total,
+      single: total - 6,
+      pairs: { episodes: 2, beats: 4 },
+      bigeminy: { episodes: 1, beats: 8 },
+      trigeminy: { episodes: 0, beats: 0 },
+      runs: { episodes: 1, beats: 5 },
+      longestRun: { value: 5, sampleIndex: 700, epochMs: T0 + 2_000_000, durationMs: 3000 },
+      perThousand: 12.5,
+      maxPerMinute: { value: 9, sampleIndex: 800, epochMs: T0 + 2_400_000, durationMs: 40_000 },
+    })
+
+    it('muestra las cifras de S y V y salta a la evidencia de sus máximos', () => {
+      hooks.metrics.mockReturnValue(
+        query(
+          metrics({
+            supraventricular: ectopy(30),
+            ventricular: ectopy(40),
+            ectopyUnavailableReason: null,
+          }),
+        ),
+      )
+      const onLocate = renderTab()
+
+      const ventricular = within(screen.getByRole('region', { name: 'Ventriculares (V)' }))
+      expect(ventricular.getByText('V total').nextElementSibling?.textContent).toBe('40')
+      expect(ventricular.getByText('Aisladas: 34')).toBeTruthy()
+      expect(ventricular.getByText('Máx. V en 1 min').nextElementSibling?.textContent).toBe('9')
+
+      fireEvent.click(
+        ventricular.getByRole('button', { name: 'Ver Máximo de V en 1 min en el ECG' }),
+      )
+      fireEvent.click(
+        within(screen.getByRole('region', { name: 'Supraventriculares (S)' })).getByRole('button', {
+          name: 'Ver Corrida S más larga en el ECG',
+        }),
+      )
+
+      expect(onLocate.mock.calls[0][0]).toMatchObject({
+        kind: 'v_max_minute',
+        startMs: T0 + 2_400_000,
+        endMs: T0 + 2_440_000,
+      })
+      expect(onLocate.mock.calls[1][0]).toMatchObject({
+        kind: 's_longest_run',
+        startMs: T0 + 2_000_000,
+      })
+    })
+
+    it.each([
+      ['BEAT_CLASSIFICATION_UNAVAILABLE', /antes de la clasificación de latidos/],
+      ['BEAT_CLASSIFICATION_PARTIAL', /solo una parte del estudio/],
+      ['BEAT_CLASSIFICATION_PENDING', /todavía no cubre el estudio/],
+    ])('sin clasificación (%s) dice por qué y no muestra ceros', (reason, text) => {
+      hooks.metrics.mockReturnValue(query(metrics({ ectopyUnavailableReason: reason })))
+      renderTab()
+
+      const ventricular = within(screen.getByRole('region', { name: 'Ventriculares (V)' }))
+      expect(ventricular.getByText(text)).toBeTruthy()
+      expect(ventricular.queryByText('V total')).toBeNull()
+    })
+
+    it('informa los latidos clasificados y las correcciones del médico', () => {
+      hooks.metrics.mockReturnValue(
+        query(
+          metrics({
+            supraventricular: ectopy(30),
+            ventricular: ectopy(40),
+            ectopyUnavailableReason: null,
+            analysis: {
+              algorithmVersion: 6,
+              analyzedUntilSample: 1,
+              analyzedMs: 1,
+              excludedMs: 0,
+              rrIntervals: 1,
+              nnIntervals: 1,
+              classifiedBeats: 4000,
+              unclassifiedBeats: 200,
+              doctorCorrections: { findings: 2, noiseMs: 60_000, relabeledBeats: 7 },
+            },
+          }),
+        ),
+      )
+      renderTab()
+
+      const coverage = document.querySelector('[data-classification-coverage]')!.textContent
+      expect(coverage).toContain('Latidos clasificados (N, S y V): 4.000')
+      expect(coverage).toContain('2 hallazgos')
+      expect(coverage).toContain('7 latidos reclasificados')
+    })
   })
 })

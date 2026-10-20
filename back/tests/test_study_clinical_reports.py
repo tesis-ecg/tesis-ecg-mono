@@ -250,7 +250,7 @@ async def test_unknown_anchor_in_later_segment_is_marked_but_does_not_block(
     # Un tramo con la hora estimada no le quita el informe al médico
     # (`INTEGRACION.md`, pendiente 4): lo advierte y lo marca.
     assert body["canFinalize"] is True
-    assert body["snapshot"]["schemaVersion"] == 4
+    assert body["snapshot"]["schemaVersion"] == 5
     assert body["snapshot"]["quality"]["timeVerified"] is False
     assert _time_issue(body)["severity"] == "warning"
     later = started_ms + 1_000

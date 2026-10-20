@@ -104,6 +104,9 @@ class StudyEcgSegmentOut(StudyEcgObjectOut):
     sampleCount: int
 
 
+ValidationStatus = Literal["pending", "confirmed", "rejected", "uncertain", "noise", "reclassified"]
+
+
 class StudyEcgAnnotationOut(CamelModel):
     """Rango significativo dentro de la señal, normalizado para el visor."""
 
@@ -128,6 +131,12 @@ class StudyEcgAnnotationOut(CamelModel):
     #: Texto corto para el visor. Hoy solo lo llenan los registros del
     #: paciente, con los síntomas que informó.
     description: str | None = None
+    #: Veredicto del médico sobre el hallazgo. El visor atenúa los rechazados y
+    #: los marcados como ruido, y rotula los reclasificados con `effectiveKind`.
+    validationStatus: ValidationStatus = "pending"
+    #: Lo que el hallazgo es tras la reclasificación del médico (`kind` no se
+    #: pisa). `null` si no hay corrección que lo cambie.
+    effectiveKind: str | None = None
 
 
 class StudyPatientReportOut(CamelModel):
@@ -323,6 +332,17 @@ class MetricEvidenceOut(CamelModel):
     durationMs: int | None = None
 
 
+class HolterDoctorCorrectionsOut(CamelModel):
+    """Cuánto de las cifras viene de la corrección del médico y no del motor."""
+
+    #: Hallazgos corregidos que cambian alguna cifra (no cuenta el «confirmar»).
+    findings: int = 0
+    #: Duración total de los tramos que el médico marcó como ruido.
+    noiseMs: int = 0
+    #: Latidos a los que el médico les cambió la clase.
+    relabeledBeats: int = 0
+
+
 class HolterAnalysisOut(CamelModel):
     algorithmVersion: int
     #: Hasta qué muestra se buscaron latidos. Con el estudio abierto queda un
@@ -333,6 +353,17 @@ class HolterAnalysisOut(CamelModel):
     excludedMs: int
     rrIntervals: int
     nnIntervals: int
+    #: Hasta qué muestra el motor clasificó latidos (S/V). Todos con valor por
+    #: defecto: los snapshots de informes viejos se validan sin ellos.
+    classifiedUntilSample: int = 0
+    #: Latidos con clase N, S o V.
+    classifiedBeats: int = 0
+    #: Latidos que el clasificador dejó sin clase: en ruido (X) o no
+    #: clasificables (Q). El «por mil» de S y V es sobre `classifiedBeats`.
+    unclassifiedBeats: int = 0
+    doctorCorrections: HolterDoctorCorrectionsOut = Field(
+        default_factory=HolterDoctorCorrectionsOut
+    )
 
 
 class HolterHeartRateOut(CamelModel):
@@ -365,8 +396,11 @@ class HolterEctopyCountOut(CamelModel):
 
 
 class HolterEctopyOut(CamelModel):
-    """Contrato de los recuadros S y V. Hoy siempre llega `None`: requiere el
-    motor de clasificación de latidos (req. 3)."""
+    """Los recuadros S y V (req. 4), con su evidencia (req. 5).
+
+    Llega `None` en `HolterMetricsOut` cuando no hay clasificación de latidos
+    para el estudio (`ectopyUnavailableReason` dice por qué).
+    """
 
     total: int
     single: int
@@ -374,6 +408,9 @@ class HolterEctopyOut(CamelModel):
     bigeminy: HolterEctopyCountOut
     trigeminy: HolterEctopyCountOut
     runs: HolterEctopyCountOut
+    #: La corrida más larga: `value` son latidos, `sampleIndex`/`epochMs` los del
+    #: primero, `durationMs` hasta el último.
+    longestRun: MetricEvidenceOut | None = None
     perThousand: float
     maxPerMinute: MetricEvidenceOut | None
 
@@ -597,6 +634,21 @@ class StudyIdInput:
 # --------------------------------------------------------------------------- #
 
 
+class StudyFindingCorrectionOut(CamelModel):
+    """Quién corrigió un hallazgo, cuándo y a qué."""
+
+    action: Literal["confirm", "reject", "noise", "relabel"]
+    #: Clase de latido a la que se pasó (`relabel`), o `N` en un `reject` de un
+    #: hallazgo con clase.
+    beatLabel: Literal["N", "S", "V"] | None
+    #: Lo que el hallazgo es ahora; `null` si ya no se afirma (rechazado o ruido).
+    effectiveKind: str | None
+    note: str | None
+    correctedBy: uuid.UUID | None
+    correctedByName: str | None
+    correctedAt: datetime | None
+
+
 class StudyFindingOut(CamelModel):
     """Un hallazgo puntual, ubicable sobre la traza."""
 
@@ -617,7 +669,13 @@ class StudyFindingOut(CamelModel):
     #: Es lo que distingue "esto lo afirmó un modelo, y cuál" de "esto es un bit
     #: del hardware".
     modelVersion: str | None
-    validationStatus: Literal["pending", "confirmed", "rejected", "uncertain"]
+    validationStatus: ValidationStatus
+    #: La corrección del médico, o `null` si el hallazgo está como lo dejó el
+    #: motor. `kind` es siempre el original; lo vigente es `correction.effectiveKind`.
+    correction: StudyFindingCorrectionOut | None = None
+    #: Si el médico lo puede corregir (`POST .../reclassification`): lo escribió
+    #: el motor y tiene un tramo de señal propio.
+    reclassifiable: bool = False
     clusterId: int | None = None
     beatCount: int | None = None
     description: str | None = None
@@ -708,3 +766,32 @@ class StudyFindingsInput:
     study_id: uuid.UUID
     actor_id: uuid.UUID | None = None
     items_per_group: int = 10
+
+
+class ReclassificationRequest(CamelModel):
+    """Lo que el médico decide sobre un hallazgo (req. 5)."""
+
+    #: `confirm`: lo da por bueno. `reject`: lo descarta. `noise`: el tramo es
+    #: ruido (Grupo A) y sale de las métricas. `relabel`: cambia la clase de sus
+    #: latidos (`beatLabel`). `reset`: vuelve al estado del motor.
+    action: Literal["confirm", "reject", "noise", "relabel", "reset"]
+    #: Obligatoria con `relabel` y solo con `relabel`.
+    beatLabel: Literal["N", "S", "V"] | None = None
+    note: str | None = Field(default=None, max_length=1024)
+
+
+class ReclassificationOut(CamelModel):
+    finding: StudyFindingOut
+    #: Las métricas recalculadas con la corrección, en el formato de
+    #: `GET /holter-metrics`. Si el recálculo falla, `status: "pending"` con
+    #: `unavailableReason: "RECALCULATION_FAILED"`: la corrección ya está guardada.
+    holterMetrics: HolterMetricsOut
+
+
+@dataclass(frozen=True)
+class ReclassificationInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    finding_id: uuid.UUID
+    actor_id: uuid.UUID
+    data: ReclassificationRequest

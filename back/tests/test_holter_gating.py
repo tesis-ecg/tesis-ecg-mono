@@ -13,10 +13,10 @@ señal entra. Lo que fija este archivo:
   **pausas incluidas**, igual que un `lead_off` sobre el mismo tramo. Es lo que
   alinea el informe con el motor, que no infiere una pausa a través de un riel
   sin `LEAD_OFF` y no le avisa al paciente (también de punta a punta).
-- **La versión dice la verdad.** Solo es la vigente (`ALGORITHM_VERSION`) si
-  el motor evaluó toda la señal analizada: con el motor apagado, o con filas
-  que no la cubren desde el inicio, las métricas son las del algoritmo 1
-  enteras —sin el ruido ni los rieles— y lo declaran.
+- **La versión dice la verdad.** Solo es la vigente (`ALGORITHM_VERSION`, o la 5 si no
+  hubo etiquetas de latidos) si el motor evaluó toda la señal analizada: con el
+  motor apagado, o con filas que no la cubren desde el inicio, las métricas son
+  las del algoritmo 1 enteras —sin el ruido ni los rieles— y lo declaran.
 - **frame_gap** corta el RR: el buffer empaquetado pega las dos tramas y el RR
   que cruza el empalme mide adquisición perdida, no el corazón.
 - **G2.** Con el motor prendido, el informe final espera a que su cursor cubra
@@ -41,7 +41,11 @@ from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.signal_quality import SignalQualityInterval, SignalQualityLevel
 from app.db.models.user import User
-from app.ml.holter_metrics import ALGORITHM_VERSION, ALGORITHM_VERSION_WITHOUT_ENGINE
+from app.ml.holter_metrics import (
+    ALGORITHM_VERSION,
+    ALGORITHM_VERSION_WITHOUT_CLASSIFICATION,
+    ALGORITHM_VERSION_WITHOUT_ENGINE,
+)
 from tests.ecg_synth import SAMPLE_RATE
 from tests.test_ml_blocks import _Chaleco, _ecg, _estudio, _eventos_del_motor, _latidos
 from tests.test_ml_ingest import finalizar
@@ -159,7 +163,7 @@ async def test_el_ruido_que_marca_el_motor_sale_de_la_fc_y_su_pausa_va_aparte(
     despues = await _metricas(db, as_user, doctor, study)
 
     assert antes["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_ENGINE
-    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 5
+    assert despues["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_CLASSIFICATION == 5
     assert antes["analysis"]["excludedMs"] == 0
     assert despues["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
     assert despues["analysis"]["analyzedMs"] == (
@@ -233,7 +237,7 @@ async def test_un_veredicto_que_no_es_ruido_no_excluye_nada(
     await _calidad(db, study, level, reason, desde, hasta)
     body = await _metricas(db, as_user, doctor, study)
 
-    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_CLASSIFICATION
     assert body["pauses"]["count"] == 1
     assert abs(body["pauses"]["longest"]["durationMs"] - 2600) <= 10
     assert body["analysis"]["excludedMs"] == 0
@@ -296,7 +300,7 @@ async def test_un_riel_del_motor_sale_de_las_pausas_como_un_lead_off(
 
     assert antes["pauses"]["count"] == 1
     assert con_riel["pauses"]["count"] == 0
-    assert con_riel["analysis"]["algorithmVersion"] == ALGORITHM_VERSION == 5
+    assert con_riel["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_CLASSIFICATION == 5
     assert con_riel["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
     assert con_riel["heartRate"]["totalBeats"] < antes["heartRate"]["totalBeats"]
     assert con_riel["analysis"] == con_lead_off["analysis"]
@@ -326,7 +330,7 @@ async def test_el_ruido_sigue_sin_tocar_las_pausas_aunque_haya_un_riel(
 
     body = await _metricas(db, as_user, doctor, study)
 
-    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_CLASSIFICATION
     assert (
         body["analysis"]["excludedMs"]
         == ((hasta - desde) + (riel_hasta - riel_desde)) * 1000 // RATE
@@ -404,7 +408,7 @@ async def test_con_el_motor_en_curso_lo_que_todavia_no_evaluo_no_baja_la_version
 
     body = await _metricas(db, as_user, doctor, study)
 
-    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION
+    assert body["analysis"]["algorithmVersion"] == ALGORITHM_VERSION_WITHOUT_CLASSIFICATION
     assert body["analysis"]["excludedMs"] == (hasta - desde) * 1000 // RATE
 
 
