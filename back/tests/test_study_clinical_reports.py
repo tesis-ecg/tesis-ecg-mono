@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.request_limits import MAX_CLINICAL_REPORT_PDF_BYTES
 from app.db.models.study import StudyStatus
-from app.db.models.study_timeline_segment import StudyTimelineSegment
+from app.db.models.study_timeline_segment import StudyTimelineSegment, TimeSyncSource
 from app.db.models.user import User, UserRole
 from app.modules.studies import studies_service
 from app.modules.studies.studies_schemas import (
@@ -86,7 +86,22 @@ def test_report_splits_short_and_long_findings_into_bounded_windows() -> None:
     long_ranges = studies_service._report_window_ranges(long)
     assert len(long_ranges) == 4
     assert all(end - start == 60_000 for start, end in long_ranges)
-    assert studies_service._report_window_ranges(instant) == [(999_500, 1_000_500)]
+    assert studies_service._report_window_ranges(instant) == [(995_000, 1_005_000)]
+
+
+def test_report_gives_short_findings_a_strip_with_context() -> None:
+    # Una marca del pulsador dura una muestra (2 ms): la tira era de 2 ms y vacía.
+    button = _annotation(kind="patient_marker", category="patient_marker", duration=2)
+    brief = _annotation(duration=4_000)
+    tail = _annotation(duration=60_002)
+
+    assert studies_service._report_window_ranges(button) == [(993_000, 1_003_000)]
+    assert studies_service._report_window_ranges(brief) == [(997_000, 1_007_000)]
+    # Ningún bloque queda por debajo de los 10 s, tampoco el último de un hallazgo partido.
+    assert [end - start for start, end in studies_service._report_window_ranges(tail)] == [
+        60_000,
+        10_000,
+    ]
 
 
 async def _doctor_user(db, doctor) -> User:  # type: ignore[no-untyped-def]
@@ -235,13 +250,112 @@ async def test_unknown_anchor_in_later_segment_is_marked_but_does_not_block(
     # Un tramo con la hora estimada no le quita el informe al médico
     # (`INTEGRACION.md`, pendiente 4): lo advierte y lo marca.
     assert body["canFinalize"] is True
-    assert body["snapshot"]["schemaVersion"] == 3
+    assert body["snapshot"]["schemaVersion"] == 4
     assert body["snapshot"]["quality"]["timeVerified"] is False
     assert _time_issue(body)["severity"] == "warning"
     later = started_ms + 1_000
     assert body["snapshot"]["quality"]["unverifiedSegments"] == [
         {"startEpochMs": later, "endEpochMs": later + 100, "uncertaintyMs": None}
     ]
+
+
+async def test_a_segment_anchored_with_none_is_reported_as_estimated(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    doctor, study = await _completed_study(make_doctor, make_patient, make_device, make_study)
+    started_ms = int(study.started_at.timestamp() * 1000)
+    for ordinal, source in enumerate((TimeSyncSource.NTP, TimeSyncSource.NONE)):
+        start_ms = started_ms + ordinal * 1_000
+        db.add(
+            StudyTimelineSegment(
+                study_id=study.id,
+                ordinal=ordinal,
+                boot_id=ordinal,
+                start_sample_index=ordinal * 50,
+                sample_count=50,
+                start_epoch_ms=start_ms,
+                end_epoch_ms=start_ms + 100,
+                boot_epoch_ms=start_ms,
+                anchor_source=source,
+                anchor_uncertainty_ms=1_200,
+                anchor_matches_boot=True,
+            )
+        )
+    await db.commit()
+    client = as_user(await _doctor_user(db, doctor))
+
+    preview = await client.get(f"/studies/{study.id}/clinical-report/preview")
+
+    body = preview.json()
+    # El ancla es de su arranque, pero `none` es el `Date` de una respuesta HTTP:
+    # no sale verificada sin decirlo (`INTEGRACION.md`, pendiente 3).
+    assert body["snapshot"]["quality"]["timeVerified"] is False
+    assert "hora del servidor, sin sincronización SNTP" in _time_issue(body)["message"]
+    later = started_ms + 1_000
+    assert body["snapshot"]["quality"]["unverifiedSegments"] == [
+        {"startEpochMs": later, "endEpochMs": later + 100, "uncertaintyMs": 1_200}
+    ]
+
+
+async def test_coverage_counts_the_timeline_and_stops_at_the_last_sample(
+    db, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    # El caso de `ee0880bc` (INTEGRACION.md, pendiente 4): un solo tramo, sin cortes,
+    # una señal a ~498,85 muestras/s y 3 min de espera entre la última muestra y el
+    # cierre. Daba 95,1 % de cobertura y 3 min 5 s de "interrupciones".
+    doctor = await make_doctor()
+    patient = await make_patient(doctor=doctor)
+    device, _ = await make_device(patient=patient)
+    started = datetime.now(UTC) - timedelta(hours=2)
+    recorded_ms = 3_577_000
+    study = await make_study(
+        patient,
+        device,
+        status=StudyStatus.COMPLETED,
+        started_at=started,
+        ended_at=started + timedelta(milliseconds=recorded_ms + 177_000),
+        duration_ms=recorded_ms + 177_000,
+        samples_count=round(recorded_ms * 498.85 / 1000),
+        ecg_s3_key="studies/raw.f32",
+        ecg_byte_length=400,
+    )
+    started_ms = int(started.timestamp() * 1000)
+    db.add(
+        StudyTimelineSegment(
+            study_id=study.id,
+            ordinal=0,
+            boot_id=0,
+            start_sample_index=0,
+            sample_count=study.samples_count,
+            start_epoch_ms=started_ms,
+            end_epoch_ms=started_ms + recorded_ms,
+            boot_epoch_ms=started_ms,
+            anchor_source=TimeSyncSource.NTP,
+            anchor_matches_boot=True,
+        )
+    )
+    await db.commit()
+    client = as_user(await _doctor_user(db, doctor))
+
+    quality = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()["snapshot"][
+        "quality"
+    ]
+
+    assert quality["recordedMs"] == recorded_ms
+    assert quality["wallClockMs"] == recorded_ms
+    assert quality["interruptionMs"] == 0
+    assert quality["coveragePercent"] == 100
+    assert quality["afterLastSampleMs"] == 177_000
+
+
+def test_time_verified_needs_an_anchor_of_its_boot_that_is_not_none() -> None:
+    def segment(source: TimeSyncSource, matches: bool | None) -> StudyTimelineSegment:
+        return StudyTimelineSegment(anchor_source=source, anchor_matches_boot=matches)
+
+    assert segment(TimeSyncSource.NTP, True).time_verified
+    assert not segment(TimeSyncSource.NONE, True).time_verified
+    assert not segment(TimeSyncSource.NTP, None).time_verified
+    assert not segment(TimeSyncSource.SERVER_RECEIVE, False).time_verified
 
 
 async def test_verified_segments_need_no_warning_when_only_the_start_is_unconfirmed(

@@ -281,7 +281,7 @@ def test_una_pausa_real_se_detecta_y_avisa_al_paciente() -> None:
 def test_sin_compensar_el_retardo_del_firmware_el_motor_entero_enmudece() -> None:
     """La regresión que dejó al motor mudo sobre señal real del chaleco.
 
-    El `FLAG_R_PEAK` llega 250 ms después del pico y la tolerancia del bSQI es
+    El `FLAG_R_PEAK` llega ~195 ms después del pico y la tolerancia del bSQI es
     de ±150 ms: sin compensar, los dos detectores no coinciden en ningún latido,
     el bSQI da 0, **todas** las ventanas caen a `marginal` y la máscara de
     analizable queda vacía. Como la Etapa 2 y las reglas de ritmo solo miran

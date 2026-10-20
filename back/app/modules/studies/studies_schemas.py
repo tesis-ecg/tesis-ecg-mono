@@ -191,6 +191,9 @@ class StudyEcgTimelineSegmentOut(CamelModel):
     anchorSource: Literal["ntp", "none", "server_receive"]
     anchorUncertaintyMs: int | None
     anchorMatchesBoot: bool | None = None
+    #: Ancla de su mismo arranque y que no sea `none`: lo que el visor y el
+    #: informe dan por hora verificada (`StudyTimelineSegment.time_verified`).
+    timeVerified: bool = False
 
 
 class StudyEcgManifestOut(CamelModel):

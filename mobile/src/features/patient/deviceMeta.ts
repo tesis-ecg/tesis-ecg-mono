@@ -90,6 +90,8 @@ export const ALERT_KIND_LABEL: Record<string, string> = {
   vest_misplaced: 'Chaleco mal colocado',
   battery_low: 'Batería baja del chaleco',
   battery_critical: 'Batería crítica del chaleco',
+  device_no_contact: 'Tu chaleco no se está conectando',
+  afe_config_mismatch: 'El chaleco necesita una revisión técnica',
   tachycardia: 'Latidos más rápidos de lo habitual',
   bradycardia: 'Latidos más lentos de lo habitual',
   afib: 'Ritmo irregular',
@@ -123,6 +125,7 @@ const ALERT_TONE: Record<string, AlertMeta['tone']> = {
   vest_misplaced: 'danger',
   battery_low: 'danger',
   battery_critical: 'danger',
+  device_no_contact: 'danger',
 }
 
 /**
@@ -134,6 +137,7 @@ const ALERT_TONE: Record<string, AlertMeta['tone']> = {
 const ALERT_ICON: Record<string, LucideIcon> = {
   battery_low: BatteryWarning,
   battery_critical: BatteryWarning,
+  device_no_contact: CloudOff,
   vest_misplaced: Shirt,
   noise: AudioWaveform,
 }

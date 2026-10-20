@@ -69,6 +69,12 @@ describe('routeForNotification', () => {
     })
   })
 
+  it('el push de chaleco sin contacto lleva al estado del dispositivo', () => {
+    expect(routeForNotification({ type: 'device_no_contact', alertId: 'alert-4' })).toEqual({
+      pathname: '/(tabs)/device',
+    })
+  })
+
   it('manda payloads incompletos o futuros al centro de avisos', () => {
     const fallback = { pathname: '/notifications' }
     expect(routeForNotification(null)).toEqual(fallback)

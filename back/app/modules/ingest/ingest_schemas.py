@@ -23,6 +23,12 @@ class IngestAckOut(CamelModel):
     framesRejected: int
     framesDuplicate: int
     lastAcceptedSeq: int | None
+    #: CRC-32 de la trama `lastAcceptedSeq` como está archivada: los bytes 20 a 23
+    #: de sus 256 (el campo CRC de la cabecera, `INTEGRACION.md` §4.3). Le dice al
+    #: puente DE QUÉ trama es el cursor, sin depender de una cota de tramas para
+    #: distinguir una retransmisión de una numeración nueva (§11.6, pendiente 8).
+    #: `None` sin cursor, o si la trama archivada no se pudo leer.
+    lastAcceptedCrc32: int | None = None
     batchId: uuid.UUID | None
     studyId: uuid.UUID
     serverTime: datetime

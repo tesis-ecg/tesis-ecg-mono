@@ -98,7 +98,7 @@ def _latidos_con_hueco(
 
 
 def _flags_del_firmware(latidos: np.ndarray, n: int) -> np.ndarray:
-    """`FLAG_R_PEAK` donde lo pone el MCU: 250 ms después de cada R."""
+    """`FLAG_R_PEAK` donde lo pone el MCU: ~195 ms después de cada R."""
     flags = np.zeros(n, dtype=np.uint8)
     posiciones = np.round(latidos * SR).astype(np.int64) + LAG
     flags[posiciones[posiciones < n]] |= FLAG_R_PEAK

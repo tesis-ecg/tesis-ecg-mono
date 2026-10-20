@@ -143,7 +143,7 @@ async def test_el_preview_congela_las_metricas_y_suma_tiras_de_evidencia(
     first = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
     second = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
 
-    assert first["snapshot"]["schemaVersion"] == 3
+    assert first["snapshot"]["schemaVersion"] == 4
     assert first["snapshot"]["metrics"]["status"] == "ok"
     assert first["snapshotHash"] == second["snapshotHash"]
     metric_windows = [window for window in first["windows"] if window["category"] == "metric"]

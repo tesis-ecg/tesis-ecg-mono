@@ -127,3 +127,14 @@ class StudyTimelineSegment(TimestampMixin, Base):
     anchor_matches_boot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     study: Mapped["Study"] = relationship()
+
+    @property
+    def time_verified(self) -> bool:
+        """Si la hora del tramo se puede dar por buena sin decir nada más.
+
+        Hace falta un ancla de su mismo arranque, y que no sea `NONE`: esa es la
+        hora del `Date` de una respuesta HTTP con el SNTP mudo, y el 7/10 llegó
+        con 147,5 s de error declarando 1,8 s (`INTEGRACION.md`, pendiente 3).
+        Un tramo así se muestra y se informa como estimado.
+        """
+        return self.anchor_matches_boot is True and self.anchor_source is not TimeSyncSource.NONE

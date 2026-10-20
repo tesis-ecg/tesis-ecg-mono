@@ -1369,7 +1369,7 @@ def _quiet_gap_pauses(block: _Block, *, pause_seconds: float) -> list[Finding]:
     # contexto izquierdo es de la parte nueva del bloque anterior, que lo acotó
     # con su contexto derecho. Uno posterior lo pudo haber leído también el
     # bloque anterior —sobre el final de su lectura, donde no siempre lo puede
-    # acotar: su referencia local es el hueco y el `FLAG_R_PEAK` cae 250 ms
+    # acotar: su referencia local es el hueco y el `FLAG_R_PEAK` cae ~195 ms
     # después, fuera—; si lo informó, la persistencia empalma los dos.
     candidates: list[tuple[int | None, int | None]] = list(zip(cuts[:-1], cuts[1:], strict=True))
     if evidence.context_samples > 0 and cuts and int(peaks[cuts[0]]) >= evidence.context_samples:

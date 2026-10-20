@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # obligatorio rompería todos los .env, el compose y el deploy de una.
     device_api_key_secret: str | None = Field(default=None, min_length=32)
     readiness_token: str | None = Field(default=None, min_length=32)
+    #: Lo que manda el barrido periódico en `Authorization: Bearer` para correr
+    #: `GET /internal/device-contact-sweep`. Es el nombre que usa Vercel Cron.
+    #: Sin él, la ruta contesta 404 y nadie avisa de un equipo callado.
+    cron_secret: str | None = Field(default=None, min_length=32)
 
     frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:5173")
     s3_presign_expire_seconds: int = Field(default=600, ge=60, le=3600)
@@ -108,6 +112,14 @@ class Settings(BaseSettings):
     #: de `statusFlags` son ESTADOS: el equipo los repite mientras la condición
     #: esté, así que sin esto una flash rota alertaría en cada lote.
     device_fault_debounce_minutes: int = Field(default=60, ge=1, le=1440)
+    #: Sin contacto del equipo por más de esto, con un estudio abierto: alerta y
+    #: push al paciente (`app/modules/ingest/contact_watch.py`). Dos horas,
+    #: según `INTEGRACION.md` (pendiente 5): en régimen el equipo contacta cada
+    #: 10 min, y con la red caída espacia los intentos 10 → 20 min. Un corte que
+    #: termina antes de ~1 h 40 min se recupera solo, sin perder nada, y no tiene
+    #: que avisar; y 2 h le dejan al paciente al menos 2,6 h para acercarse a la
+    #: red antes de que el log empiece a pisar señal (§8, el peor entorno medido).
+    device_no_contact_alert_minutes: int = Field(default=120, ge=30, le=270)
     # Los dos límites alimentan el `default` de un Query(ge=1, le=50), y FastAPI no
     # valida el default: las cotas tienen que estar acá o un .env fuera de rango
     # pasaría sin chistar cuando el FE llama sin query params.
@@ -200,18 +212,23 @@ class Settings(BaseSettings):
     #: ruido gaussiano puro como `Excellent` (medido).
     ml_quality_bsqi_min: float = Field(default=0.80, ge=0.0, le=1.0)
     #: `FLAG_R_PEAK` **no cae sobre el pico**: cae sobre la muestra en la que el
-    #: detector del MCU confirma el latido, 200-300 ms después (FIR de 161 taps =
-    #: 160 ms de retardo de grupo, + 40 ms de la cascada de detección, + hasta
-    #: 100 ms de ventana de confirmación). Medido por el equipo de firmware sobre
-    #: el chaleco el 2026-09-03. Sin compensarlo el bSQI da ~0 contra la
-    #: tolerancia de ±150 ms, **todas las ventanas quedan `marginal` y no queda
-    #: una sola muestra analizable**: el motor entero enmudece sin un solo error.
-    ml_firmware_peak_lag_ms: float = Field(default=250.0, ge=0.0, le=1000.0)
+    #: detector del MCU confirma el latido, entre ~190 y ~300 ms después (FIR de
+    #: 161 taps = 160 ms de retardo de grupo, la cascada de detección y hasta
+    #: 100 ms de confirmación; `INTEGRACION.md` §4.5). Sobre las 16 capturas del
+    #: canal 2 del chaleco la mediana es ~193 ms (160 del FIR más 33 de mediana de
+    #: `r_lag_ms`); el valor anterior, 250 ms, no salía de ninguna medición. Sin
+    #: compensarlo el bSQI da ~0 contra la tolerancia de ±150 ms, **todas las
+    #: ventanas quedan `marginal` y no queda una sola muestra analizable**: el
+    #: motor entero enmudece sin un solo error. Biomédica vigila este número
+    #: contra su firmware (`test/tools/test_constantes_decoder.py` de su repo).
+    ml_firmware_peak_lag_ms: float = Field(default=195.0, ge=0.0, le=1000.0)
     #: Refractario propio sobre los picos del firmware. Su detector queda ciego
-    #: 200 ms y vuelve a confirmar sobre la cola del mismo complejo: 31 de 110
-    #: intervalos por debajo de 300 ms en las capturas del chaleco. Se aplica
-    #: solo al tren que alimenta el bSQI, nunca al que produce los hallazgos de
-    #: ritmo, así que no puede esconder una taquicardia.
+    #: 200 ms; los dobletes de menos de 300 ms que se midieron en agosto (31 de
+    #: 110 intervalos) eran del **canal 1**, el de respiración (`AuditoriaAFE.md`
+    #: de Biomédica). Por el canal 2 el banco da 0,999 / 0,998 contra NeuroKit en
+    #: las ventanas buenas, así que este filtro casi no actúa. Se aplica solo al
+    #: tren que alimenta el bSQI, nunca al que produce los hallazgos de ritmo, así
+    #: que no puede esconder una taquicardia.
     ml_firmware_peak_refractory_ms: float = Field(default=300.0, ge=0.0, le=1000.0)
     #: Amplitud pico a pico por debajo de la cual la ventana es una línea plana.
     ml_flatline_uv: float = Field(default=20.0, ge=1.0, le=1000.0)

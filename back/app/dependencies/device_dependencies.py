@@ -70,14 +70,14 @@ class DeviceContext:
     lead_flags: int | None = None
     loss_flags: int | None = None
     status_flags: int | None = None
-    #: Estimación del peor atraso del tramo, del propio firmware.
+    #: Cuántos segundos de señal tiene el equipo sin subir, del propio firmware.
     #:
-    #: **No sirve para alertar.** Biomédica la midió con +98 % de error con
-    #: electrodo seco y +44 % con gel, y explicó que no la van a corregir: el
-    #: firmware asume 280 muestras por trama (un número de PhysioNet) y la señal
-    #: real de esta placa comprime a 141 con electrodo seco. Se persiste como
-    #: diagnóstico. El atraso de verdad sale de restar el `t0Ms` de las tramas
-    #: contra `uptime_ms` de este mismo POST, que están en el mismo dominio.
+    #: Desde el 30/9/2026 el equipo cuenta las muestras de cada trama que escribe:
+    #: medido sobre la placa el 2/10, 600 s informados para 1.078 tramas que
+    #: archivadas son 602,2 s (−0,4 %). Antes asumía 280 muestras por trama y
+    #: daba el doble. Sirve para avisar que el equipo se atrasa; el número exacto
+    #: sigue saliendo de restar el `t0Ms` de las tramas contra `uptime_ms` de este
+    #: mismo POST, que están en el mismo dominio (`INTEGRACION.md` §9.1).
     backlog_seconds: int | None = None
     #: Arranque del par (epoch, uptime) enviado en este POST. El puente puede
     #: reconstruir el de un lote viejo; no siempre es el arranque actual.

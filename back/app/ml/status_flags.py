@@ -89,6 +89,17 @@ STATUS_LEAD_CH2_OFF = 0x10
 #: equivalentes: puede estar en 1 con el electrodo ya recolocado. Dice "la
 #: entrada está flotando", no cuál electrodo se soltó, y no invalida la señal.
 STATUS_LEAD_SIGNAL_SUSPECT = 0x20
+#: El front-end corre con una configuración distinta de la pedida: al
+#: inicializar, algún registro del ADS1292R no leyó lo que se le escribió
+#: (firmware desde el 1/10/2026). **Estado.** No invalida la señal pero la pone
+#: en duda entera: puede estar en otra ganancia, a otro ritmo o sin el lazo de
+#: pierna derecha. Alerta técnica, equipo a revisar (`INTEGRACION.md` §3.1).
+STATUS_LEAD_AFE_CONFIG_MISMATCH = 0x40
+
+
+def has_afe_config_mismatch(lead_flags: int | None) -> bool:
+    """¿El equipo dice que su front-end no quedó con la configuración pedida?"""
+    return bool(lead_flags and lead_flags & STATUS_LEAD_AFE_CONFIG_MISMATCH)
 
 
 class DeviceFaultKind(enum.StrEnum):

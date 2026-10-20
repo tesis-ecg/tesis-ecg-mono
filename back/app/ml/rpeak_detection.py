@@ -64,13 +64,15 @@ def compensate_firmware_peaks(
     (2026-09-03), en este orden:
 
     1. **Dobletes.** El detector del MCU tiene 200 ms de refractario absoluto:
-       confirma, queda ciego, y en cuanto se destraba vuelve a confirmar sobre la
-       cola del mismo complejo — 31 de 110 intervalos por debajo de 300 ms en la
-       captura con gel. Se queda el **primero** de cada grupo, que es el que
-       corresponde al latido; el segundo es timbrado del filtro.
+       confirma, queda ciego, y en cuanto se destraba puede volver a confirmar
+       sobre la cola del mismo complejo. Los 31 de 110 intervalos por debajo de
+       300 ms que se midieron en agosto eran del canal 1, el de respiración
+       (`AuditoriaAFE.md` de Biomédica); por el canal 2 casi no pasa. Se queda el
+       **primero** de cada grupo, que es el que corresponde al latido.
     2. **Retardo.** El bit no marca el pico sino la muestra donde el detector lo
-       confirma, 200-300 ms más tarde. Se resta el retardo nominal para que los
-       dos trenes hablen del mismo instante.
+       confirma, entre ~190 y ~300 ms más tarde (~193 ms de mediana sobre las
+       capturas del canal 2). Se resta el retardo nominal para que los dos trenes
+       hablen del mismo instante.
 
     Ambas tocan **solo** el tren que se compara contra NeuroKit para el bSQI. Los
     hallazgos de ritmo salen del otro detector, así que ni el refractario ni el

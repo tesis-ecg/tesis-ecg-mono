@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -10,7 +12,13 @@ def test_health_and_stub_routes_contract() -> None:
     y el acuse que consume la página de alertas del portal.
     """
     with TestClient(app) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        before_ms = int(datetime.now(UTC).timestamp() * 1000)
+        health = client.get("/health")
+        after_ms = int(datetime.now(UTC).timestamp() * 1000)
+        assert health.json()["status"] == "ok"
+        # La hora va en el cuerpo y se lee al armar la respuesta (pendiente 3).
+        assert before_ms <= health.json()["serverTimeMs"] <= after_ms
+        assert "no-store" in health.headers["cache-control"]
         assert client.get("/health/live").json() == {"status": "ok"}
         assert client.get("/admin/").status_code == 404
         assert client.get("/ecg-batches/").status_code == 404

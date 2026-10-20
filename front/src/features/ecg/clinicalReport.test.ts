@@ -321,6 +321,24 @@ describe('clinical ECG report', () => {
     expect(text).toContain('Hora estimada, no verificada')
   })
 
+  it('separa la espera hasta el cierre de las interrupciones', () => {
+    const value = input()
+    value.snapshot.schemaVersion = 4
+    value.snapshot.quality.interruptionMs = 0
+    value.snapshot.quality.afterLastSampleMs = 177_000
+
+    written.length = 0
+    buildClinicalReport(value)
+    const text = written.join('\n')
+
+    expect(text).toContain('Entre la última muestra y el cierre')
+
+    value.snapshot.quality.afterLastSampleMs = 0
+    written.length = 0
+    buildClinicalReport(value)
+    expect(written.join('\n')).not.toContain('Entre la última muestra y el cierre')
+  })
+
   it('sólo clasifica como automáticos los hallazgos clínicos no vinculados', () => {
     const clinical = {
       id: 'finding-1',

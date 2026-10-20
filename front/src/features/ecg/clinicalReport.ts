@@ -152,6 +152,9 @@ export function buildClinicalReport(input: ClinicalReportInput): ArrayBuffer {
     'Cobertura / interrupciones',
     `${snapshot.quality.coveragePercent.toFixed(1)} % / ${formatDuration(snapshot.quality.interruptionMs)}`,
   )
+  if (snapshot.quality.afterLastSampleMs) {
+    row('Entre la última muestra y el cierre', formatDuration(snapshot.quality.afterLastSampleMs))
+  }
   row('Segmentos / cortes', `${snapshot.quality.segments} / ${snapshot.quality.cuts}`)
   row(
     'Sincronización',

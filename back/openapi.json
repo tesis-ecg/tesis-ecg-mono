@@ -2077,6 +2077,17 @@
             "title": "Framesrejected",
             "type": "integer"
           },
+          "lastAcceptedCrc32": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastacceptedcrc32"
+          },
           "lastAcceptedSeq": {
             "anyOf": [
               {
@@ -4952,6 +4963,11 @@
           "startSampleIndex": {
             "title": "Startsampleindex",
             "type": "integer"
+          },
+          "timeVerified": {
+            "default": false,
+            "title": "Timeverified",
+            "type": "boolean"
           }
         },
         "required": [
@@ -7847,6 +7863,7 @@
     },
     "/health": {
       "get": {
+        "description": "Latido, y la hora del servidor para el puente WiFi cuando el SNTP no contesta.\n\nEl puente se fechaba con el `Date` de esta respuesta, y con la función quieta\nese `Date` llega congelado (minutos atrás, sin caché de por medio): el\nservidor lo arma con un reloj que solo avanza mientras atiende. `serverTimeMs`\nse lee al armar ESTA respuesta (`INTEGRACION.md`, pendiente 3).",
         "operationId": "health_health_get",
         "responses": {
           "200": {
@@ -7854,7 +7871,14 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": {
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "title": "Response Health Health Get",
                   "type": "object"

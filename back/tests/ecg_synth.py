@@ -23,11 +23,11 @@ from app.ml.decompression import FLAG_R_PEAK
 SAMPLE_RATE = 500
 
 #: Lo que tarda el detector del MCU en confirmar un latido después del pico:
-#: 160 ms del FIR de 161 taps + 40 ms de la cascada + hasta 100 ms de ventana de
-#: confirmación. Medido por el equipo de firmware sobre el chaleco el
-#: 2026-09-03. El generador lo imita para que el `FLAG_R_PEAK` sintético caiga
-#: donde cae el del equipo. Ponerlo en 0 da la señal idealizada de antes.
-FIRMWARE_R_PEAK_LAG_MS = 250.0
+#: 160 ms del FIR de 161 taps más la cascada y la confirmación; ~193 ms de
+#: mediana sobre las 16 capturas del canal 2 del chaleco (`INTEGRACION.md` §4.5).
+#: El generador lo imita para que el `FLAG_R_PEAK` sintético caiga donde cae el
+#: del equipo. Ponerlo en 0 da la señal idealizada de antes.
+FIRMWARE_R_PEAK_LAG_MS = 195.0
 
 
 @dataclass(frozen=True)
