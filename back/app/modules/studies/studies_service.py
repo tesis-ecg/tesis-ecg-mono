@@ -1694,7 +1694,7 @@ async def _holter_metrics(
     # Adentro y no arriba: los dos cargan numpy, y este módulo se importa al
     # arrancar la API (`test_starting_the_api_does_not_import_numpy`).
     from app.ml.beats import legacy_chunks
-    from app.ml.holter_metrics import compute_holter_metrics
+    from app.ml.holter_metrics import _subtract_spans, compute_holter_metrics
     from app.modules.ingest.processing import load_beat_labels, load_beats
 
     if not study.ecg_segments:
@@ -1707,10 +1707,13 @@ async def _holter_metrics(
     # Sin el veredicto del motor sobre toda la señal (`noise=None`), tampoco sus
     # pausas: la versión que se declara entonces no las menciona.
     engine_pauses, engine_episodes = _engine_pauses(events) if noise is not None else ([], [])
+    corrections = doctor_corrections(events)
     if noise is not None:
         # El riel del motor sale como un `lead_off`, pausas incluidas; el ruido
-        # sale de todo salvo de las pausas (`compute_holter_metrics`).
-        exclusions += _metric_rails(quality)
+        # sale de todo salvo de las pausas (`compute_holter_metrics`). Un riel
+        # que el médico descartó (`flatline` rechazada) vuelve a ser señal: se
+        # resta solo de los rieles, nunca de lo que marcó el equipo.
+        exclusions += _subtract_spans(_metric_rails(quality), corrections.readable_spans)
     beats = await asyncio.to_thread(load_beats, study)
     # S y V salen de las etiquetas del motor, otro flujo que los latidos; las
     # correcciones del médico se leen de los hallazgos ya cargados.
@@ -1728,7 +1731,7 @@ async def _holter_metrics(
         engine_episodes=engine_episodes,
         legacy_beats=legacy_chunks(study.ecg_beat_chunks or []),
         labels=labels,
-        corrections=doctor_corrections(events),
+        corrections=corrections,
     )
     return HolterMetricsOut.model_validate(raw)
 

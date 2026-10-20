@@ -65,6 +65,24 @@ interface EcgAnnotation {
   confidenceScore: number | null
   linkedAnnotationId?: string | null
   description?: string | null
+  /** El veredicto del médico sobre el hallazgo (`ecg_event.validation_status`). */
+  validationStatus?: string | null
+  /** El tipo vigente si el médico lo reclasificó; el `kind` original no se pisa. */
+  effectiveKind?: string | null
+}
+
+/**
+ * Lo que un hallazgo corregido deja de afirmar, como en el informe
+ * (`back/app/modules/studies/studies_service.py::_effective_annotations`): lo
+ * marcado como ruido o descartado no se dibuja, y una ectopia que pasó a latidos
+ * normales deja de ser un hallazgo.
+ */
+const DISMISSED_STATUSES = new Set(['rejected', 'noise'])
+const NOT_A_FINDING_KINDS = new Set(['normal_beats'])
+
+function isStillAFinding(annotation: EcgAnnotation): boolean {
+  if (DISMISSED_STATUSES.has(annotation.validationStatus ?? '')) return false
+  return !NOT_A_FINDING_KINDS.has(annotation.effectiveKind ?? annotation.kind)
 }
 
 /**
@@ -215,9 +233,11 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
     timeline,
     // Solo hace falta cuando lo descargado es un resumen.
     detail: level ? createDetail(studyId, manifest, timeline, receivedAt) : undefined,
-    annotations: (manifest.annotations ?? []).map((annotation) => ({
+    // Las bandas siguen las correcciones del médico, igual que el informe y la
+    // solapa Análisis: sin esto el visor seguía mostrando lo descartado.
+    annotations: (manifest.annotations ?? []).filter(isStillAFinding).map((annotation) => ({
       id: annotation.id,
-      kind: annotation.kind,
+      kind: annotation.effectiveKind ?? annotation.kind,
       category: annotation.category,
       severity: annotation.severity,
       // El backend resuelve la hora real contra la línea de tiempo. El fallback

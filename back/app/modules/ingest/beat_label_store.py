@@ -166,9 +166,12 @@ def fuse_all(study: Study) -> dict[str, Any] | None:
 def load_beat_labels(study: Study) -> BeatLabelStream | None:
     """Todas las etiquetas del estudio, o None si el estudio nunca fue clasificado.
 
-    **Bloqueante** (S3): llamar desde un hilo. `until_sample` es el cursor del
-    motor: lo que está después todavía no se analizó y, para las métricas, es
-    "pendiente" y no "sin ectópicas".
+    **Bloqueante** (S3): llamar desde un hilo. `until_sample` es el final del
+    último chunk guardado, acotado por el cursor del motor: lo que está después
+    no se clasificó y, para las métricas, es "pendiente" y no "sin ectópicas".
+    No alcanza con el cursor: con la clasificación apagada el motor sigue
+    avanzando sin escribir etiquetas, y el cursor afirmaría una cobertura que
+    los chunks no tienen.
     """
     state = (study.ml_state or {}).get(STATE_KEY)
     if not isinstance(state, dict):
@@ -179,9 +182,16 @@ def load_beat_labels(study: Study) -> BeatLabelStream | None:
         for chunk in state.get("chunks", [])
     ]
     records = np.concatenate(parts) if parts else empty_records()
+    from_sample = int(state.get("fromSample", 0))
+    chunks = state.get("chunks", [])
+    stored_until = (
+        int(chunks[-1]["startSampleIndex"]) + int(chunks[-1]["sampleCount"])
+        if chunks
+        else from_sample
+    )
     return BeatLabelStream(
         records=records,
-        from_sample=int(state.get("fromSample", 0)),
-        until_sample=int(study.ml_analyzed_samples),
+        from_sample=from_sample,
+        until_sample=min(stored_until, int(study.ml_analyzed_samples)),
         classifier=str(state.get("classifier", CLASSIFIER_VERSION)),
     )

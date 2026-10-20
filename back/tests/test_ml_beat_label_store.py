@@ -87,6 +87,20 @@ def test_las_etiquetas_se_guardan_por_bloque_y_se_leen_en_orden(s3) -> None:
     assert all(chunk["tier"] == 0 for chunk in state["chunks"])
 
 
+def test_la_cobertura_sale_de_los_chunks_y_no_del_cursor_del_motor(s3) -> None:
+    """Con la clasificación apagada el cursor sigue: lo que avanzó sin etiquetas no cuenta."""
+    size = 150_000
+    study = _study(None, 0)
+    state = _append(study.id, None, 0, size, count=5, before=0)
+    study.ml_state = {beat_label_store.STATE_KEY: state}
+    study.ml_analyzed_samples = 3 * size  # dos bloques más, sin clasificar
+
+    stream = beat_label_store.load_beat_labels(study)
+
+    assert stream is not None
+    assert stream.until_sample == size
+
+
 def test_un_estudio_sin_etiquetas_devuelve_none(s3) -> None:
     assert beat_label_store.load_beat_labels(_study(None, 0)) is None
     assert beat_label_store.load_beat_labels(_study({"totals": {}}, 10)) is None

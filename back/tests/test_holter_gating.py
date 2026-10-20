@@ -613,3 +613,43 @@ async def test_con_el_motor_apagado_el_informe_final_no_lo_espera(
     preview = await _preview(db, as_user, doctor, study)
 
     assert "ML_ANALYSIS_PENDING" not in _codigos(preview)
+
+
+async def test_un_riel_que_el_medico_descarta_vuelve_a_las_metricas(
+    db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    """Descartar una `flatline` la devuelve a la señal: el riel deja de excluir.
+
+    El riel entra con el hardware (`_metric_rails`), no con el ruido, así que
+    restarlo solo del ruido dejaba la pausa afuera aunque el médico dijera que
+    ahí la señal se lee.
+    """
+    from tests.test_studies_reclassification import _finding, _url
+
+    doctor, study, times = await _study_with_signal(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    desde, hasta = _alrededor_de_la_pausa(times)
+    await _calidad(db, study, SignalQualityLevel.BAD, "flatline", desde, hasta)
+    con_riel = await _metricas(db, as_user, doctor, study)
+    assert con_riel["pauses"]["count"] == 0
+
+    riel = _finding(
+        await _lote(db, study),
+        study,
+        "flatline",
+        ECGEventType.NOISE,
+        desde,
+        hasta - desde,
+        model_version="ml-test",
+    )
+    db.add(riel)
+    await db.commit()
+    response = await as_user(await _doctor_user(db, doctor)).post(
+        _url(study, riel), json={"action": "reject"}
+    )
+
+    assert response.status_code == 200, response.text
+    despues = await _metricas(db, as_user, doctor, study)
+    assert despues["pauses"]["count"] == 1
+    assert despues["analysis"]["excludedMs"] < con_riel["analysis"]["excludedMs"]
