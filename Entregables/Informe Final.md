@@ -319,21 +319,30 @@ Fuente: elaboración propia.
 
 ## 3.4. Modelo de negocio
 
-[COMPLETAR: modelo de negocio que muestre cómo el producto se vuelve sustentable y rentable en el tiempo. Puede presentarse con un Business Model Canvas: segmentos de clientes (clínicas, centros de cardiología, hospitales, ensayos clínicos), propuesta de valor, canales, fuentes de ingresos y estructura de costos.]
+El modelo de negocio se elaboró junto con Ingeniería Biomédica para evaluar la sustentabilidad del dispositivo y el software (*Modelo de negocio y evaluación económica — Chaleco de ECG*, 2026).
 
 ### 3.4.1. Propuesta de valor y modelo de ingresos
 
-[COMPLETAR: propuesta de valor por actor y esquema de ingresos. El relevamiento de requerimientos menciona un modelo de créditos de monitoreo por cuenta médica (tiempo de uso o cantidad de estudios), que puede servir como punto de partida.]
+El servicio propuesto se cobra por estudio y se dirige a centros de cardiología y diagnóstico. Ofrece al paciente un registro prolongado sin adhesivos y al médico, acceso a la señal, análisis asistido e informe desde una plataforma integrada. Su operación requiere entrega y devolución del kit, soporte, limpieza y lectura profesional.
+
+Los recursos principales son el dispositivo reutilizable, la plataforma, el algoritmo y la evidencia clínica. Los socios necesarios incluyen centros de salud, fabricantes y operadores de monitoreo. Los ingresos pueden provenir de estudios o de la transferencia o licencia del desarrollo. Los costos variables comprenden fabricación, logística, lectura, nube, soporte y gestión comercial; en el servicio estadounidense proyectado suman USD 98,81 por estudio, incluidos USD 23,49 de nube, atención y cobro considerados conjuntamente.
 
 ### 3.4.2. Viabilidad económico financiera
 
-[COMPLETAR: análisis de al menos dos escenarios (optimista y pesimista) con al menos una herramienta de análisis financiero, como VAN, TIR, período de recupero o punto de equilibrio. Incluir los costos de infraestructura en la nube por estudio.]
+La evaluación utiliza USD corrientes, un horizonte de diez años (2027–2036) y una tasa de descuento del 19,83 %. La alternativa recomendada es desarrollar el activo hasta su habilitación regulatoria y transferirlo a un actor con capacidad comercial. Se supone una operación de USD 10 millones en 2030. La sensibilidad de su valor actual neto (VAN), ajustado por riesgo, es:
+
+| Escenario | Probabilidad conjunta de habilitación y transferencia | VAN (millones de USD) |
+|---|---|---|
+| Pesimista | 15 % | −0,54 |
+| Optimista | 45 % | 0,89 |
+
+Fuente: documento económico conjunto, análisis de sensibilidad.
+
+El caso base (probabilidad conjunta del 29,75 %) estima un VAN de USD 0,16 millones y un capital máximo de USD 1,71 millones. La rentabilidad depende de concretar la transferencia; por ello se propone condicionar la inversión posterior a la habilitación a una señal de interés comercial. Son proyecciones sujetas a validación técnica, regulatoria y comercial.
 
 ### 3.4.3. Viabilidad técnica del hardware
 
-El hardware del prototipo se construyó con componentes disponibles comercialmente: el módulo Seeed XIAO nRF52840, el frontal analógico ADS1292R de Texas Instruments, una memoria flash SPI de 16 MB, el módulo ESP32-C3 y una batería de polímero de litio de 1800 mAh. La elección del canal WiFi agrega entre USD 2,60 y 3,10 por unidad por el coprocesador, frente a USD 10,70 a 13,20 del módulo celular que se había previsto originalmente, y no genera costos de conectividad recurrentes, porque usa la conexión del domicilio del paciente. Para el producto se prevé reemplazar la memoria flash por una microSD de mayor capacidad y dejar previsto en la placa el espacio para un módulo celular, de modo que una futura variante para pacientes sin WiFi no exija rediseñar la arquitectura.
-
-[COMPLETAR: costo total de componentes por unidad (lista de materiales), costo de la prenda y análisis de la posibilidad de fabricación o compra en escala.]
+El producto presupuestado utiliza una placa propia y componentes comerciales, en lugar del kit de evaluación del prototipo. El costo estimado del módulo con una prenda es de USD 181,90, 107,04 y 73,72 para lotes de 10, 100 y 1.000 unidades. La fabricación requiere ensamblado electrónico y confección textil; el costo de la prenda y su durabilidad al lavado deben confirmarse con cotizaciones y ensayos.
 
 # 4. Tecnologías
 
@@ -736,7 +745,7 @@ Fuente: elaboración propia.
 
 ## 8.2. Definición de funcionalidades
 
-Los requerimientos se definieron en dos etapas. En la primera, a partir del plan de trabajo y de reuniones con el equipo de Ingeniería Biomédica y su director, el Dr. Federico Bustos, se estableció la funcionalidad base. En la segunda, con una primera versión del sistema disponible, los Dres. Luis Barja y Juan Manuel Aboy, cardiólogos electrofisiólogos, revisaron el software desde su experiencia con sistemas de análisis Holter. Con su devolución se elaboró una lista de requerimientos nuevos y de cambios, priorizados con el método MoSCoW (Clegg y Barker, 1994), que clasifica cada requerimiento como imprescindible (Must), importante (Should), deseable (Could) o descartado por el momento (Won't).
+Los requerimientos se definieron a partir del plan de trabajo, la coordinación con el equipo de Ingeniería Biomédica y su director, el Dr. Federico Bustos, y una reunión exploratoria previa al desarrollo con los Dres. Luis Barja y Juan Manuel Aboy, cardiólogos electrofisiólogos. Las necesidades iniciales se refinaron mediante revisiones recurrentes del software y la observación de su uso con un estudio real de 24 horas, descriptas en la sección 10.5. Los requerimientos nuevos y los cambios se priorizaron con el método MoSCoW (Clegg y Barker, 1994), que los clasifica como imprescindibles (Must), importantes (Should), deseables (Could) o descartados por el momento (Won't).
 
 ### 8.2.1. Requerimientos funcionales
 
@@ -966,7 +975,7 @@ Fuente: elaboración propia.
 
 ## 10.1. Estrategia de pruebas
 
-La estrategia de pruebas combinó cinco niveles: pruebas unitarias de la lógica aislada (decodificador, ventana de confirmación, línea de tiempo, escalas del visor); pruebas de integración del backend contra una base PostgreSQL real y un almacenamiento S3 simulado; pruebas de contrato entre componentes (especificación de la API frente a los tipos del dashboard, y codificador en TypeScript frente al decodificador en Python); pruebas de integración con el chaleco real contra el backend desplegado; y la revisión del sistema por médicos especialistas.
+La estrategia de pruebas combinó cinco niveles: pruebas unitarias de la lógica aislada (decodificador, ventana de confirmación, línea de tiempo, escalas del visor); pruebas de integración del backend contra una base PostgreSQL real y un almacenamiento S3 simulado; pruebas de contrato entre componentes (especificación de la API frente a los tipos del dashboard, y codificador en TypeScript frente al decodificador en Python); pruebas de integración con el chaleco real contra el backend desplegado; y pruebas con usuarios mediante la observación del uso por médicos especialistas y la experiencia del paciente con un registro de 24 horas (sección 10.5).
 
 El simulador de chalecos (Figura 18) reproduce en el navegador una flota de chalecos que codifican la señal con una adaptación del algoritmo del firmware, respetan el protocolo de confirmación y permiten inyectar anomalías y problemas de colocación. Permitió desarrollar y probar la plataforma completa antes de disponer del hardware y reproducir situaciones difíciles de provocar con el equipo real.
 
@@ -1040,9 +1049,29 @@ Las pruebas de carga del backend incluyen la ingesta de punta a punta de una hor
 
 ## 10.5. Pruebas con usuarios
 
-La primera validación con usuarios se realizó con los Dres. Luis Barja y Juan Manuel Aboy, cardiólogos electrofisiólogos, que revisaron el sistema desde la perspectiva del médico que analiza un estudio Holter. Su devolución se tradujo en la lista priorizada de requerimientos de la sección 8.2, que incluyó la conservación inmutable del registro crudo, incluido el ruido; la bitácora del paciente vinculada a las notificaciones; el aviso de mala colocación fuera del ciclo de envío; los controles de escala clínica del visor; y la definición de la clasificación de latidos y de las métricas del informe cardiológico.
+La investigación y validación con usuarios combinó una entrevista exploratoria no estructurada con dos médicos, la observación directa del uso de la plataforma y una prueba del flujo del paciente con el chaleco real. Se buscó relevar necesidades, detectar dificultades y orientar mejoras.
 
-[COMPLETAR: fecha y modalidad de las sesiones con los médicos, tareas realizadas y observaciones registradas. Pruebas de usabilidad de la aplicación con pacientes o personas del rango de edad objetivo, con la técnica utilizada, los resultados y las decisiones tomadas a partir de ellos.]
+### 10.5.1. Relevamiento inicial
+
+Antes del desarrollo se realizó una reunión con los Dres. Luis Barja y Juan Manuel Aboy, cardiólogos electrofisiólogos vinculados a la tutoría del equipo de Biomédica. Se los seleccionó por su experiencia en la interpretación de estudios Holter. Explicaron sus necesidades y mostraron sistemas utilizados en su práctica habitual.
+
+Como síntesis retrospectiva de ese intercambio, se identificaron necesidades de gestión de pacientes y médicos; un dashboard general; conservación del registro original, incluido el ruido; navegación con escalas clínicas; detección asistida; métricas vinculadas a su evidencia; corrección de clasificaciones; síntomas asociados al ECG; y emisión del informe clínico. Estos puntos se relacionan con los requerimientos de la sección 8.2. No se dispone de una transcripción de la reunión.
+
+### 10.5.2. Evaluación de la plataforma médica
+
+Se realizaron revisiones recurrentes durante el proyecto. La principal instancia de observación tuvo lugar después del estudio de 24 horas: los médicos exploraron el registro, consultaron hallazgos, navegaron el ECG y revisaron el informe generado, mientras comentaban su experiencia.
+
+La cantidad de marcas en un registro largo dificultaba la lectura del trazado. También surgió la necesidad de resumir los hallazgos sin recorrerlos individualmente y de ampliar el visor para analizar con mayor comodidad. A partir de estas observaciones se implementaron controles para reducir la superposición visual, un resumen de hallazgos y una vista ampliada.
+
+Los médicos valoraron especialmente la posibilidad de localizar en el ECG los síntomas enviados desde la aplicación. Consideraron acertadas algunas detecciones de ruido y señalaron otras clasificaciones que requerían revisión, lo que orientó ajustes del motor. Estas devoluciones son cualitativas y no constituyen una medición de precisión diagnóstica.
+
+### 10.5.3. Prueba del flujo del paciente
+
+Juan Bautista Buthet, integrante del equipo de Biomédica de 23 años, utilizó el chaleco durante sus actividades habituales y el sueño. El registro se extendió del 15 al 16 de octubre de 2026 durante 24,13 horas, reunió 43,3 millones de muestras y cubrió el 99,92 % del lapso. Se documentaron cuatro interrupciones de alimentación, tres por cambios de celda, y fallas de conectividad recuperadas sin anotaciones de pérdida de tramas (Equipo de Ingeniería Biomédica, 2026a, 2026b).
+
+La cobertura mide tiempo registrado, no señal clínicamente interpretable. Durante la experiencia consultó el estado de envío desde la app y probó el envío de síntomas que luego pudieron localizarse en el visor ECG. No reportó dificultades con esas funciones y manifestó que la interfaz le resultó fácil de usar por primera vez.
+
+La prueba permitió verificar esas funciones con un registro real. Su alcance es exploratorio: participó un integrante del equipo y no representa al público objetivo de 40 a 70 años. Quedan pendientes pruebas con ese grupo y una evaluación sistemática de usabilidad.
 
 ## 10.6. Validación del modelo de inteligencia artificial
 
@@ -1146,6 +1175,10 @@ Beck, K., Beedle, M., van Bennekum, A., Cockburn, A., Cunningham, W., Fowler, M.
 
 Clegg, D. y Barker, R. (1994). *Case method fast-track: A RAD approach*. Addison-Wesley.
 
+Equipo de Ingeniería Biomédica. (2026a). *Guía de integración — Holter ECG* (sección 12.21, prueba del 15 y 16 de octubre de 2026) [Documentación técnica del proyecto]. Repositorio Holter-ECG-System, archivo INTEGRACION.md.
+
+Equipo de Ingeniería Biomédica. (2026b). *Hallazgos — la bitácora de lo que se midió en este proyecto* (entrada del 15 y 16 de octubre de 2026) [Documentación técnica del proyecto]. Repositorio Holter-ECG-System, archivo HALLAZGOS.md.
+
 Espressif Systems. (s.f.). *ESP32-C3*. https://www.espressif.com/en/products/socs/esp32-c3
 
 Fielding, R. T. (2000). *Architectural styles and the design of network-based software architectures* [Tesis doctoral, University of California, Irvine]. https://ics.uci.edu/~fielding/pubs/dissertation/top.htm
@@ -1179,6 +1212,8 @@ Ley 26.529 de 2009. Derechos del Paciente en su Relación con los Profesionales 
 Mills, D., Martin, J., Burbank, J. y Kasch, W. (2010). *Network Time Protocol version 4: Protocol and algorithms specification* (RFC 5905). Internet Engineering Task Force. https://doi.org/10.17487/RFC5905
 
 Ministerio de Salud de la Nación. (2024). *Estadísticas vitales: Información básica Argentina, año 2023* (Serie 5, N° 67). Dirección de Estadísticas e Información en Salud. https://www.argentina.gob.ar/salud/deis/publicaciones
+
+*Modelo de negocio y evaluación económica — Chaleco de ECG*. (2026, 1 de octubre). [Documento de trabajo conjunto de los equipos de Ingeniería Biomédica e Ingeniería en Informática].
 
 Moody, G. B. y Mark, R. G. (2001). The impact of the MIT-BIH Arrhythmia Database. *IEEE Engineering in Medicine and Biology Magazine*, *20*(3), 45-50. https://doi.org/10.1109/51.932724
 
