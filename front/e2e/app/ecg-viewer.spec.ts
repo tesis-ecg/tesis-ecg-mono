@@ -274,7 +274,7 @@ async function stubLongTimeline(page: Page) {
     }))
     // Tipos simultáneos: la franja conserva su altura y ofrece el resto en +N.
     annotations.push(
-      ...['lead_off', 'tachycardia'].map((kind, i) => ({
+      ...['lead_off', 'tachycardia'].map((kind) => ({
         id: `synthetic-overlap-${kind}`,
         kind,
         category: 'clinical',
