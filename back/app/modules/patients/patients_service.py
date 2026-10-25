@@ -409,12 +409,9 @@ async def get_patient_summary(
             status_code=404,
             detail={"code": "PATIENT_NOT_FOUND", "message": "Paciente no encontrado."},
         )
-    return PatientSummaryOut(
-        windowHours=input_data.window_hours,
-        heartRate=None,
-        eventsDetected=None,
-        adherencePercent=None,
-    )
+    from app.modules.patients.patient_summary import build_patient_summary
+
+    return await build_patient_summary(input_data, db)
 
 
 # --------------------------------------------------------------------------- #

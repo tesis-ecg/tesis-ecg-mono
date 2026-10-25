@@ -25,7 +25,8 @@ import hashlib
 import math
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1120,9 +1121,31 @@ def compact_beat_chunks(study: Study, *, force: bool = False) -> list[dict[str, 
     ]
 
 
-def load_beats(study: Study) -> np.ndarray:
-    """Todos los latidos analizados del estudio, en orden de muestra."""
-    parts = [decode_beats(get_object(str(chunk["key"]))) for chunk in study.ecg_beat_chunks or []]
+def load_beats(
+    study: Study, *, sample_ranges: Sequence[tuple[int, int]] | None = None
+) -> np.ndarray:
+    """Latidos persistidos; opcionalmente lee solo chunks que tocan las ventanas.
+
+    Las lecturas del resumen se solapan en S3 con concurrencia acotada. No se
+    descarga ni se analiza señal cruda. Llamar fuera del event loop.
+    """
+    chunks = study.ecg_beat_chunks or []
+    if sample_ranges is not None:
+        chunks = [
+            chunk
+            for chunk in chunks
+            if any(
+                int(chunk["startSampleIndex"]) < end
+                and int(chunk["startSampleIndex"]) + int(chunk["sampleCount"]) > start
+                for start, end in sample_ranges
+            )
+        ]
+    keys = [str(chunk["key"]) for chunk in chunks]
+    if sample_ranges is not None and len(keys) > 1:
+        with ThreadPoolExecutor(max_workers=min(8, len(keys))) as pool:
+            parts = [decode_beats(payload) for payload in pool.map(get_object, keys)]
+    else:
+        parts = [decode_beats(get_object(key)) for key in keys]
     if not parts:
         return decode_beats(b"")
     return np.concatenate(parts)

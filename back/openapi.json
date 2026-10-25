@@ -4,8 +4,15 @@
       "AdherenceMetric": {
         "properties": {
           "deltaPp": {
-            "title": "Deltapp",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deltapp"
           },
           "trend": {
             "title": "Trend",
@@ -714,8 +721,15 @@
             "type": "integer"
           },
           "delta": {
-            "title": "Delta",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
           },
           "trend": {
             "title": "Trend",
@@ -796,8 +810,15 @@
             "type": "integer"
           },
           "deltaBpm": {
-            "title": "Deltabpm",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deltabpm"
           },
           "trend": {
             "title": "Trend",
@@ -3535,9 +3556,45 @@
               }
             ]
           },
+          "studyId": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Studyid"
+          },
+          "windowEnd": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Windowend"
+          },
           "windowHours": {
             "title": "Windowhours",
             "type": "integer"
+          },
+          "windowStart": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Windowstart"
           }
         },
         "required": [

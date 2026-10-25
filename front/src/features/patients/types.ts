@@ -96,19 +96,22 @@ export type MetricTrend = 'up' | 'down' | 'flat'
 
 export interface PatientSummary {
   windowHours: number
+  studyId: string | null
+  windowStart: string | null
+  windowEnd: string | null
   heartRate: {
     averageBpm: number
-    deltaBpm: number
+    deltaBpm: number | null
     trend: MetricTrend
   } | null
   eventsDetected: {
     count: number
-    delta: number
+    delta: number | null
     trend: MetricTrend
   } | null
   adherencePercent: {
     value: number
-    deltaPp: number
+    deltaPp: number | null
     trend: MetricTrend
   } | null
 }

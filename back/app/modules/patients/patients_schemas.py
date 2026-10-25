@@ -44,21 +44,24 @@ class MetricValue(CamelModel):
 
 class HeartRateMetric(MetricValue):
     averageBpm: int
-    deltaBpm: int
+    deltaBpm: int | None
 
 
 class EventsMetric(MetricValue):
     count: int
-    delta: int
+    delta: int | None
 
 
 class AdherenceMetric(MetricValue):
     value: int
-    deltaPp: int
+    deltaPp: int | None
 
 
 class PatientSummaryOut(CamelModel):
     windowHours: int
+    studyId: uuid.UUID | None = None
+    windowStart: datetime | None = None
+    windowEnd: datetime | None = None
     heartRate: HeartRateMetric | None
     eventsDetected: EventsMetric | None
     adherencePercent: AdherenceMetric | None

@@ -358,6 +358,18 @@ test('long ECG groups findings, filters the sidebar and explores twelve hours in
   const timeline = page.getByTestId('ecg-timeline')
   const sidebar = page.getByRole('region', { name: 'Hallazgos ECG' })
   await expect(chart.locator('.uplot')).toBeVisible()
+  // The viewer opens at the end of the recording. Locate the early finding
+  // before testing the first twelve-hour window and its overlapping groups.
+  const firstFinding = sidebar
+    .locator('[data-annotation-card="synthetic-morphology-0"] button')
+    .first()
+  await firstFinding.click()
+  await expect(firstFinding).toHaveAttribute('aria-pressed', 'true')
+  const strip = page.getByLabel('Avisos del estudio')
+  const overflow = strip.getByRole('button', {
+    name: 'Ver otros 2 tipos de hallazgo en este tramo',
+  })
+  await expect(overflow).toBeVisible()
   const range = () =>
     timeline.evaluate((element) => ({
       start: Number(element.dataset.startMs),
@@ -365,9 +377,8 @@ test('long ECG groups findings, filters the sidebar and explores twelve hours in
     }))
   const before = await range()
   expect(before.end - before.start).toBe(12 * 3_600_000)
-  const strip = page.getByLabel('Avisos del estudio')
   expect((await strip.boundingBox())?.height).toBeLessThanOrEqual(56)
-  await strip.getByRole('button', { name: 'Ver otros 2 tipos de hallazgo en este tramo' }).click()
+  await overflow.click()
   await expect(page.getByRole('menuitem', { name: /Electrodo desconectado/ })).toBeVisible()
   await expect(page.getByRole('menuitem', { name: /Taquicardia/ })).toBeVisible()
   await page.keyboard.press('Escape')
@@ -464,9 +475,16 @@ test('ECG sidebar opens reclassification in the signal tab and expanded view', a
   await expect(dialog.getByRole('radio', { name: /Marcar como otro hallazgo/ })).toBeVisible()
   await prScreenshot(dialog, 'Reclassification from the ECG findings sidebar')
   await dialog.getByRole('button', { name: 'Volver', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
   await page.getByRole('button', { name: 'Abrir en pantalla completa' }).click()
+  // The lazy route can leave the previous panel interactive while it loads.
+  // Wait for the expanded page before opening a dialog owned by that page.
+  await expect(page).toHaveURL(/\/studies\/[^/]+\/ecg$/)
+  await expect(page.getByRole('heading', { name: 'Visor ECG ampliado' })).toBeAttached()
+  await expect(page.getByRole('tab', { name: 'Señal ECG' })).toHaveCount(0)
   await panel.getByRole('button', { name: /^Reclasificar/ }).click()
-  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('radio', { name: /Marcar como otro hallazgo/ })).toBeVisible()
   await dialog.getByRole('button', { name: 'Volver', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
   expect(failures).toEqual([])
 })
