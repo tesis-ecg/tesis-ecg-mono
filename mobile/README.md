@@ -35,6 +35,21 @@ Hay que volver a compilar (`npm run ios`) cada vez que cambien las dependencias
 nativas o los plugins de `app.json`; `ios/` y `android/` son carpetas generadas
 (están en `.gitignore`) y se regeneran con `npx expo prebuild`.
 
+### iOS con Xcode 27
+
+El SDK de iOS 27 exige el ciclo de vida `UIScene`. En Expo SDK 57 lo activamos
+con `expo-build-properties` y `ios.enableSceneSupport` en `app.json`.
+Si ya tenías generado `ios/` antes de este cambio, actualizalo y recompilá:
+
+```bash
+npx expo prebuild --platform ios --no-install
+npm run ios
+```
+
+Esto corrige el error `Application failed to launch: UIScene life cycle is
+required for apps built with this SDK`. Reiniciar Metro no actualiza el binario
+nativo instalado. Ver la [guía oficial de Expo](https://github.com/expo/fyi/blob/main/ios-scene-lifecycle.md#staying-on-sdk-57-with-xcode-27).
+
 **Instalá con npm, no con pnpm.** `react-native-css` sólo funciona con
 `lightningcss` 1.30.1 y ese pin vive en el campo `overrides` de `package.json`,
 que es de npm. Correr `pnpm install` acá trae `lightningcss` 1.33.0 y el
