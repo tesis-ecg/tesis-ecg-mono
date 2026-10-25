@@ -279,8 +279,11 @@ async function stubLongTimeline(page: Page) {
         kind,
         category: 'clinical',
         severity: 'low',
-        startOffsetMs: 3_600_200 + i * 100,
-        endOffsetMs: 3_600_500 + i * 100,
+        // Exact same anchor guarantees they land in the same timeline slot.
+        // A few hundred milliseconds of drift can straddle a slot boundary
+        // depending on the rendered width in CI.
+        startOffsetMs: 3_600_000,
+        endOffsetMs: 3_600_500,
         confidenceScore: 0.9,
       })),
     )
