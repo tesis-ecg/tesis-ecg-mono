@@ -484,3 +484,88 @@ def test_solo_se_reclasifica_lo_que_escribio_el_motor_con_un_tramo_propio() -> N
     assert not is_reclassifiable(event(None, span))
     assert not is_reclassifiable(event("ml-1", {"startSampleIndex": 100}))
     assert not is_reclassifiable(event("ml-1", {**span, "scope": "study"}))
+
+
+@pytest.mark.parametrize(
+    ("target", "severity"),
+    [("av_block_complete", "critical"), ("afib", "high"), ("noise_burst", "low"), ("pvc", "high")],
+)
+async def test_el_medico_elige_cualquier_tipo_y_gravedad_sin_pisar_el_original(
+    target, severity, db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    doctor, study, batch, times = await _study(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    event = await _pause_finding(db, batch, study, times)
+    client = as_user(await _user_of(db, doctor))
+    response = await client.post(
+        _url(study, event),
+        json={"action": "relabel", "kind": target, "severity": severity, "note": "Revisado"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    finding = body["finding"]
+    assert finding["kind"] == "pause"
+    assert finding["severity"] == severity
+    assert finding["correction"]["effectiveKind"] == target
+    assert finding["correction"]["effectiveSeverity"] == severity
+    assert body["holterMetrics"]["pauses"]["count"] == 0
+    await db.refresh(event)
+    assert event.event_type is ECGEventType.PAUSE
+    assert event.severity is ECGEventSeverity.MEDIUM
+    manifest = (await client.get(f"/studies/{study.id}/ecg/manifest")).json()
+    annotation = next(item for item in manifest["annotations"] if item["id"] == str(event.id))
+    assert annotation["effectiveKind"] == target
+    assert annotation["severity"] == severity
+    assert annotation["category"] == ("signal_quality" if target == "noise_burst" else "clinical")
+    preview = (await client.get(f"/studies/{study.id}/clinical-report/preview")).json()
+    assert target in str(preview), "el informe aplica el tipo corregido"
+    reset = await client.post(_url(study, event), json={"action": "reset"})
+    assert reset.json()["finding"]["severity"] == "medium"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"action": "relabel", "kind": "afib"},
+        {"action": "relabel", "severity": "high"},
+        {"action": "relabel", "kind": "inventado", "severity": "high"},
+        {"action": "relabel", "kind": "afib", "severity": "inventada"},
+        {"action": "reject", "kind": "afib", "severity": "high"},
+        {"action": "relabel", "kind": "afib", "severity": "high", "beatLabel": "S"},
+    ],
+)
+async def test_valida_tipo_y_gravedad_del_hallazgo(
+    body, db, s3, as_user, make_doctor, make_patient, make_device, make_study
+) -> None:
+    doctor, study, batch, times = await _study(
+        db, make_doctor, make_patient, make_device, make_study
+    )
+    event = await _pause_finding(db, batch, study, times)
+    response = await as_user(await _user_of(db, doctor)).post(_url(study, event), json=body)
+    assert response.status_code == 422, response.text
+    await db.refresh(event)
+    assert event.correction is None
+
+
+def test_un_trastorno_de_conduccion_se_puede_cambiar_a_ectopia_o_pausa() -> None:
+    plan = plan_reclassification(
+        "av_block_complete",
+        (0, 1500),
+        "relabel",
+        None,
+        target_kind="ventricular_ectopy",
+        severity="high",
+    )
+    corrections = doctor_corrections([_event(plan.as_json())])
+    assert {relabel.from_label for relabel in corrections.relabels} == {"N", "S", "V"}
+    assert {relabel.to_label for relabel in corrections.relabels} == {"V"}
+    pause = plan_reclassification(
+        "av_block_complete",
+        (0, 1500),
+        "relabel",
+        None,
+        target_kind="pause",
+        severity="critical",
+    )
+    assert doctor_corrections([_event(pause.as_json())]).confirmed_pause_spans == ((0, 1500),)

@@ -1,5 +1,8 @@
-import { Outlet } from 'react-router-dom'
+import { Menu } from 'lucide-react'
+import { Outlet, useMatch } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -16,6 +19,9 @@ import { useSidebarState } from '../hooks/useSidebarState'
  * hamburguesa del topbar (Sheet de shadcn).
  */
 export function AppShell() {
+  const studyEcg = useMatch('/studies/:id/ecg')
+  const devEcg = useMatch('/__dev/ecg-viewer/expanded')
+  const expandedViewer = !!studyEcg || !!devEcg
   const { mobileOpen, openMobile, closeMobile, setMobileOpen } = useSidebarState()
 
   return (
@@ -38,8 +44,22 @@ export function AppShell() {
         </Sheet>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <Topbar onMenuClick={openMobile} />
-          <main className="flex-1 overflow-y-auto bg-bg-muted p-6">
+          {expandedViewer ? (
+            <div className="flex h-11 shrink-0 items-center border-b border-border bg-card px-3 md:hidden">
+              <Button variant="ghost" size="icon" onClick={openMobile} aria-label="Abrir menú">
+                <Menu className="size-5" aria-hidden />
+              </Button>
+              <span className="text-body3 ml-2 text-fg-muted">Visor ECG</span>
+            </div>
+          ) : (
+            <Topbar onMenuClick={openMobile} />
+          )}
+          <main
+            className={cn(
+              'min-h-0 flex-1 overflow-y-auto bg-bg-muted',
+              expandedViewer ? 'p-3 lg:p-5' : 'p-6',
+            )}
+          >
             <Outlet />
           </main>
         </div>

@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HolterMetrics, Study, StudyFindings } from '@/features/studies/types'
 import { api } from '@/lib/api'
 
+HTMLElement.prototype.scrollIntoView = vi.fn()
+
 const hooks = vi.hoisted(() => ({ findings: vi.fn(), metrics: vi.fn() }))
 vi.mock('@/features/studies/hooks/useStudyFindings', () => ({ useStudyFindings: hooks.findings }))
 vi.mock('@/features/studies/hooks/useHolterMetrics', () => ({ useHolterMetrics: hooks.metrics }))
@@ -149,7 +151,15 @@ describe('reclasificación de hallazgos', () => {
     const save = within(dialog).getByRole('button', { name: 'Guardar corrección' })
     expect((save as HTMLButtonElement).disabled).toBe(true)
 
-    fireEvent.click(within(dialog).getByLabelText(/Reclasificar como latidos supraventriculares/))
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Marcar como otro hallazgo/ }))
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'Tipo de hallazgo' }), {
+      key: 'ArrowDown',
+    })
+    fireEvent.click(screen.getByRole('option', { name: 'Extrasístoles supraventriculares (S)' }))
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'Gravedad' }), {
+      key: 'ArrowDown',
+    })
+    fireEvent.click(screen.getByRole('option', { name: /^Alta$/ }))
     fireEvent.change(within(dialog).getByLabelText('Nota (opcional)'), {
       target: { value: 'Es prematuro y angosto' },
     })
@@ -158,7 +168,8 @@ describe('reclasificación de hallazgos', () => {
     await waitFor(() => expect(post).toHaveBeenCalledOnce())
     expect(post).toHaveBeenCalledWith('/studies/study-1/findings/f-v/reclassification', {
       action: 'relabel',
-      beatLabel: 'S',
+      kind: 'supraventricular_ectopy',
+      severity: 'high',
       note: 'Es prematuro y angosto',
     })
     await waitFor(() =>
@@ -166,11 +177,44 @@ describe('reclasificación de hallazgos', () => {
     )
   })
 
-  it('ofrece restablecer en un hallazgo ya corregido', () => {
+  it('ofrece las mismas dos acciones en un hallazgo ya corregido', () => {
     renderTab()
 
     fireEvent.click(screen.getByRole('button', { name: /^Reclasificar Posible taquicardia/ }))
 
-    expect(screen.getByLabelText(/Restablecer al análisis automático/)).toBeTruthy()
+    expect(screen.queryByLabelText(/Confirmar hallazgo/)).toBeNull()
+    expect(screen.getAllByRole('radio')).toHaveLength(2)
+    expect(screen.getByRole('radio', { name: /Marcar como otro hallazgo/ })).toBeTruthy()
   })
+})
+
+it('exige elegir el hallazgo y descarta sin enviar los selectores de otra acción', async () => {
+  const post = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { finding: findings().ungrouped![0], holterMetrics: metrics() },
+  })
+  renderTab()
+  fireEvent.click(screen.getByRole('button', { name: /^Reclasificar Extrasístoles ventriculares/ }))
+  const dialog = screen.getByRole('dialog')
+  const view = within(dialog)
+  expect(view.queryByRole('combobox')).toBeNull()
+  expect(view.queryByRole('radio', { name: /Confirmar/ })).toBeNull()
+  fireEvent.click(view.getByRole('radio', { name: /Marcar como otro hallazgo/ }))
+  expect(view.getAllByRole('combobox')).toHaveLength(2)
+  const save = view.getByRole('button', { name: 'Guardar corrección' }) as HTMLButtonElement
+  expect(save.disabled).toBe(true)
+  fireEvent.keyDown(view.getByRole('combobox', { name: 'Tipo de hallazgo' }), { key: 'ArrowDown' })
+  fireEvent.click(screen.getByRole('option', { name: 'Posible bloqueo AV completo' }))
+  expect(save.disabled).toBe(false)
+  fireEvent.keyDown(view.getByRole('combobox', { name: 'Gravedad' }), { key: 'ArrowDown' })
+  expect(screen.getAllByRole('option')).toHaveLength(4)
+  fireEvent.click(screen.getByRole('option', { name: /^Crítica$/ }))
+  fireEvent.click(view.getByRole('radio', { name: /^Descartar/ }))
+  expect(view.queryByRole('combobox')).toBeNull()
+  fireEvent.click(save)
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith('/studies/study-1/findings/f-v/reclassification', {
+      action: 'reject',
+      note: null,
+    }),
+  )
 })

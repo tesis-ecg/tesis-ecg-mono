@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 import uuid
 from dataclasses import dataclass, replace
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple, Protocol, cast
 
 from app.db.models.ecg_event import ECGEvent, ECGEventSeverity, ECGEventType
 from app.db.models.patient_report import PatientReport
@@ -242,6 +242,17 @@ def event_view(event: ECGEvent, study: Study, to_epoch_ms: WallClockResolver) ->
     if offsets is None:
         return None
     kind = annotation_kind(event)
+    correction = event.correction or {}
+    effective_kind = correction.get("effectiveKind")
+    category = annotation_category(event, kind)
+    if isinstance(effective_kind, str) and correction.get("effectiveSeverity"):
+        category = "signal_quality" if effective_kind in SIGNAL_QUALITY_KINDS else "clinical"
+    effective_severity = correction.get("effectiveSeverity")
+    severity = (
+        cast(AnnotationSeverity, effective_severity)
+        if effective_severity in ("low", "medium", "high", "critical")
+        else ANNOTATION_SEVERITY[event.severity]
+    )
     return EventView(
         event=event,
         start_ms=offsets[0],
@@ -252,8 +263,8 @@ def event_view(event: ECGEvent, study: Study, to_epoch_ms: WallClockResolver) ->
         # el hueco de grabación que viene después.
         end_epoch_ms=to_epoch_ms(offsets[1], exclusive_end=offsets[1] > offsets[0]),
         kind=kind,
-        category=annotation_category(event, kind),
-        severity=ANNOTATION_SEVERITY[event.severity],
+        category=category,
+        severity=severity,
         scope=event_scope(event),
     )
 

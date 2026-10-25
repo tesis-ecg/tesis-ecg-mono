@@ -39,6 +39,7 @@ import { usePatientStudies } from '@/features/patients/hooks/usePatientStudies'
 import { usePatientSummary } from '@/features/patients/hooks/usePatientSummary'
 import { calculateAge } from '@/features/patients/utils'
 import { isApiError, unwrapError } from '@/lib/api'
+import { formatDateTime } from '@/lib/time'
 
 type TabValue = 'resumen' | 'estudios' | 'dispositivo'
 
@@ -248,48 +249,75 @@ export function PatientDetail() {
               />
             </Card>
           ) : (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <MetricCard
-                icon={Heart}
-                label={`HR promedio ${summary.data?.windowHours ?? 24}h`}
-                value={summary.data?.heartRate?.averageBpm ?? '—'}
-                unit={summary.data?.heartRate ? 'bpm' : undefined}
-                trend={
-                  summary.data?.heartRate
-                    ? {
-                        value: formatDelta(summary.data.heartRate.deltaBpm, 'bpm vs. ayer'),
-                        direction: summary.data.heartRate.trend,
-                      }
-                    : undefined
-                }
-              />
-              <MetricCard
-                icon={Activity}
-                label="Eventos detectados"
-                value={summary.data?.eventsDetected?.count ?? '—'}
-                trend={
-                  summary.data?.eventsDetected
-                    ? {
-                        value: formatDelta(summary.data.eventsDetected.delta, 'vs. ayer'),
-                        direction: summary.data.eventsDetected.trend,
-                      }
-                    : undefined
-                }
-              />
-              <MetricCard
-                icon={FileSearch}
-                label="Adherencia"
-                value={summary.data?.adherencePercent?.value ?? '—'}
-                unit={summary.data?.adherencePercent ? '%' : undefined}
-                trend={
-                  summary.data?.adherencePercent
-                    ? {
-                        value: formatDelta(summary.data.adherencePercent.deltaPp, 'pp vs. ayer'),
-                        direction: summary.data.adherencePercent.trend,
-                      }
-                    : undefined
-                }
-              />
+            <div className="flex flex-col gap-3">
+              <p className="text-body3 text-gray-600">
+                {summary.data?.studyId
+                  ? `Último estudio · hasta ${summary.data.windowHours} h de registro: ${formatDateTime(summary.data.windowStart)} al ${formatDateTime(summary.data.windowEnd)}`
+                  : 'El paciente todavía no tiene estudios con señal registrada.'}
+              </p>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <MetricCard
+                  icon={Heart}
+                  label="FC promedio"
+                  description={
+                    summary.data?.heartRate
+                      ? 'Sobre el tiempo analizado.'
+                      : 'Sin latidos analizados suficientes en este período.'
+                  }
+                  value={summary.data?.heartRate?.averageBpm ?? '—'}
+                  unit={summary.data?.heartRate ? 'bpm' : undefined}
+                  trend={
+                    summary.data?.heartRate?.deltaBpm != null
+                      ? {
+                          value: formatDelta(
+                            summary.data.heartRate.deltaBpm,
+                            'bpm vs. período anterior',
+                          ),
+                          direction: summary.data.heartRate.trend,
+                        }
+                      : undefined
+                  }
+                />
+                <MetricCard
+                  icon={Activity}
+                  label="Eventos detectados"
+                  description={
+                    summary.data?.eventsDetected
+                      ? 'Hallazgos clínicos no descartados.'
+                      : 'Sin análisis de eventos completo en este período.'
+                  }
+                  value={summary.data?.eventsDetected?.count ?? '—'}
+                  trend={
+                    summary.data?.eventsDetected?.delta != null
+                      ? {
+                          value: formatDelta(
+                            summary.data.eventsDetected.delta,
+                            'vs. período anterior',
+                          ),
+                          direction: summary.data.eventsDetected.trend,
+                        }
+                      : undefined
+                  }
+                />
+                <MetricCard
+                  icon={FileSearch}
+                  label="Adherencia"
+                  description="Tiempo registrado respecto del período mostrado."
+                  value={summary.data?.adherencePercent?.value ?? '—'}
+                  unit={summary.data?.adherencePercent ? '%' : undefined}
+                  trend={
+                    summary.data?.adherencePercent?.deltaPp != null
+                      ? {
+                          value: formatDelta(
+                            summary.data.adherencePercent.deltaPp,
+                            'pp vs. período anterior',
+                          ),
+                          direction: summary.data.adherencePercent.trend,
+                        }
+                      : undefined
+                  }
+                />
+              </div>
             </div>
           )}
 

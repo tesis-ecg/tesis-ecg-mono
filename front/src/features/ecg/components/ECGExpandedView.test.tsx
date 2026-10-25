@@ -6,25 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ECGSignal } from '../types'
 
-vi.mock('@/components/ui/dialog', () => ({
-  Dialog: ({
-    children,
-    onOpenChange,
-  }: {
-    children: ReactNode
-    onOpenChange: (open: boolean) => void
-  }) => (
-    <div>
-      {children}
-      <button onClick={() => onOpenChange(false)}>Cerrar externamente</button>
-    </div>
-  ),
-  DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  DialogDescription: ({ children }: { children: ReactNode }) => <p>{children}</p>,
-  DialogHeader: ({ children }: { children: ReactNode }) => <header>{children}</header>,
-  DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
-}))
-
 vi.mock('./ECGPaperControls', () => ({
   ECGPaperControls: ({
     paperSpeed,
@@ -85,13 +66,9 @@ vi.mock('./ECGViewer', () => ({
 
 vi.mock('./ECGFindingsPanel', () => ({ ECGFindingsPanel: () => null }))
 vi.mock('./ECGMinimap', () => ({ ECGMinimap: () => null }))
-vi.mock('./ECGZoomControls', () => ({
-  ECGZoomControls: ({ onMinimize }: { onMinimize: () => void }) => (
-    <button onClick={onMinimize}>Minimizar</button>
-  ),
-}))
+vi.mock('./ECGZoomControls', () => ({ ECGZoomControls: () => null }))
 
-import { ECGFullscreenDialog } from './ECGFullscreenDialog'
+import { ECGExpandedView } from './ECGExpandedView'
 
 beforeEach(() => {
   globalThis.ResizeObserver = class {
@@ -120,11 +97,14 @@ function ControlledDialog() {
   return (
     <>
       <output data-testid="parent-scale">{`${paperSpeed}/${amplitude}`}</output>
-      <ECGFullscreenDialog
+      <ECGExpandedView
         signal={signal}
         initialViewport={null}
-        open
-        onOpenChange={() => undefined}
+        initialCursorMs={null}
+        onViewportChange={() => undefined}
+        onCursorChange={() => undefined}
+        onBack={() => undefined}
+        initialSelectedAnnotationId={null}
         paperSpeed={paperSpeed}
         amplitude={amplitude}
         onPaperSpeedChange={setPaperSpeed}
@@ -134,7 +114,7 @@ function ControlledDialog() {
   )
 }
 
-describe('ECGFullscreenDialog — calibración compartida', () => {
+describe('ECGExpandedView — calibración compartida', () => {
   it('usa y actualiza la escala controlada por el visor principal', () => {
     render(<ControlledDialog />)
 
@@ -150,8 +130,10 @@ describe('ECGFullscreenDialog — calibración compartida', () => {
     expect(screen.getByTestId('viewer-scale').textContent).toBe('50/20')
   })
 
-  it('restaura cursor, viewport y modo de escala, y devuelve los cambios al cerrar', () => {
-    const onClose = vi.fn()
+  it('restaura cursor, viewport y modo de escala, y devuelve los cambios al volver', () => {
+    const onViewportChange = vi.fn()
+    const onCursorChange = vi.fn()
+    const onBack = vi.fn()
     const initialViewport = {
       startMs: 10,
       endMs: 20,
@@ -159,13 +141,14 @@ describe('ECGFullscreenDialog — calibración compartida', () => {
       isClinicalScale: false,
     }
     render(
-      <ECGFullscreenDialog
+      <ECGExpandedView
         signal={signal}
         initialViewport={initialViewport}
         initialCursorMs={15}
-        open
-        onOpenChange={vi.fn()}
-        onClose={onClose}
+        onViewportChange={onViewportChange}
+        onCursorChange={onCursorChange}
+        onBack={onBack}
+        initialSelectedAnnotationId={null}
         paperSpeed={25}
         amplitude={20}
         onPaperSpeedChange={vi.fn()}
@@ -181,12 +164,11 @@ describe('ECGFullscreenDialog — calibración compartida', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Mover viewport' }))
     fireEvent.click(screen.getByRole('button', { name: 'Mover cursor' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Minimizar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al estudio' }))
 
-    expect(onClose).toHaveBeenCalledWith({ startMs: 30, endMs: 40 }, 35)
-
-    onClose.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: 'Cerrar externamente' }))
-    expect(onClose).toHaveBeenCalledWith({ startMs: 30, endMs: 40 }, 35)
+    expect(onViewportChange).toHaveBeenCalledWith({ startMs: 30, endMs: 40 })
+    expect(onCursorChange).toHaveBeenCalledWith(35)
+    expect(onBack).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })

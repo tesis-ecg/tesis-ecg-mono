@@ -18,7 +18,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
 import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
-import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
 import {
@@ -28,8 +27,9 @@ import {
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
 import { useEcgSignal } from '@/features/ecg/hooks/useEcgSignal'
-import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
+import { useEcgSession } from '@/features/ecg/hooks/useEcgSession'
 import { timeVerificationMessage } from '@/features/ecg/timeVerificationBanner'
+import { annotationIsInGroup } from '@/features/ecg/timeline'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 import { PatientReportsTable } from '@/features/studies/components/PatientReportsTable'
 import { StudyAnalysisTab } from '@/features/studies/components/StudyAnalysisTab'
@@ -38,6 +38,7 @@ import { StudyDeviceTab } from '@/features/studies/components/StudyDeviceTab'
 import { StudyHeader } from '@/features/studies/components/StudyHeader'
 import { StudyClinicalReportTab } from '@/features/studies/components/StudyClinicalReportTab'
 import { useStudy } from '@/features/studies/hooks/useStudy'
+import { useStudyFindings } from '@/features/studies/hooks/useStudyFindings'
 import { useStudyPatientReports } from '@/features/studies/hooks/useStudyPatientReports'
 import type { StudyPatientReport } from '@/features/studies/types'
 import { isApiError, unwrapError } from '@/lib/api'
@@ -56,6 +57,7 @@ export function StudyDetail() {
   // mientras el médico la mira, así que el hook la vuelve a pedir cada tanto.
   const isInProgress = studyQ.data?.status === 'in_progress'
   const ecgQ = useEcgSignal(studyHasSignal ? id : undefined, isInProgress)
+  const findingsQ = useStudyFindings(studyHasSignal ? id : undefined, isInProgress)
   const ecgMetadata = ecgQ.data?.metadata
   const timeVerificationText = timeVerificationMessage(
     ecgMetadata?.timeVerification ??
@@ -73,20 +75,23 @@ export function StudyDetail() {
   const reportsQ = useStudyPatientReports(id, isInProgress)
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
-  const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
-  const [cursorMs, setCursorMs] = useState<number | null>(null)
-  const [fullscreenOpen, setFullscreenOpen] = useState(false)
-  const [fullscreenSnapshot, setFullscreenSnapshot] = useState<{
-    viewport: ECGViewportChange | null
-    cursorMs: number | null
-  } | null>(null)
+  const {
+    viewport,
+    setViewport,
+    cursorMs,
+    setCursorMs,
+    selectedAnnotationId,
+    setSelectedAnnotationId,
+    timelineWindow,
+    setTimelineWindow,
+    selectedGroup,
+    setSelectedGroup,
+    showAnnotationsOnChart,
+    setShowAnnotationsOnChart,
+    scale,
+  } = useEcgSession()
   const [printOpen, setPrintOpen] = useState(false)
   const [reportMode, setReportMode] = useState<ClinicalReportMode>('draft')
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
-  const [showAnnotationsOnChart, setShowAnnotationsOnChart] = useState(true)
-  // La calibración vive acá y no adentro del visor: la comparten el gráfico de
-  // la solapa, el de pantalla completa y el informe imprimible.
-  const scale = usePaperScale({ paperSpeed: 25, amplitude: 20 })
   const [tab, setTab] = useState<'senal' | 'analisis' | 'registros' | 'informe' | 'dispositivo'>(
     'senal',
   )
@@ -166,25 +171,7 @@ export function StudyDetail() {
     const newSpan = Math.min(fullSpan, span * 2)
     viewerRef.current?.zoomToRange(center - newSpan / 2, center + newSpan / 2)
   }
-  const handleFullscreen = () => {
-    setFullscreenSnapshot({ viewport, cursorMs })
-    setFullscreenOpen(true)
-  }
-  const handleFullscreenClose = (
-    lastViewport: ECGViewportChange | null,
-    lastCursorMs: number | null,
-  ) => {
-    // El cursor es el ancla con la que `restoreViewport` conserva su posición
-    // relativa al volver a un contenedor más angosto. Por eso se restaura antes
-    // que el rango, aunque visualmente ambas operaciones ocurran en el mismo frame.
-    if (lastCursorMs !== null) {
-      setCursorMs(lastCursorMs)
-      viewerRef.current?.setCursor(lastCursorMs)
-    }
-    if (lastViewport) {
-      viewerRef.current?.restoreViewport(lastViewport)
-    }
-  }
+  const handleFullscreen = () => navigate(`/studies/${id}/ecg`, { state: { fromStudy: true } })
   const handleMinimapChange = (next: ECGViewportChange) => {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
@@ -194,6 +181,7 @@ export function StudyDetail() {
   }
   const handleAnnotationSelect = (annotation: ECGAnnotation) => {
     if (!ecgQ.data) return
+    if (selectedGroup && !annotationIsInGroup(annotation, selectedGroup)) setSelectedGroup(null)
     focusViewerOnAnnotation(viewerRef.current, annotation)
     setSelectedAnnotationId(annotation.id)
   }
@@ -205,6 +193,7 @@ export function StudyDetail() {
   const handleLocateReport = (report: StudyPatientReport) => {
     const annotation = ecgQ.data?.annotations.find((item) => item.id === report.id)
     if (!annotation) return
+    if (selectedGroup && !annotationIsInGroup(annotation, selectedGroup)) setSelectedGroup(null)
     setTab('senal')
     setSelectedAnnotationId(annotation.id)
     // El viewer de la solapa recién se monta en el próximo frame.
@@ -219,6 +208,8 @@ export function StudyDetail() {
    */
   const handleLocateAnalysis = (target: ECGAnnotation) => {
     const annotation = ecgQ.data?.annotations.find((item) => item.id === target.id)
+    if (selectedGroup && !annotationIsInGroup(annotation ?? target, selectedGroup))
+      setSelectedGroup(null)
     setTab('senal')
     setSelectedAnnotationId(annotation?.id ?? null)
     // El viewer de la solapa recién se monta en el próximo frame.
@@ -336,6 +327,10 @@ export function StudyDetail() {
                     onResetScale={handleResetScale}
                   />
                   <ECGMinimap
+                    timelineWindow={timelineWindow}
+                    onTimelineWindowChange={setTimelineWindow}
+                    selectedGroup={selectedGroup}
+                    onGroupSelect={setSelectedGroup}
                     signal={ecgQ.data}
                     viewport={viewport}
                     onViewportChange={handleMinimapChange}
@@ -350,6 +345,7 @@ export function StudyDetail() {
                     paperSpeed={scale.paperSpeed}
                     amplitude={scale.amplitude}
                     onViewportChange={setViewport}
+                    initialViewport={viewport ?? undefined}
                     initialCursorMs={cursorMs ?? undefined}
                     followLatest={isInProgress}
                     onCursorChange={setCursorMs}
@@ -379,6 +375,9 @@ export function StudyDetail() {
             <aside className="min-h-0 lg:relative lg:col-span-1">
               <Card className="flex max-h-[32rem] min-h-0 flex-col p-4 lg:absolute lg:inset-0 lg:max-h-none">
                 <ECGFindingsPanel
+                  reclassification={{ studyId: study.id, findings: findingsQ.data }}
+                  selectedGroup={selectedGroup}
+                  onGroupChange={setSelectedGroup}
                   annotations={ecgQ.data?.annotations ?? []}
                   recordingStartMs={ecgQ.data?.startTimestamp ?? 0}
                   selectedAnnotationId={selectedAnnotationId}
@@ -437,26 +436,6 @@ export function StudyDetail() {
         )}
       </Tabs>
 
-      {ecgQ.data && (
-        <>
-          <ECGFullscreenDialog
-            signal={ecgQ.data}
-            initialViewport={fullscreenSnapshot?.viewport ?? viewport}
-            initialCursorMs={fullscreenSnapshot?.cursorMs ?? cursorMs}
-            open={fullscreenOpen}
-            onOpenChange={setFullscreenOpen}
-            onClose={handleFullscreenClose}
-            paperSpeed={scale.paperSpeed}
-            amplitude={scale.amplitude}
-            onPaperSpeedChange={scale.setPaperSpeed}
-            onAmplitudeChange={scale.setAmplitude}
-            selectedAnnotationId={selectedAnnotationId}
-            onAnnotationSelect={setSelectedAnnotationId}
-            showAnnotations={showAnnotationsOnChart}
-            onShowAnnotationsChange={setShowAnnotationsOnChart}
-          />
-        </>
-      )}
       <ECGClinicalReportDialog
         open={printOpen}
         onOpenChange={setPrintOpen}

@@ -51,13 +51,11 @@ vi.mock('@/features/ecg/components/ECGViewer', () => ({
   ),
 }))
 vi.mock('@/features/ecg/components/ECGMinimap', () => ({ ECGMinimap: () => null }))
-vi.mock('@/features/ecg/components/ECGFullscreenDialog', () => ({
-  ECGFullscreenDialog: () => null,
-}))
 vi.mock('@/features/ecg/components/ECGClinicalReportDialog', () => ({
   ECGClinicalReportDialog: () => null,
 }))
 
+import { EcgSessionRoute } from '@/features/ecg/components/EcgSessionRoute'
 import { StudyDetail } from './StudyDetail'
 
 const study: Study = {
@@ -198,7 +196,9 @@ function renderPage() {
   return render(
     <MemoryRouter initialEntries={['/studies/study-1']}>
       <Routes>
-        <Route path="/studies/:id" element={<StudyDetail />} />
+        <Route path="/studies/:id" element={<EcgSessionRoute />}>
+          <Route index element={<StudyDetail />} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   )

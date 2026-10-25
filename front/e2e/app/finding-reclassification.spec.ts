@@ -90,6 +90,7 @@ test('the doctor reclassifies a finding and the rhythm metrics refresh', async (
                       action: 'relabel',
                       beatLabel: 'S',
                       effectiveKind: 'supraventricular_ectopy',
+                      effectiveSeverity: 'high',
                       note: 'Prematuro y angosto',
                       correctedBy: 'u-1',
                       correctedByName: 'Dr. de Prueba',
@@ -135,7 +136,11 @@ test('the doctor reclassifies a finding and the rhythm metrics refresh', async (
 
   await page.getByRole('button', { name: /^Reclasificar Extrasístoles ventriculares/ }).click()
   const dialog = page.getByRole('dialog', { name: 'Reclasificar hallazgo' })
-  await dialog.getByLabel(/Reclasificar como latidos supraventriculares/).check()
+  await dialog.getByRole('radio', { name: /Marcar como otro hallazgo/ }).check()
+  await dialog.getByRole('combobox', { name: 'Tipo de hallazgo' }).click()
+  await page.getByRole('option', { name: 'Extrasístoles supraventriculares (S)' }).click()
+  await dialog.getByRole('combobox', { name: 'Gravedad' }).click()
+  await page.getByRole('option', { name: 'Alta', exact: true }).click()
   await dialog.getByLabel('Nota (opcional)').fill('Prematuro y angosto')
   await prScreenshot(dialog, 'Reclassify finding dialog with the relabel option chosen')
   await dialog.getByRole('button', { name: 'Guardar corrección' }).click()

@@ -5,10 +5,12 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy import Select, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.db.models.device import Device, DeviceStatus
 from app.db.models.doctor import Doctor
 from app.db.models.patient import Patient, PatientSex, PatientStudyStatus
+from app.db.models.study import Study, StudyStatus
 from app.db.models.user import User
 from app.modules.patients.patients_schemas import PatientRow
 
@@ -29,6 +31,33 @@ _ASSIGNED_DEVICE = (
 
 #: `(paciente, deviceId, deviceSerial, nombre del médico)`.
 type PatientRowSelect = Select[tuple[Patient, uuid.UUID | None, str | None, str | None]]
+
+
+async def get_summary_study(db: AsyncSession, patient_id: uuid.UUID) -> Study | None:
+    """Último estudio con señal; no materializa las pirámides ni segmentos S3."""
+    result = await db.execute(
+        select(Study)
+        .options(
+            load_only(
+                Study.id,
+                Study.started_at,
+                Study.samples_count,
+                Study.sample_rate,
+                Study.beats_analyzed_samples,
+                Study.ml_analyzed_samples,
+                Study.ecg_beat_chunks,
+            )
+        )
+        .where(
+            Study.patient_id == patient_id,
+            Study.deleted_at.is_(None),
+            Study.status.in_([StudyStatus.IN_PROGRESS, StudyStatus.COMPLETED]),
+            Study.samples_count > 0,
+        )
+        .order_by(Study.started_at.desc(), Study.id.asc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 def _patient_row_statement() -> PatientRowSelect:

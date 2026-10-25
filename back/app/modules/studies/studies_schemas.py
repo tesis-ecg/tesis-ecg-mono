@@ -8,6 +8,7 @@ from pydantic import Field
 
 from app.db.models.study import StudyStatus
 from app.modules._base_schema import CamelModel
+from app.modules.studies.finding_catalog import FindingKind
 
 
 class PatientStudyOut(CamelModel):
@@ -643,6 +644,7 @@ class StudyFindingCorrectionOut(CamelModel):
     beatLabel: Literal["N", "S", "V"] | None
     #: Lo que el hallazgo es ahora; `null` si ya no se afirma (rechazado o ruido).
     effectiveKind: str | None
+    effectiveSeverity: Literal["low", "medium", "high", "critical"] | None = None
     note: str | None
     correctedBy: uuid.UUID | None
     correctedByName: str | None
@@ -775,8 +777,11 @@ class ReclassificationRequest(CamelModel):
     #: ruido (Grupo A) y sale de las métricas. `relabel`: cambia la clase de sus
     #: latidos (`beatLabel`). `reset`: vuelve al estado del motor.
     action: Literal["confirm", "reject", "noise", "relabel", "reset"]
-    #: Obligatoria con `relabel` y solo con `relabel`.
+    #: Contrato anterior: alternativa a `kind` + `severity` para reclasificar latidos.
     beatLabel: Literal["N", "S", "V"] | None = None
+    #: Tipo y gravedad elegidos por el médico; ambos obligatorios juntos con `relabel`.
+    kind: FindingKind | None = None
+    severity: Literal["low", "medium", "high", "critical"] | None = None
     note: str | None = Field(default=None, max_length=1024)
 
 

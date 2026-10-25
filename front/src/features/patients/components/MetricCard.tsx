@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils'
 interface MetricCardProps {
   label: string
   value: string | number
+  description?: string
   unit?: string
   trend?: { value: string; direction: 'up' | 'down' | 'flat' }
   icon?: LucideIcon
@@ -17,7 +18,14 @@ const TREND_COLOR = {
   flat: 'text-gray-600',
 }
 
-export function MetricCard({ label, value, unit, trend, icon: Icon }: MetricCardProps) {
+export function MetricCard({
+  label,
+  value,
+  unit,
+  trend,
+  description,
+  icon: Icon,
+}: MetricCardProps) {
   return (
     <Card className="flex flex-col gap-2 p-5">
       <div className="flex items-center justify-between">
@@ -28,6 +36,7 @@ export function MetricCard({ label, value, unit, trend, icon: Icon }: MetricCard
         <span className="text-h4 text-gray-900">{value}</span>
         {unit && <span className="text-body2 text-gray-600">{unit}</span>}
       </div>
+      {description && <span className="text-body3 text-gray-600">{description}</span>}
       {trend && (
         <span className={cn('text-body3', TREND_COLOR[trend.direction])}>{trend.value}</span>
       )}
