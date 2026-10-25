@@ -730,6 +730,37 @@
         "title": "EventsMetric",
         "type": "object"
       },
+      "FindingKind": {
+        "enum": [
+          "tachycardia",
+          "bradycardia",
+          "afib",
+          "pvc",
+          "pause",
+          "morphology_anomaly",
+          "recurrent_morphology",
+          "ventricular_ectopy",
+          "supraventricular_ectopy",
+          "svt_run",
+          "vt_run",
+          "av_block_first_degree",
+          "av_block_mobitz_1",
+          "av_block_mobitz_2",
+          "av_block_complete",
+          "wide_qrs_sustained",
+          "short_pr",
+          "noise",
+          "lead_off",
+          "sqi_unanalyzable",
+          "adc_saturated",
+          "flatline",
+          "noise_burst",
+          "normal_beats",
+          "other"
+        ],
+        "title": "FindingKind",
+        "type": "string"
+      },
       "ForgotPasswordRequest": {
         "properties": {
           "email": {
@@ -3683,6 +3714,16 @@
             ],
             "title": "Beatlabel"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "note": {
             "anyOf": [
               {
@@ -3694,6 +3735,23 @@
               }
             ],
             "title": "Note"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
           }
         },
         "required": [
@@ -5196,6 +5254,23 @@
               }
             ],
             "title": "Effectivekind"
+          },
+          "effectiveSeverity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effectiveseverity"
           },
           "note": {
             "anyOf": [

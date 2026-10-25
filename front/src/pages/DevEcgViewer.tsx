@@ -1,15 +1,18 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef } from 'react'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { focusViewerOnAnnotation } from '@/features/ecg/annotationMeta'
-import { ECGFullscreenDialog } from '@/features/ecg/components/ECGFullscreenDialog'
+import { ECGExpandedView } from '@/features/ecg/components/ECGExpandedView'
+import { ECGFindingsPanel } from '@/features/ecg/components/ECGFindingsPanel'
 import { ECGMinimap } from '@/features/ecg/components/ECGMinimap'
 import { ECGPaperControls } from '@/features/ecg/components/ECGPaperControls'
 import { ECGViewer } from '@/features/ecg/components/ECGViewer'
 import { ECGZoomControls } from '@/features/ecg/components/ECGZoomControls'
-import { usePaperScale } from '@/features/ecg/hooks/usePaperScale'
+import { useEcgSession } from '@/features/ecg/hooks/useEcgSession'
 import { mockEcgSignal } from '@/features/ecg/mocks'
+import { annotationIsInGroup } from '@/features/ecg/timeline'
 import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/features/ecg/types'
 
 /**
@@ -20,8 +23,12 @@ import type { ECGAnnotation, ECGViewerHandle, ECGViewportChange } from '@/featur
  *
  * Ruta: `/__dev/ecg-viewer` (protegida por `<ProtectedRoute />`).
  */
-export function DevEcgViewer() {
-  const [seed, setSeed] = useState('dev-seed-0')
+export function DevEcgViewer({ expanded = false }: { expanded?: boolean }) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [search, setSearch] = useSearchParams()
+  const seed = search.get('seed') ?? 'dev-seed-0'
+  const setSeed = (next: string) => setSearch({ seed: next })
 
   const signal = useMemo(() => mockEcgSignal(seed), [seed])
 
@@ -30,10 +37,25 @@ export function DevEcgViewer() {
   const durationMs = (sampleCount / signal.sampleRate) * 1000
 
   const viewerRef = useRef<ECGViewerHandle | null>(null)
-  const scale = usePaperScale()
-  const [viewport, setViewport] = useState<ECGViewportChange | null>(null)
-  const [fullscreenOpen, setFullscreenOpen] = useState(false)
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
+  const session = useEcgSession()
+  const {
+    scale,
+    viewport,
+    setViewport,
+    cursorMs,
+    setCursorMs,
+    selectedAnnotationId,
+    setSelectedAnnotationId,
+  } = session
+  const goExpanded = () =>
+    navigate(
+      { pathname: '/__dev/ecg-viewer/expanded', search: search.toString() },
+      { state: { fromPlayground: true } },
+    )
+  const goBack = () => {
+    if (location.state?.fromPlayground === true) navigate(-1)
+    else navigate({ pathname: '/__dev/ecg-viewer', search: search.toString() }, { replace: true })
+  }
 
   // Demos de la API imperativa (TES-23).
   const handleJumpTo30s = () => {
@@ -67,16 +89,39 @@ export function DevEcgViewer() {
     viewerRef.current?.zoomToRange(next.startMs, next.endMs)
   }
   const handleAnnotationSelect = (annotation: ECGAnnotation) => {
+    if (session.selectedGroup && !annotationIsInGroup(annotation, session.selectedGroup))
+      session.setSelectedGroup(null)
     focusViewerOnAnnotation(viewerRef.current, annotation)
     setSelectedAnnotationId(annotation.id)
   }
 
-  // Fullscreen modal — al cerrar, sincroniza el viewport del viewer chico con
-  // el último del grande.
-  const handleFullscreenClose = (lastViewport: ECGViewportChange | null) => {
-    if (lastViewport) {
-      viewerRef.current?.zoomToRange(lastViewport.startMs, lastViewport.endMs)
-    }
+  if (expanded) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <ECGExpandedView
+          timelineWindow={session.timelineWindow}
+          onTimelineWindowChange={session.setTimelineWindow}
+          selectedGroup={session.selectedGroup}
+          onGroupChange={session.setSelectedGroup}
+          key={seed}
+          signal={signal}
+          initialViewport={viewport}
+          initialCursorMs={cursorMs}
+          onViewportChange={setViewport}
+          onCursorChange={setCursorMs}
+          onBack={goBack}
+          backLabel="Volver al visor"
+          initialSelectedAnnotationId={selectedAnnotationId}
+          paperSpeed={scale.paperSpeed}
+          amplitude={scale.amplitude}
+          onPaperSpeedChange={scale.setPaperSpeed}
+          onAmplitudeChange={scale.setAmplitude}
+          onAnnotationSelect={setSelectedAnnotationId}
+          showAnnotations={session.showAnnotationsOnChart}
+          onShowAnnotationsChange={session.setShowAnnotationsOnChart}
+        />
+      </div>
+    )
   }
 
   return (
@@ -98,7 +143,7 @@ export function DevEcgViewer() {
           <ECGZoomControls
             onZoomIn={handleZoomIn}
             onZoomOut={handleZoomOut}
-            onFullscreen={() => setFullscreenOpen(true)}
+            onFullscreen={goExpanded}
           />
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -133,6 +178,11 @@ export function DevEcgViewer() {
           />
 
           <ECGMinimap
+            timelineWindow={session.timelineWindow}
+            onTimelineWindowChange={session.setTimelineWindow}
+            selectedGroup={session.selectedGroup}
+            onGroupSelect={session.setSelectedGroup}
+            showAnnotations={session.showAnnotationsOnChart}
             signal={signal}
             viewport={viewport}
             onViewportChange={handleMinimapChange}
@@ -140,17 +190,37 @@ export function DevEcgViewer() {
             onAnnotationSelect={handleAnnotationSelect}
           />
 
-          <ECGViewer
-            ref={viewerRef}
-            signal={signal}
-            height={400}
-            paperSpeed={scale.paperSpeed}
-            amplitude={scale.amplitude}
-            onViewportChange={setViewport}
-            onScaleMatchChange={scale.setOnScale}
-            selectedAnnotationId={selectedAnnotationId}
-            onAnnotationSelect={handleAnnotationSelect}
-          />
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <div className="min-w-0">
+              <ECGViewer
+                key={seed}
+                ref={viewerRef}
+                signal={signal}
+                height={400}
+                paperSpeed={scale.paperSpeed}
+                amplitude={scale.amplitude}
+                initialViewport={viewport ?? undefined}
+                initialCursorMs={cursorMs ?? undefined}
+                onCursorChange={setCursorMs}
+                onViewportChange={setViewport}
+                onScaleMatchChange={scale.setOnScale}
+                selectedAnnotationId={selectedAnnotationId}
+                onAnnotationSelect={handleAnnotationSelect}
+                showAnnotations={session.showAnnotationsOnChart}
+              />
+            </div>
+            <ECGFindingsPanel
+              annotations={signal.annotations}
+              recordingStartMs={signal.startTimestamp}
+              selectedAnnotationId={selectedAnnotationId}
+              onAnnotationSelect={handleAnnotationSelect}
+              selectedGroup={session.selectedGroup}
+              onGroupChange={session.setSelectedGroup}
+              showOnChart={session.showAnnotationsOnChart}
+              onShowOnChartChange={session.setShowAnnotationsOnChart}
+              className="max-h-[32rem]"
+            />
+          </div>
 
           {viewport && (
             <p className="text-body3 mt-10 text-gray-600">
@@ -160,20 +230,6 @@ export function DevEcgViewer() {
           )}
         </CardContent>
       </Card>
-
-      <ECGFullscreenDialog
-        signal={signal}
-        initialViewport={viewport}
-        open={fullscreenOpen}
-        onOpenChange={setFullscreenOpen}
-        onClose={handleFullscreenClose}
-        paperSpeed={scale.paperSpeed}
-        amplitude={scale.amplitude}
-        onPaperSpeedChange={scale.setPaperSpeed}
-        onAmplitudeChange={scale.setAmplitude}
-        selectedAnnotationId={selectedAnnotationId}
-        onAnnotationSelect={setSelectedAnnotationId}
-      />
     </div>
   )
 }

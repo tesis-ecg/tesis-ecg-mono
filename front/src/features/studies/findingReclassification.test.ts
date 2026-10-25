@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { isReclassifiable, reclassificationChoices } from './findingReclassification'
+import {
+  isReclassifiable,
+  reclassificationChoices,
+  RECLASSIFICATION_KINDS,
+} from './findingReclassification'
 import type { StudyFinding } from './types'
 
 function finding(overrides: Partial<StudyFinding> = {}): StudyFinding {
@@ -22,43 +26,21 @@ function finding(overrides: Partial<StudyFinding> = {}): StudyFinding {
 }
 
 describe('reclassificationChoices', () => {
-  it('ofrece las otras dos etiquetas de latido para una ectopia ventricular', () => {
-    const values = reclassificationChoices(finding()).map((choice) => choice.value)
-    expect(values).toEqual(['confirm', 'reject', 'noise', 'relabel:N', 'relabel:S'])
-  })
-
-  it('una taquicardia se puede pasar a S o V; su etiqueta propia es N', () => {
-    const values = reclassificationChoices(finding({ kind: 'tachycardia' })).map((c) => c.value)
-    expect(values).toEqual(['confirm', 'reject', 'noise', 'relabel:S', 'relabel:V'])
-  })
-
-  it('los tipos sin etiqueta de latido solo admiten confirmar, descartar o ruido', () => {
-    const values = reclassificationChoices(finding({ kind: 'av_block_mobitz_2' })).map(
-      (choice) => choice.value,
-    )
-    expect(values).toEqual(['confirm', 'reject', 'noise'])
-  })
-
-  it('suma restablecer solo si el hallazgo ya fue corregido', () => {
-    const corrected = finding({
-      validationStatus: 'noise',
-      correction: {
-        action: 'noise',
-        beatLabel: null,
-        effectiveKind: null,
-        note: null,
-        correctedBy: 'u-1',
-        correctedByName: 'Dra. Gómez',
-        correctedAt: '2026-09-17T12:00:00Z',
-      },
-    })
-    const reset = reclassificationChoices(corrected).at(-1)!
-    expect(reset).toMatchObject({ value: 'reset', request: { action: 'reset' } })
-  })
-
-  it('arma el pedido de una reclasificación con la etiqueta elegida', () => {
-    const choice = reclassificationChoices(finding()).find((item) => item.value === 'relabel:S')
-    expect(choice?.request).toEqual({ action: 'relabel', beatLabel: 'S' })
+  it.each(['ventricular_ectopy', 'tachycardia', 'av_block_mobitz_2', 'noise_burst'])(
+    'ofrece solo descartar o marcar como otro hallazgo para %s',
+    (kind) => {
+      expect(reclassificationChoices(finding({ kind })).map((choice) => choice.value)).toEqual([
+        'reject',
+        'relabel',
+      ])
+    },
+  )
+  it('incluye los hallazgos clínicos y de calidad en el selector', () => {
+    const kinds = RECLASSIFICATION_KINDS.map((option) => option.value)
+    expect(kinds).toContain('av_block_complete')
+    expect(kinds).toContain('noise_burst')
+    expect(kinds).toContain('pause')
+    expect(new Set(kinds).size).toBe(kinds.length)
   })
 })
 

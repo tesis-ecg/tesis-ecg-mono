@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { StudyFinding, StudyFindings } from '@/features/studies/types'
+import { api } from '@/lib/api'
+
+HTMLElement.prototype.scrollIntoView = vi.fn()
 
 import type { ECGAnnotation } from '../types'
 import { ECGFindingsPanel } from './ECGFindingsPanel'
@@ -43,7 +49,7 @@ describe('ECGFindingsPanel', () => {
 
     const buttons = screen.getAllByRole('button')
     expect(buttons[0].textContent).toContain('Fibrilación auricular')
-    expect(buttons[0].textContent).toContain('Crítica')
+    expect(buttons[0].closest('[data-annotation-card]')?.textContent).toContain('Crítica')
     expect(buttons[0].textContent).toContain('Confianza 96%')
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true')
     expect(buttons[0].className).toContain('cursor-pointer')
@@ -197,3 +203,197 @@ function annotation(overrides: Partial<ECGAnnotation>): ECGAnnotation {
     ...overrides,
   }
 }
+
+describe('ECGFindingsPanel — filtro de timeline', () => {
+  it('filtra por IDs en orden cronológico, conserva respuestas y permite ver todos', () => {
+    const a = annotation({ id: 'a', startMs: 1_000 })
+    const b = annotation({ id: 'b', startMs: 2_000, severity: 'critical' })
+    const response = annotation({
+      id: 'reply',
+      kind: 'patient_report',
+      startMs: 1_500,
+      linkedAnnotationId: 'a',
+    })
+    const onGroupChange = vi.fn()
+    const onSelect = vi.fn()
+    const { container, rerender } = render(
+      <ECGFindingsPanel
+        annotations={[b, a, response, annotation({ id: 'external' })]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={onSelect}
+        selectedGroup={{
+          kind: 'lead_off',
+          startMs: 0,
+          endMs: 5_000,
+          severity: 'critical',
+          annotationIds: ['a', 'b'],
+        }}
+        onGroupChange={onGroupChange}
+      />,
+    )
+    const view = within(container)
+    expect(view.getByText('2 avisos detectados')).toBeTruthy()
+    const cards = container.querySelectorAll('[data-annotation-card]')
+    expect([...cards].map((card) => card.getAttribute('data-annotation-card'))).toEqual(['a', 'b'])
+    expect(within(cards[0] as HTMLElement).getByText('Respuesta del paciente')).toBeTruthy()
+    fireEvent.click(cards[0].querySelector('button')!)
+    expect(onSelect).toHaveBeenCalledWith(a)
+    fireEvent.click(view.getByRole('button', { name: 'Ver todos' }))
+    expect(onGroupChange).toHaveBeenCalledWith(null)
+    rerender(
+      <ECGFindingsPanel
+        annotations={[b, a, response, annotation({ id: 'external' })]}
+        recordingStartMs={0}
+        selectedAnnotationId="a"
+        onAnnotationSelect={onSelect}
+      />,
+    )
+    expect(view.getByText('3 avisos detectados')).toBeTruthy()
+    expect(
+      container.querySelector('[data-annotation-card]')?.getAttribute('data-annotation-card'),
+    ).toBe('b')
+  })
+
+  it('actualiza los datos, elimina integrantes desaparecidos y vuelve a todos si el grupo queda vacío', () => {
+    const group = {
+      kind: 'lead_off',
+      startMs: 0,
+      endMs: 5_000,
+      severity: 'medium' as const,
+      annotationIds: ['a', 'b'],
+    }
+    const onGroupChange = vi.fn()
+    const { container, rerender } = render(
+      <ECGFindingsPanel
+        annotations={[annotation({ id: 'a', description: 'Actualizado' })]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={vi.fn()}
+        selectedGroup={group}
+        onGroupChange={onGroupChange}
+      />,
+    )
+    expect(within(container).getByText('Actualizado')).toBeTruthy()
+    expect(onGroupChange).toHaveBeenLastCalledWith({ ...group, annotationIds: ['a'] })
+    rerender(
+      <ECGFindingsPanel
+        annotations={[annotation({ id: 'external' })]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={vi.fn()}
+        selectedGroup={group}
+        onGroupChange={onGroupChange}
+      />,
+    )
+    expect(onGroupChange).toHaveBeenLastCalledWith(null)
+    expect(within(container).queryByRole('button', { name: 'Ver todos' })).toBeNull()
+    expect(container.querySelector('[data-annotation-card="external"]')).toBeTruthy()
+  })
+})
+
+it('reclasifica desde el lápiz sin navegar y refresca los hallazgos', async () => {
+  const finding: StudyFinding = {
+    id: 'finding-edit',
+    kind: 'ventricular_ectopy',
+    category: 'clinical',
+    severity: 'medium',
+    startEpochMs: 10_000,
+    endEpochMs: 20_000,
+    startOffsetMs: 10_000,
+    endOffsetMs: 20_000,
+    confidenceScore: 0.9,
+    modelVersion: 'ml-1',
+    validationStatus: 'pending',
+    reclassifiable: true,
+  }
+  const findings: StudyFindings = {
+    studyId: 'study-edit',
+    sampleRate: 500,
+    sampleCount: 10_000,
+    durationMs: 20_000,
+    modelVersion: 'ml-1',
+    quality: {
+      analyzableRatio: 1,
+      goodRatio: 1,
+      marginalRatio: 0,
+      badRatio: 0,
+      evaluatedMs: 20_000,
+    },
+    groups: [
+      {
+        key: 'v',
+        kind: finding.kind,
+        category: finding.category,
+        severity: finding.severity,
+        occurrences: 1,
+        firstOffsetMs: 10_000,
+        lastOffsetMs: 20_000,
+        firstEpochMs: 10_000,
+        lastEpochMs: 20_000,
+        items: [finding],
+      },
+    ],
+    ungrouped: [{ ...finding, id: 'manual', reclassifiable: false }],
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { finding, holterMetrics: { status: 'pending' } } })
+  const onSelect = vi.fn()
+  const { container, unmount } = render(
+    <QueryClientProvider client={client}>
+      <ECGFindingsPanel
+        annotations={[
+          annotation({
+            id: finding.id,
+            kind: finding.kind,
+            category: 'clinical',
+            startMs: 10_000,
+            endMs: 20_000,
+          }),
+          annotation({ id: 'manual' }),
+          annotation({ id: 'patient', kind: 'patient_report', category: 'patient_marker' }),
+        ]}
+        recordingStartMs={0}
+        selectedAnnotationId={null}
+        onAnnotationSelect={onSelect}
+        reclassification={{ studyId: 'study-edit', findings }}
+      />
+    </QueryClientProvider>,
+  )
+  try {
+    const buttons = within(container).getAllByRole('button', { name: /^Reclasificar/ })
+    expect(buttons).toHaveLength(1)
+    fireEvent.click(buttons[0])
+    expect(onSelect).not.toHaveBeenCalled()
+    const dialog = within(document.body).getByRole('dialog', { name: 'Reclasificar hallazgo' })
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Marcar como otro hallazgo/ }))
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'Tipo de hallazgo' }), {
+      key: 'ArrowDown',
+    })
+    fireEvent.click(screen.getByRole('option', { name: 'Extrasístoles supraventriculares (S)' }))
+    fireEvent.change(within(dialog).getByLabelText('Nota (opcional)'), {
+      target: { value: 'Revisado en la señal' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar corrección' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        '/studies/study-edit/findings/finding-edit/reclassification',
+        {
+          action: 'relabel',
+          kind: 'supraventricular_ectopy',
+          severity: 'medium',
+          note: 'Revisado en la señal',
+        },
+      ),
+    )
+    await waitFor(() => expect(within(document.body).queryByRole('dialog')).toBeNull())
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['studies', 'study-edit', 'findings'] })
+  } finally {
+    unmount()
+    post.mockRestore()
+    client.clear()
+  }
+})

@@ -79,6 +79,25 @@ def _plan(input_data: ReclassificationInput, event: ECGEvent) -> Reclassificatio
             "Este hallazgo no se puede reclasificar.",
         )
     data = input_data.data
+    if data.kind is not None or data.severity is not None:
+        if (
+            data.action != "relabel"
+            or data.kind is None
+            or data.severity is None
+            or data.beatLabel is not None
+        ):
+            raise _unprocessable(
+                "INVALID_RECLASSIFICATION",
+                "Elegí un tipo de hallazgo y su gravedad para reclasificar.",
+            )
+        return plan_reclassification(
+            annotation_kind(event),
+            span,
+            data.action,
+            None,
+            target_kind=data.kind.value,
+            severity=data.severity,
+        )
     if data.action == "reset":
         if data.beatLabel is not None:
             raise _unprocessable(
@@ -139,6 +158,8 @@ async def reclassify_finding(
             "action": data.action,
             "from_kind": annotation_kind(event),
             "effective_kind": plan.effective_kind if plan else None,
+            "original_severity": event.severity.value.lower(),
+            "effective_severity": plan.effective_severity if plan else None,
             "from_label": plan.from_label if plan else None,
             "to_label": plan.to_label if plan else None,
             "previous_status": previous_status,

@@ -84,6 +84,7 @@ def _correction_out(
         action=correction["action"],
         beatLabel=label if label in ("N", "S", "V") else None,
         effectiveKind=effective if isinstance(effective, str) else None,
+        effectiveSeverity=correction.get("effectiveSeverity"),
         note=event.validation_note,
         correctedBy=event.validated_by,
         correctedByName=names.get(event.validated_by) if event.validated_by else None,

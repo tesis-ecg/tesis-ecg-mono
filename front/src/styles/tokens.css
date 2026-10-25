@@ -133,9 +133,9 @@
      avisos y el azul la media, y esto no es un hallazgo. */
   --ecg-time-unverified: #7a4fb5;
   --ecg-time-unverified-bg: rgba(122, 79, 181, 0.1);
-  /* Herramientas de medición: no es una alerta, así que no toma los tokens de severidad. */
-  --ecg-measure: var(--color-info-700);
-  --ecg-measure-bg: rgba(41, 77, 236, 0.12);
+  /* Herramientas de medición: verde para distinguirlas del trazado azul. */
+  --ecg-measure: var(--color-success-700);
+  --ecg-measure-bg: rgba(81, 192, 117, 0.12);
   --ecg-alert-low: var(--color-gray-600);
   --ecg-alert-low-bg: rgba(114, 127, 135, 0.16);
   --ecg-alert-low-timeline-bg: rgba(114, 127, 135, 0.32);
@@ -265,8 +265,8 @@
   --ecg-selector-bg: rgba(250, 204, 21, 0.3);
   --ecg-time-unverified: #c9aef0;
   --ecg-time-unverified-bg: rgba(201, 174, 240, 0.14);
-  --ecg-measure: #9cb0f7;
-  --ecg-measure-bg: rgba(156, 176, 247, 0.2);
+  --ecg-measure: var(--color-success-500);
+  --ecg-measure-bg: rgba(81, 192, 117, 0.2);
   --ecg-alert-low: var(--color-gray-300);
   --ecg-alert-low-bg: rgba(183, 188, 194, 0.18);
   --ecg-alert-low-timeline-bg: rgba(183, 188, 194, 0.34);

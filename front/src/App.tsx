@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { Route, Routes } from 'react-router-dom'
 
+import { EcgSessionRoute } from './features/ecg/components/EcgSessionRoute'
 import { AppShell } from './layouts/AppShell'
 import { Spinner } from './components/Spinner'
 import { ProtectedRoute } from './router/ProtectedRoute'
@@ -38,6 +39,9 @@ const Studies = lazy(() =>
 const StudyDetail = lazy(() =>
   import('./pages/StudyDetail').then((module) => ({ default: module.StudyDetail })),
 )
+const StudyEcg = lazy(() =>
+  import('./pages/StudyEcg').then((module) => ({ default: module.StudyEcg })),
+)
 const Users = lazy(() => import('./pages/Users').then((module) => ({ default: module.Users })))
 const VestSimulator = lazy(() =>
   import('./pages/VestSimulator').then((module) => ({ default: module.VestSimulator })),
@@ -71,7 +75,10 @@ function App() {
             <Route path="devices" element={<Devices />} />
             <Route path="devices/:id" element={<DeviceDetail />} />
             <Route path="studies" element={<Studies />} />
-            <Route path="studies/:id" element={<StudyDetail />} />
+            <Route path="studies/:id" element={<EcgSessionRoute />}>
+              <Route index element={<StudyDetail />} />
+              <Route path="ecg" element={<StudyEcg />} />
+            </Route>
             <Route element={<RoleRoute allow={['admin']} />}>
               <Route path="users" element={<Users />} />
               {/* Simulador de chalecos: admin-only, con entrada en el menú.
@@ -81,7 +88,12 @@ function App() {
                   en producción. */}
               <Route path="__sim/vest" element={<VestSimulator />} />
             </Route>
-            {DevEcgViewer ? <Route path="__dev/ecg-viewer" element={<DevEcgViewer />} /> : null}
+            {DevEcgViewer ? (
+              <Route path="__dev/ecg-viewer" element={<EcgSessionRoute amplitude={10} />}>
+                <Route index element={<DevEcgViewer />} />
+                <Route path="expanded" element={<DevEcgViewer expanded />} />
+              </Route>
+            ) : null}
           </Route>
         </Route>
 

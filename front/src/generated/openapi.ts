@@ -144,6 +144,8 @@ export interface EventsMetric {
   "delta": number
 }
 
+export type FindingKind = "tachycardia" | "bradycardia" | "afib" | "pvc" | "pause" | "morphology_anomaly" | "recurrent_morphology" | "ventricular_ectopy" | "supraventricular_ectopy" | "svt_run" | "vt_run" | "av_block_first_degree" | "av_block_mobitz_1" | "av_block_mobitz_2" | "av_block_complete" | "wide_qrs_sustained" | "short_pr" | "noise" | "lead_off" | "sqi_unanalyzable" | "adc_saturated" | "flatline" | "noise_burst" | "normal_beats" | "other"
+
 export interface ForgotPasswordRequest {
   "email": string
 }
@@ -620,6 +622,8 @@ export interface ReclassificationOut {
 export interface ReclassificationRequest {
   "action": "confirm" | "reject" | "noise" | "relabel" | "reset"
   "beatLabel"?: "N" | "S" | "V" | null
+  "kind"?: FindingKind | null
+  "severity"?: "low" | "medium" | "high" | "critical" | null
   "note"?: string | null
 }
 
@@ -868,6 +872,7 @@ export interface StudyFindingCorrectionOut {
   "action": "confirm" | "reject" | "noise" | "relabel"
   "beatLabel": "N" | "S" | "V" | null
   "effectiveKind": string | null
+  "effectiveSeverity"?: "low" | "medium" | "high" | "critical" | null
   "note": string | null
   "correctedBy": string | null
   "correctedByName": string | null

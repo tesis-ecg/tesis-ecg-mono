@@ -583,3 +583,20 @@ def test_rechazar_una_pausa_del_detector_la_saca_de_la_cuenta() -> None:
 
     assert base["pauses"]["count"] == 1
     assert rejected["pauses"]["count"] == 0
+
+
+@pytest.mark.parametrize("hardware", [[], [(1500, 3000)]])
+def test_pausa_asignada_por_el_medico_cuenta_sin_motor_y_respeta_el_hardware(hardware) -> None:
+    beats = _beats(np.full(99, 0.8))
+    result = compute_holter_metrics(
+        beats,
+        [_run(0, 80 * RATE)],
+        hardware,
+        [],
+        RATE,
+        80 * RATE,
+        corrections=DoctorCorrections(confirmed_pause_spans=((1500, 3000),)),
+    )
+    assert result["pauses"]["count"] == (0 if hardware else 1)
+    if not hardware:
+        assert result["pauses"]["longest"]["durationMs"] == 3000

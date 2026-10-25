@@ -1190,88 +1190,9 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   )
 
   return (
-    <div className="relative w-full" style={{ height }}>
+    <div className="min-w-0 w-full">
       <div
-        ref={containerRef}
-        className="h-full w-full cursor-grab rounded-md outline-none focus:ring-2 focus:ring-primary/40"
-        aria-label="Gráfico ECG interactivo"
-        tabIndex={0}
-      />
-      {plotArea && annotationLabelLayouts.length > 0 ? (
-        <div
-          ref={labelsOverlayRef}
-          className="pointer-events-none absolute overflow-hidden"
-          style={{
-            left: plotArea.left,
-            top: plotArea.top,
-            width: plotArea.width,
-            height: plotArea.height,
-          }}
-          aria-label="Avisos visibles en el gráfico"
-        >
-          {annotationLabelLayouts.map(({ annotation, lane, leftPx }) => {
-            const Icon = annotationChartIcon(annotation, annotationLinks)
-            const severity = ANNOTATION_SEVERITY[annotation.severity]
-            const isSelected = annotation.id === selectedAnnotationId
-            const isHighlighted = isAnnotationHighlighted(
-              annotation,
-              selectedAnnotationId,
-              annotationLinks,
-            )
-            const label = annotationChartLabel(annotation, annotationLinks)
-            return (
-              <button
-                key={annotation.id}
-                type="button"
-                data-annotation-label-id={annotation.id}
-                aria-label={`${label}, severidad ${severity.label.toLowerCase()}`}
-                aria-pressed={isSelected}
-                title={
-                  annotation.description
-                    ? `${label} · ${annotation.description}`
-                    : `${label} · ${severity.label}`
-                }
-                onClick={() => onAnnotationSelect?.(annotation)}
-                className={cn(
-                  'pointer-events-auto absolute flex h-6 max-w-full cursor-pointer items-center gap-1 rounded-full border px-2 text-xs font-medium shadow-sm backdrop-blur-sm',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                  isHighlighted && 'ring-2 ring-primary/50',
-                )}
-                style={{
-                  left: leftPx,
-                  top: 4 + lane * 28,
-                  zIndex: isHighlighted ? 20 : 10,
-                  color: `var(--ecg-alert-${annotation.severity})`,
-                  borderColor: `var(--ecg-alert-${annotation.severity})`,
-                  backgroundColor: `var(--ecg-alert-${annotation.severity}-bg)`,
-                }}
-              >
-                <Icon className="size-3.5 shrink-0" aria-hidden />
-                <span className="truncate whitespace-nowrap">{label}</span>
-              </button>
-            )
-          })}
-        </div>
-      ) : null}
-      <div className="pointer-events-none absolute inset-0 z-[15]">
-        <ECGMeasurementOverlay
-          tool={measurements.tool}
-          enabled={measureEnabled}
-          plotArea={plotArea}
-          xToPx={xToPx}
-          pxToX={pxToX}
-          yToPx={yToPx}
-          visibleRange={measureRange}
-          trace={measureTrace}
-          measurements={measurements.measurements}
-          onChange={measurements.setMeasurements}
-        />
-      </div>
-      {/* Fuera del contenedor de uPlot a propósito: un click acá no tiene que
-          arrancar un pan ni seleccionar el aviso que esté debajo. */}
-      <div
-        className="absolute z-20 flex items-start gap-2"
-        style={{ top: (plotArea?.top ?? 0) + 8, right: 8 }}
+        className="mb-2 flex min-h-10 min-w-0 items-center justify-between gap-2"
         data-testid="ecg-viewer-toolbar"
       >
         <ECGMeasurementToolbar
@@ -1283,7 +1204,85 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
           onClear={measurements.clear}
           viewKind={signal.metadata?.viewKind}
         />
-        {toolbar}
+        <div className="shrink-0">{toolbar}</div>
+      </div>
+      <div className="relative w-full rounded-md bg-[var(--ecg-bg)]" style={{ height }}>
+        <div
+          ref={containerRef}
+          className="h-full w-full cursor-grab rounded-md outline-none focus:ring-2 focus:ring-primary/40"
+          aria-label="Gráfico ECG interactivo"
+          tabIndex={0}
+        />
+        {plotArea && annotationLabelLayouts.length > 0 ? (
+          <div
+            ref={labelsOverlayRef}
+            className="pointer-events-none absolute overflow-hidden"
+            style={{
+              left: plotArea.left,
+              top: plotArea.top,
+              width: plotArea.width,
+              height: plotArea.height,
+            }}
+            aria-label="Avisos visibles en el gráfico"
+          >
+            {annotationLabelLayouts.map(({ annotation, lane, leftPx }) => {
+              const Icon = annotationChartIcon(annotation, annotationLinks)
+              const severity = ANNOTATION_SEVERITY[annotation.severity]
+              const isSelected = annotation.id === selectedAnnotationId
+              const isHighlighted = isAnnotationHighlighted(
+                annotation,
+                selectedAnnotationId,
+                annotationLinks,
+              )
+              const label = annotationChartLabel(annotation, annotationLinks)
+              return (
+                <button
+                  key={annotation.id}
+                  type="button"
+                  data-annotation-label-id={annotation.id}
+                  aria-label={`${label}, severidad ${severity.label.toLowerCase()}`}
+                  aria-pressed={isSelected}
+                  title={
+                    annotation.description
+                      ? `${label} · ${annotation.description}`
+                      : `${label} · ${severity.label}`
+                  }
+                  onClick={() => onAnnotationSelect?.(annotation)}
+                  className={cn(
+                    'pointer-events-auto absolute flex h-6 max-w-full cursor-pointer items-center gap-1 rounded-full border px-2 text-xs font-medium shadow-sm backdrop-blur-sm',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+                    isHighlighted && 'ring-2 ring-primary/50',
+                  )}
+                  style={{
+                    left: leftPx,
+                    top: 4 + lane * 28,
+                    zIndex: isHighlighted ? 20 : 10,
+                    color: `var(--ecg-alert-${annotation.severity})`,
+                    borderColor: `var(--ecg-alert-${annotation.severity})`,
+                    backgroundColor: `var(--ecg-alert-${annotation.severity}-bg)`,
+                  }}
+                >
+                  <Icon className="size-3.5 shrink-0" aria-hidden />
+                  <span className="truncate whitespace-nowrap">{label}</span>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+        <div className="pointer-events-none absolute inset-0 z-[15]">
+          <ECGMeasurementOverlay
+            tool={measurements.tool}
+            enabled={measureEnabled}
+            plotArea={plotArea}
+            xToPx={xToPx}
+            pxToX={pxToX}
+            yToPx={yToPx}
+            visibleRange={measureRange}
+            trace={measureTrace}
+            measurements={measurements.measurements}
+            onChange={measurements.setMeasurements}
+          />
+        </div>
       </div>
     </div>
   )

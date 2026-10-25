@@ -4,6 +4,19 @@ export type ECGAnnotationSeverity = 'low' | 'medium' | 'high' | 'critical'
 
 export type ECGAnnotationCategory = 'signal_quality' | 'clinical' | 'patient_marker' | 'technical'
 
+/** Ventana de navegación, independiente del zoom del trazado. */
+export interface ECGTimelineRange {
+  startMs: number
+  endMs: number
+}
+
+/** Los IDs fijan los integrantes aunque cambie el ancho de la timeline. */
+export interface ECGAnnotationGroup extends ECGTimelineRange {
+  kind: string
+  annotationIds: string[]
+  severity: ECGAnnotationSeverity
+}
+
 /** Un tramo contiguo de grabación, con su hora de pared real. */
 export interface ECGTimelineSegment {
   ordinal: number

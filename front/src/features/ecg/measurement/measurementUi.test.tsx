@@ -50,7 +50,7 @@ describe('ECGMeasurementToolbar', () => {
     )
     const time = screen.getByRole('button', { name: 'Calibre de tiempo' })
     expect(time.hasAttribute('disabled')).toBe(true)
-    expect(screen.getByText('Acercá el zoom')).toBeTruthy()
+    expect(time.getAttribute('title')).toContain('Acercá el zoom')
     fireEvent.click(time)
     expect(onToolChange).not.toHaveBeenCalled()
   })
@@ -68,7 +68,9 @@ describe('ECGMeasurementToolbar', () => {
         viewKind="filtered_visualization"
       />,
     )
-    expect(screen.getByRole('note').textContent).toContain('0,05–40 Hz')
+    expect(screen.getByRole('button', { name: 'Compás R-R' }).getAttribute('title')).toContain(
+      '0,05–40 Hz',
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Compás R-R' }))
     expect(onToolChange).toHaveBeenCalledWith('rr')
     fireEvent.click(screen.getByRole('button', { name: /Borrar mediciones/ }))
@@ -84,11 +86,55 @@ describe('ECGMeasurementToolbar', () => {
         viewKind="raw"
       />,
     )
-    expect(screen.queryByRole('note')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Compás R-R' }).getAttribute('title')).not.toContain(
+      '0,05–40 Hz',
+    )
     const rr = screen.getByRole('button', { name: 'Compás R-R' })
     expect(rr.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(rr)
     expect(onToolChange).toHaveBeenLastCalledWith(null)
+  })
+  it('muestra todas las herramientas con la mano activa por defecto', () => {
+    const onToolChange = vi.fn()
+    render(
+      <ECGMeasurementToolbar
+        tool={null}
+        onToolChange={onToolChange}
+        enabled
+        measurementCount={0}
+        onClear={vi.fn()}
+      />,
+    )
+    expect(
+      screen.getByRole('button', { name: 'Desplazar gráfico' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+    for (const name of ['Calibre de tiempo', 'Calibre de amplitud', 'Área', 'Compás R-R']) {
+      expect(screen.getByRole('button', { name }).getAttribute('aria-pressed')).toBe('false')
+    }
+    expect(screen.queryByRole('button', { name: 'Herramientas de medición' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Calibre de tiempo' }))
+    expect(onToolChange).toHaveBeenCalledWith('time')
+  })
+
+  it('vuelve a desplazar con la mano sin borrar las mediciones', () => {
+    const onToolChange = vi.fn()
+    const onClear = vi.fn()
+    render(
+      <ECGMeasurementToolbar
+        tool="time"
+        onToolChange={onToolChange}
+        enabled={false}
+        measurementCount={2}
+        onClear={onClear}
+      />,
+    )
+    const hand = screen.getByRole('button', { name: 'Desplazar gráfico' })
+    expect(hand.getAttribute('aria-pressed')).toBe('false')
+    expect(hand.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(hand)
+    expect(onToolChange).toHaveBeenLastCalledWith(null)
+    expect(onClear).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Borrar mediciones (2)' })).toBeTruthy()
   })
 })
 
@@ -142,6 +188,21 @@ describe('ECGMeasurementOverlay', () => {
     expect(screen.getAllByTestId('measurement-label')).toHaveLength(2)
     fireEvent.click(screen.getAllByRole('button', { name: /Quitar medición/ })[0])
     expect(onChange).toHaveBeenCalledWith([measurements[1]])
+  })
+  it('descarta el arrastre pendiente al volver al modo de desplazamiento y conserva las mediciones terminadas', () => {
+    const onChange = vi.fn()
+    const measurements: Measurement[] = [{ id: 'existing', tool: 'time', aMs: 1_020, bMs: 1_080 }]
+    const { rerender } = render(
+      <ECGMeasurementOverlay {...overlayProps({ measurements, onChange })} />,
+    )
+    const capture = screen.getByTestId('measurement-capture')
+    fireEvent.pointerDown(capture, { clientX: 50, clientY: 20, button: 0 })
+    fireEvent.pointerMove(capture, { clientX: 150, clientY: 20 })
+    rerender(<ECGMeasurementOverlay {...overlayProps({ tool: null, measurements, onChange })} />)
+    expect(screen.getByTestId('measurement-capture').className).toContain('pointer-events-none')
+    fireEvent.pointerUp(screen.getByTestId('measurement-capture'), { clientX: 150, clientY: 20 })
+    expect(screen.getAllByTestId('measurement-label')).toHaveLength(1)
+    expect(onChange).not.toHaveBeenCalled()
   })
 })
 

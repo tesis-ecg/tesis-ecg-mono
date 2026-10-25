@@ -161,6 +161,8 @@ class DoctorCorrections:
     readable_spans: tuple[tuple[int, int], ...] = ()
     #: Pausas del detector que el médico rechazó: no cuentan.
     rejected_pause_spans: tuple[tuple[int, int], ...] = ()
+    #: Pausas delimitadas explícitamente por el médico.
+    confirmed_pause_spans: tuple[tuple[int, int], ...] = ()
     #: Ordenadas por `validated_at`: la última corrección sobre un latido gana.
     relabels: tuple[BeatRelabel, ...] = ()
     #: Hallazgos con una corrección que cambia alguna cifra.

@@ -731,6 +731,16 @@ def compute_holter_metrics(
         if with_engine
         else []
     )
+    # La revisión explícita del médico vale también sin la pasada del motor.
+    if doctor.confirmed_pause_spans:
+        reviewed = [
+            (start, end)
+            for start, end in doctor.confirmed_pause_spans
+            if end <= analyzed_until
+            and (end - start) * 1000 / rate > PAUSE_MS
+            and not _overlap(hardware, start, end)
+        ]
+        confirmed = reviewed + [span for span in confirmed if not _overlap(reviewed, *span)]
     # Fundidas o abiertas: confirman, pero su largo no es el de ninguna pausa.
     episodes = _clip_spans(engine_episodes, analyzed_until) if with_engine else []
     pause_items: list[dict[str, Any]] = []

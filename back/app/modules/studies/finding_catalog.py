@@ -1,0 +1,31 @@
+"""Tipos de hallazgo que puede asignar el médico al revisar un tramo de ECG."""
+
+from enum import StrEnum
+
+
+class FindingKind(StrEnum):
+    TACHYCARDIA = "tachycardia"
+    BRADYCARDIA = "bradycardia"
+    AFIB = "afib"
+    PVC = "pvc"
+    PAUSE = "pause"
+    MORPHOLOGY_ANOMALY = "morphology_anomaly"
+    RECURRENT_MORPHOLOGY = "recurrent_morphology"
+    VENTRICULAR_ECTOPY = "ventricular_ectopy"
+    SUPRAVENTRICULAR_ECTOPY = "supraventricular_ectopy"
+    SVT_RUN = "svt_run"
+    VT_RUN = "vt_run"
+    AV_BLOCK_FIRST_DEGREE = "av_block_first_degree"
+    AV_BLOCK_MOBITZ_1 = "av_block_mobitz_1"
+    AV_BLOCK_MOBITZ_2 = "av_block_mobitz_2"
+    AV_BLOCK_COMPLETE = "av_block_complete"
+    WIDE_QRS_SUSTAINED = "wide_qrs_sustained"
+    SHORT_PR = "short_pr"
+    NOISE = "noise"
+    LEAD_OFF = "lead_off"
+    SQI_UNANALYZABLE = "sqi_unanalyzable"
+    ADC_SATURATED = "adc_saturated"
+    FLATLINE = "flatline"
+    NOISE_BURST = "noise_burst"
+    NORMAL_BEATS = "normal_beats"
+    OTHER = "other"

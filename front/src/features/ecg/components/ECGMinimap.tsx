@@ -1,42 +1,55 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { ChevronLeft, ChevronRight, Layers } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { cn } from '@/lib/utils'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
 
 import {
   ANNOTATION_SEVERITY,
   annotationChartIcon,
   annotationChartLabel,
+  annotationLabel,
   buildAnnotationLinks,
-  compareAnnotationsForPainting,
   isAnnotationHighlighted,
 } from '../annotationMeta'
-import type { ECGAnnotation, ECGSignal, ECGViewportChange } from '../types'
+import {
+  followTimeline,
+  formatTimelineTime,
+  groupTimelineAnnotations,
+  timelineRange,
+} from '../timeline'
+import type {
+  ECGAnnotation,
+  ECGAnnotationGroup,
+  ECGSignal,
+  ECGTimelineRange,
+  ECGViewportChange,
+} from '../types'
 
 interface ECGMinimapProps {
   signal: ECGSignal
-  /** Viewport actual del viewer principal (timestamps absolutos en ms). */
   viewport: ECGViewportChange | null
-  /** Disparado cuando el usuario arrastra/click la ventana visible. */
   onViewportChange: (viewport: ECGViewportChange) => void
-  /** Alto del mini-mapa en píxeles. Default 64. */
   height?: number
   selectedAnnotationId?: string | null
   onAnnotationSelect?: (annotation: ECGAnnotation) => void
-  /** Muestra los avisos: la franja de arriba y las bandas sobre la traza. Default true. */
   showAnnotations?: boolean
+  timelineWindow?: ECGTimelineRange | null
+  onTimelineWindowChange?: (range: ECGTimelineRange) => void
+  selectedGroup?: ECGAnnotationGroup | null
+  onGroupSelect?: (group: ECGAnnotationGroup) => void
 }
 
-/**
- * Mini-mapa para navegar > 1 h de ECG sin perder contexto.
- *
- * Canvas downsampleado vía min/max bucket por columna de pixel — preserva los
- * picos QRS (el sampling uniforme los pierde) y es más rápido que crear una
- * segunda instancia uPlot.
- *
- * El overlay con la ventana visible es un `<div>` absoluto sobre el canvas con
- * `pointer*` handlers para drag.
- */
+/** La ventana de contexto se desplaza independientemente del zoom clínico. */
 export function ECGMinimap({
   signal,
   viewport,
@@ -45,24 +58,169 @@ export function ECGMinimap({
   selectedAnnotationId,
   onAnnotationSelect,
   showAnnotations = true,
+  timelineWindow,
+  onTimelineWindowChange,
+  selectedGroup,
+  onGroupSelect,
 }: ECGMinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const [widthPx, setWidthPx] = useState(0)
+  const [localWindow, setLocalWindow] = useState(() => {
+    const initial = timelineRange(signal.startTimestamp, signal.durationMs)
+    return viewport
+      ? followTimeline(initial, viewport, signal.startTimestamp, signal.durationMs)
+      : initial
+  })
+  const requestedStart = (timelineWindow ?? localWindow).startMs
+  const range = useMemo(
+    () => timelineRange(signal.startTimestamp, signal.durationMs, requestedStart),
+    [signal.startTimestamp, signal.durationMs, requestedStart],
+  )
+  const spanMs = range.endMs - range.startMs
+  const previousViewport = useRef(viewport)
 
-  const durationSec = signal.durationMs / 1000
-  const endTimestamp = signal.startTimestamp + durationSec * 1000
+  // Solo un cambio del trazado provoca seguimiento: explorar la timeline no
+  // vuelve inmediatamente al punto que el médico estaba leyendo.
+  useEffect(() => {
+    const previous = previousViewport.current
+    previousViewport.current = viewport
+    const moved =
+      viewport && (viewport.startMs !== previous?.startMs || viewport.endMs !== previous?.endMs)
+    const next = moved
+      ? followTimeline(range, viewport, signal.startTimestamp, signal.durationMs)
+      : range
+    function synchronize() {
+      setLocalWindow((current) =>
+        current.startMs === next.startMs && current.endMs === next.endMs ? current : next,
+      )
+      if (timelineWindow?.startMs !== next.startMs || timelineWindow?.endMs !== next.endMs) {
+        onTimelineWindowChange?.(next)
+      }
+    }
+    synchronize()
+  }, [
+    viewport,
+    range,
+    signal.startTimestamp,
+    signal.durationMs,
+    timelineWindow?.startMs,
+    timelineWindow?.endMs,
+    onTimelineWindowChange,
+  ])
 
   const tokens = useMemo(() => readTokens(), [])
   const links = useMemo(() => buildAnnotationLinks(signal.annotations), [signal.annotations])
-  const annotationDrawOrder = useMemo(() => {
-    const sorted = [...signal.annotations].sort(compareAnnotationsForPainting)
-    const selectedIndex = sorted.findIndex((annotation) => annotation.id === selectedAnnotationId)
-    if (selectedIndex < 0) return sorted
-    const [selected] = sorted.splice(selectedIndex, 1)
-    sorted.push(selected)
-    return sorted
-  }, [selectedAnnotationId, signal.annotations])
+  const byId = useMemo(
+    () => new Map(signal.annotations.map((item) => [item.id, item])),
+    [signal.annotations],
+  )
+  const groups = useMemo(
+    () => groupTimelineAnnotations(signal.annotations, range, widthPx),
+    [signal.annotations, range, widthPx],
+  )
+  const bins = useMemo(() => {
+    const result = new Map<number, ECGAnnotationGroup[]>()
+    for (const group of groups) {
+      const bin = result.get(group.startMs)
+      if (bin) bin.push(group)
+      else result.set(group.startMs, [group])
+    }
+    return [...result.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([startMs, items]) => ({
+        startMs,
+        items: items.sort(
+          (a, b) =>
+            ANNOTATION_SEVERITY[b.severity].rank - ANNOTATION_SEVERITY[a.severity].rank ||
+            a.kind.localeCompare(b.kind),
+        ),
+      }))
+  }, [groups])
+  const stacked = bins.some((bin) => bin.items.length > 1)
+  const selectedGroupIds = useMemo(() => new Set(selectedGroup?.annotationIds), [selectedGroup])
+  const selected = selectedAnnotationId ? byId.get(selectedAnnotationId) : undefined
+  const percent = (time: number) =>
+    spanMs > 0 ? Math.max(0, Math.min(100, ((time - range.startMs) / spanMs) * 100)) : 0
+  const viewportSpan = viewport ? Math.max(0, viewport.endMs - viewport.startMs) : spanMs
+  const intersects =
+    !viewport || (viewport.endMs >= range.startMs && viewport.startMs <= range.endMs)
+  const selectorWidthPct = Math.min(
+    100,
+    Math.max(0.5, viewport ? percent(viewport.endMs) - percent(viewport.startMs) : 100),
+  )
+  const selectorLeftPct = Math.min(100 - selectorWidthPct, viewport ? percent(viewport.startMs) : 0)
 
+  function changeWindow(startMs: number) {
+    const next = timelineRange(signal.startTimestamp, signal.durationMs, startMs)
+    setLocalWindow(next)
+    onTimelineWindowChange?.(next)
+  }
+  function moveWindow(direction: number) {
+    changeWindow(range.startMs + (direction * spanMs) / 2)
+  }
+  function emitViewport(startMs: number) {
+    const width = Math.min(viewportSpan, signal.durationMs)
+    const start = Math.max(
+      signal.startTimestamp,
+      Math.min(signal.startTimestamp + signal.durationMs - width, startMs),
+    )
+    onViewportChange({ startMs: start, endMs: start + width })
+  }
+
+  const drag = useRef<{
+    pointerId: number
+    x: number
+    startMs: number
+    mode: 'timeline' | 'viewport'
+  } | null>(null)
+  const suppressClick = useRef(false)
+  function pointerDown(e: React.PointerEvent<HTMLElement>, mode: 'timeline' | 'viewport') {
+    if (e.button !== 0 || spanMs <= 0) return
+    const width = containerRef.current?.getBoundingClientRect().width ?? 0
+    if (width <= 0) return
+    suppressClick.current = false
+    let startMs = range.startMs
+    if (mode === 'viewport') {
+      const rect = e.currentTarget.getBoundingClientRect()
+      const clickMs = range.startMs + ((e.clientX - rect.left) / rect.width) * spanMs
+      const clickPct = ((e.clientX - rect.left) / rect.width) * 100
+      const inside =
+        intersects && clickPct >= selectorLeftPct && clickPct <= selectorLeftPct + selectorWidthPct
+      startMs = inside && viewport ? viewport.startMs : clickMs - viewportSpan / 2
+      if (!inside) emitViewport(startMs)
+    }
+    drag.current = { pointerId: e.pointerId, x: e.clientX, startMs, mode }
+    // Los botones conservan el clic; el contenedor captura solo el arrastre.
+    if (mode === 'viewport' || !(e.target as HTMLElement).closest('button'))
+      e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  function pointerMove(e: React.PointerEvent<HTMLElement>) {
+    const active = drag.current
+    if (!active || active.pointerId !== e.pointerId) return
+    const width = containerRef.current?.getBoundingClientRect().width ?? 0
+    if (width <= 0) return
+    const dx = e.clientX - active.x
+    if (Math.abs(dx) < 4 && !suppressClick.current) return
+    suppressClick.current = true
+    if (!e.currentTarget.hasPointerCapture(e.pointerId))
+      e.currentTarget.setPointerCapture(e.pointerId)
+    const delta = (dx / width) * spanMs
+    if (active.mode === 'timeline') changeWindow(active.startMs - delta)
+    else emitViewport(active.startMs + delta)
+  }
+  function pointerUp(e: React.PointerEvent<HTMLElement>) {
+    if (drag.current?.pointerId !== e.pointerId) return
+    if (e.currentTarget.hasPointerCapture(e.pointerId))
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    drag.current = null
+  }
+  const panHandlers = {
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => pointerDown(e, 'timeline'),
+    onPointerMove: pointerMove,
+    onPointerUp: pointerUp,
+    onPointerCancel: pointerUp,
+  }
   // Dibuja la señal downsampleada (min/max por columna). Re-dibuja solo cuando
   // cambia la señal o el ancho del canvas (no cuando cambia el viewport).
   useEffect(() => {
@@ -71,7 +229,8 @@ export function ECGMinimap({
     if (!canvas || !container) return
 
     const draw = () => {
-      const cssWidth = container.clientWidth
+      const cssWidth = Math.floor(container.clientWidth)
+      setWidthPx(cssWidth)
       const dpr = window.devicePixelRatio || 1
       canvas.width = Math.floor(cssWidth * dpr)
       canvas.height = Math.floor(height * dpr)
@@ -84,7 +243,7 @@ export function ECGMinimap({
       ctx.fillRect(0, 0, cssWidth, height)
 
       const samples = signal.samples
-      if (samples.length === 0 || cssWidth <= 0 || signal.durationMs <= 0) return
+      if (samples.length === 0 || cssWidth <= 0 || spanMs <= 0) return
       const columnMins = new Float64Array(cssWidth)
       const columnMaxs = new Float64Array(cssWidth)
       columnMins.fill(Infinity)
@@ -95,12 +254,15 @@ export function ECGMinimap({
         const v = samples[i]
         if (!Number.isFinite(v)) continue
         const timestamp = signal.timestampsMs[i]
-        const elapsedMs =
+        const timestampMs =
           signal.timestampsMs.length === samples.length && Number.isFinite(timestamp)
-            ? timestamp - signal.startTimestamp
-            : (i / Math.max(samples.length - 1, 1)) * signal.durationMs
-        if (elapsedMs < 0 || elapsedMs > signal.durationMs) continue
-        const col = Math.min(cssWidth - 1, Math.floor((elapsedMs / signal.durationMs) * cssWidth))
+            ? timestamp
+            : signal.startTimestamp + (i / Math.max(samples.length - 1, 1)) * signal.durationMs
+        if (timestampMs < range.startMs || timestampMs > range.endMs) continue
+        const col = Math.min(
+          cssWidth - 1,
+          Math.floor(((timestampMs - range.startMs) / spanMs) * cssWidth),
+        )
         columnMins[col] = Math.min(columnMins[col], v)
         columnMaxs[col] = Math.max(columnMaxs[col], v)
         if (v < yMin) yMin = v
@@ -132,196 +294,259 @@ export function ECGMinimap({
     const ro = new ResizeObserver(() => draw())
     ro.observe(container)
     return () => ro.disconnect()
-  }, [signal, height, tokens.bg, tokens.trace])
+  }, [signal, height, tokens.bg, tokens.trace, range.startMs, range.endMs, spanMs])
 
-  // Convertir timestamps absolutos a porcentaje del eje X.
-  const viewportLeftPct =
-    viewport != null
-      ? Math.max(
-          0,
-          Math.min(100, ((viewport.startMs - signal.startTimestamp) / 1000 / durationSec) * 100),
-        )
-      : 0
-  // El selector necesita un ancho visual mínimo para seguir siendo visible,
-  // pero la navegación debe conservar el ancho real. Antes se usaba 0,5 %
-  // también para los cálculos y arrastrar un zoom fino lo ensanchaba.
-  const viewportWidthPct =
-    viewport != null
-      ? Math.max(0, Math.min(100, ((viewport.endMs - viewport.startMs) / 1000 / durationSec) * 100))
-      : 100
-  const selectorWidthPct = Math.max(0.5, viewportWidthPct)
-  const selectorLeftPct = Math.max(0, Math.min(100 - selectorWidthPct, viewportLeftPct))
-
-  // Drag handler para mover la ventana visible.
-  const dragRef = useRef<{ pointerId: number; startX: number; startLeftPct: number } | null>(null)
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const container = containerRef.current
-    if (!container) return
-    const rect = container.getBoundingClientRect()
-    const clickXPct = ((e.clientX - rect.left) / rect.width) * 100
-    // Si el click cae fuera de la ventana, centrar la ventana en el click.
-    const clickedInsideWindow =
-      clickXPct >= selectorLeftPct && clickXPct <= selectorLeftPct + selectorWidthPct
-    const startLeftPct = clickedInsideWindow
-      ? viewportLeftPct
-      : Math.max(0, Math.min(100 - viewportWidthPct, clickXPct - viewportWidthPct / 2))
-    if (!clickedInsideWindow) {
-      emitViewport(startLeftPct)
-    }
-    dragRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startLeftPct,
-    }
-    container.setPointerCapture(e.pointerId)
+  function selectGroup(group: ECGAnnotationGroup) {
+    if (group.annotationIds.length > 1) onGroupSelect?.(group)
+    else onAnnotationSelect?.(byId.get(group.annotationIds[0])!)
   }
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    const container = containerRef.current
-    if (!drag || !container || e.pointerId !== drag.pointerId) return
-    const rect = container.getBoundingClientRect()
-    const dxPct = ((e.clientX - drag.startX) / rect.width) * 100
-    const nextLeftPct = Math.max(0, Math.min(100 - viewportWidthPct, drag.startLeftPct + dxPct))
-    emitViewport(nextLeftPct)
+  function groupIsSelected(group: ECGAnnotationGroup) {
+    return group.annotationIds.some(
+      (id) =>
+        selectedGroupIds.has(id) ||
+        isAnnotationHighlighted(byId.get(id)!, selectedAnnotationId ?? null, links),
+    )
   }
 
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current
-    const container = containerRef.current
-    if (!drag || !container || e.pointerId !== drag.pointerId) return
-    container.releasePointerCapture(e.pointerId)
-    dragRef.current = null
-  }
-
-  function emitViewport(leftPct: number) {
-    const startMs = signal.startTimestamp + (leftPct / 100) * durationSec * 1000
-    const widthMs = (viewportWidthPct / 100) * durationSec * 1000
-    const clampedStart = Math.max(signal.startTimestamp, Math.min(endTimestamp - widthMs, startMs))
-    onViewportChange({ startMs: clampedStart, endMs: clampedStart + widthMs })
-  }
+  const crossesDate =
+    new Date(range.startMs).toDateString() !== new Date(range.endMs).toDateString()
+  const rangeLabel = `${formatTimelineTime(range.startMs, true)} – ${formatTimelineTime(range.endMs, true)}`
+  const tickCount = widthPx < 480 ? 3 : 5
+  const ticks = Array.from(
+    { length: tickCount },
+    (_, index) => range.startMs + (spanMs * index) / (tickCount - 1),
+  )
 
   return (
-    <div className="flex w-full flex-col gap-1.5">
+    <div
+      className="flex w-full min-w-0 shrink-0 flex-col gap-1.5"
+      data-testid="ecg-timeline"
+      data-start-ms={range.startMs}
+      data-end-ms={range.endMs}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-body3 tabular-nums text-gray-600" aria-live="polite">
+          {rangeLabel}
+        </p>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label="Tramo anterior de la timeline"
+            disabled={range.startMs <= signal.startTimestamp}
+            onClick={() => moveWindow(-1)}
+          >
+            <ChevronLeft aria-hidden />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label="Tramo siguiente de la timeline"
+            disabled={range.endMs >= signal.startTimestamp + signal.durationMs}
+            onClick={() => moveWindow(1)}
+          >
+            <ChevronRight aria-hidden />
+          </Button>
+        </div>
+      </div>
       {showAnnotations && signal.annotations.length > 0 && (
         <TooltipProvider delayDuration={200}>
-          <div className="relative h-8 rounded-sm bg-gray-50" aria-label="Avisos del estudio">
-            {annotationDrawOrder.map((annotation) => {
-              const startPct = annotationPercent(annotation.startMs)
-              const endPct = annotationPercent(annotation.endMs)
-              const Icon = annotationChartIcon(annotation, links)
-              const severity = ANNOTATION_SEVERITY[annotation.severity]
-              const label = annotationChartLabel(annotation, links)
-              const isSelected = isAnnotationHighlighted(
-                annotation,
-                selectedAnnotationId ?? null,
-                links,
-              )
-              return (
-                <div key={annotation.id}>
-                  <span
-                    data-testid={`timeline-annotation-range-${annotation.id}`}
-                    className={cn(
-                      'pointer-events-none absolute inset-y-0 rounded-sm border-x',
-                      isSelected && 'border-2',
-                    )}
-                    style={{
-                      left: `${startPct}%`,
-                      width: `${Math.max(endPct - startPct, 0.35)}%`,
-                      minWidth: annotation.endMs <= annotation.startMs ? 32 : 12,
-                      borderColor: `var(--ecg-alert-${annotation.severity})`,
-                      backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
-                      zIndex: isSelected ? 2 : 1,
-                    }}
-                  />
-                  <Tooltip>
-                    <TooltipTrigger asChild>
+          <div
+            className={cn(
+              'relative touch-pan-y select-none rounded-md bg-gray-50 cursor-grab active:cursor-grabbing',
+              stacked ? 'h-14' : 'h-7',
+            )}
+            aria-label="Avisos del estudio"
+            {...panHandlers}
+          >
+            {bins.map(({ startMs, items }) => (
+              <div
+                key={startMs}
+                className="absolute inset-y-0"
+                style={{
+                  left: `${percent(startMs)}%`,
+                  width: `${percent(items[0].endMs) - percent(startMs)}%`,
+                }}
+              >
+                {(items.length > 2 ? items.slice(0, 1) : items).map((group, lane) => {
+                  const annotation = byId.get(group.annotationIds[0])!
+                  const Icon = annotationChartIcon(annotation, links)
+                  const count = group.annotationIds.length
+                  const isSelected = groupIsSelected(group)
+                  const label =
+                    count === 1
+                      ? annotationChartLabel(annotation, links)
+                      : annotationLabel(group.kind)
+                  const accessible = `${label}, ${count} ${count === 1 ? 'hallazgo' : 'hallazgos'}, ${formatTimelineTime(group.startMs, crossesDate)} – ${formatTimelineTime(group.endMs, crossesDate)}, severidad ${ANNOTATION_SEVERITY[group.severity].label.toLowerCase()}`
+                  return (
+                    <Tooltip key={group.kind}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={accessible}
+                          aria-pressed={isSelected}
+                          data-timeline-group={group.kind}
+                          data-group-count={count}
+                          onClick={(e) => {
+                            if (suppressClick.current && e.detail > 0) return
+                            selectGroup(group)
+                          }}
+                          className={cn(
+                            'absolute left-1/2 flex h-6 max-w-full -translate-x-1/2 cursor-pointer items-center justify-center gap-0.5 rounded-full border px-1',
+                            'focus-visible:z-20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 hover:brightness-95',
+                            isSelected && 'ring-2 ring-primary/40',
+                          )}
+                          style={{
+                            top: lane * 28 + 2,
+                            color: `var(--ecg-alert-${group.severity})`,
+                            borderColor: `var(--ecg-alert-${group.severity})`,
+                            backgroundColor: `var(--ecg-alert-${group.severity}-marker-bg)`,
+                          }}
+                        >
+                          <Icon className="size-3.5 shrink-0" aria-hidden />
+                          {count > 1 && (
+                            <Badge
+                              variant="outline"
+                              className="border-current/20 px-1 py-0 text-current tabular-nums"
+                              aria-hidden
+                            >
+                              {count}
+                            </Badge>
+                          )}
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {accessible}
+                        {count === 1 && annotation.description
+                          ? ` · ${annotation.description}`
+                          : ''}
+                      </TooltipContent>
+                    </Tooltip>
+                  )
+                })}
+                {items.length > 2 && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
                       <button
                         type="button"
-                        aria-label={`${label}, severidad ${severity.label.toLowerCase()}`}
-                        aria-pressed={isSelected}
-                        onClick={() => onAnnotationSelect?.(annotation)}
                         className={cn(
-                          'absolute top-1 flex size-6 -translate-x-1/2 cursor-pointer items-center justify-center rounded-full border shadow-sm',
-                          'focus-visible:z-20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                          isSelected ? 'z-20 scale-110' : 'z-10 hover:z-20 hover:scale-105',
+                          'absolute top-[30px] left-1/2 flex h-6 -translate-x-1/2 cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-1.5 text-xs text-gray-700 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
+                          items.slice(1).some(groupIsSelected) && 'ring-2 ring-primary/40',
                         )}
-                        style={{
-                          left: `${startPct}%`,
-                          color: `var(--ecg-alert-${annotation.severity})`,
-                          borderColor: `var(--ecg-alert-${annotation.severity})`,
-                          backgroundColor: `var(--ecg-alert-${annotation.severity}-marker-bg)`,
-                        }}
+                        aria-label={`Ver otros ${items.length - 1} tipos de hallazgo en este tramo`}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        data-timeline-overflow={items.length - 1}
                       >
-                        <Icon className="size-3.5" aria-hidden />
+                        <Layers className="size-3.5" aria-hidden />
+                        <span className="tabular-nums">+{items.length - 1}</span>
                       </button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {label} · {annotation.description ?? severity.label}
-                    </TooltipContent>
-                  </Tooltip>
-                </div>
-              )
-            })}
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="center" className="max-w-xs">
+                      <DropdownMenuLabel className="text-xs font-normal tabular-nums text-gray-600">
+                        {formatTimelineTime(startMs, crossesDate)} –{' '}
+                        {formatTimelineTime(items[0].endMs, crossesDate)}
+                      </DropdownMenuLabel>
+                      {items.slice(1).map((group) => {
+                        const annotation = byId.get(group.annotationIds[0])!
+                        const Icon = annotationChartIcon(annotation, links)
+                        return (
+                          <DropdownMenuItem
+                            key={group.kind}
+                            onSelect={() => selectGroup(group)}
+                            className={cn(groupIsSelected(group) && 'bg-primary-50')}
+                          >
+                            <Icon
+                              className="size-4"
+                              style={{ color: `var(--ecg-alert-${group.severity})` }}
+                              aria-hidden
+                            />
+                            <span className="min-w-0 flex-1">{annotationLabel(group.kind)}</span>
+                            <Badge
+                              variant={ANNOTATION_SEVERITY[group.severity].badgeVariant}
+                              className="tabular-nums"
+                            >
+                              {group.annotationIds.length}
+                            </Badge>
+                          </DropdownMenuItem>
+                        )
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
+            ))}
           </div>
         </TooltipProvider>
       )}
-
-      <div
-        ref={containerRef}
-        aria-label="Navegación general del ECG"
-        className={cn(
-          'relative w-full select-none overflow-hidden rounded-md border border-border bg-card',
-          'cursor-pointer',
-        )}
-        style={{ height }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerUp}
-      >
-        <canvas ref={canvasRef} className="absolute inset-0 block" />
-        {/* Ocultar los avisos del gráfico también los saca de la vista previa:
-            si no, el médico sigue viendo las bandas de color sin saber de qué. */}
-        {showAnnotations &&
-          annotationDrawOrder.map((annotation) => {
-            const startPct = annotationPercent(annotation.startMs)
-            const endPct = annotationPercent(annotation.endMs)
-            return (
+      <div className="min-w-0">
+        <div
+          className="flex touch-pan-y cursor-grab select-none justify-between gap-1 text-xs tabular-nums text-gray-500 active:cursor-grabbing"
+          {...panHandlers}
+        >
+          {ticks.map((time, index) => (
+            <time
+              key={index}
+              dateTime={new Date(time).toISOString()}
+              title={formatTimelineTime(time, true)}
+            >
+              {formatTimelineTime(time)}
+            </time>
+          ))}
+        </div>
+        <div
+          ref={containerRef}
+          role="group"
+          tabIndex={0}
+          aria-label="Navegación general del ECG"
+          className="relative w-full touch-pan-y cursor-pointer select-none overflow-hidden rounded-md border border-border bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          style={{ height }}
+          onPointerDown={(e) => pointerDown(e, 'viewport')}
+          onPointerMove={pointerMove}
+          onPointerUp={pointerUp}
+          onPointerCancel={pointerUp}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              e.preventDefault()
+              const direction = e.key === 'ArrowLeft' ? -1 : 1
+              emitViewport((viewport?.startMs ?? range.startMs) + (direction * viewportSpan) / 2)
+            }
+          }}
+        >
+          <canvas ref={canvasRef} className="absolute inset-0 block" />
+          {showAnnotations &&
+            selected &&
+            selected.endMs >= range.startMs &&
+            selected.startMs <= range.endMs && (
               <span
-                key={annotation.id}
-                className="pointer-events-none absolute top-0 bottom-0 border-x"
+                data-testid={`timeline-annotation-range-${selected.id}`}
+                className="pointer-events-none absolute inset-y-0 min-w-1 border-x"
                 style={{
-                  left: `${startPct}%`,
-                  width: `${Math.max(endPct - startPct, 0.2)}%`,
-                  minWidth: annotation.endMs <= annotation.startMs ? 8 : 4,
-                  borderColor: `var(--ecg-alert-${annotation.severity})`,
-                  backgroundColor: `var(--ecg-alert-${annotation.severity}-timeline-bg)`,
+                  left: `${percent(selected.startMs)}%`,
+                  width: `${percent(selected.endMs) - percent(selected.startMs)}%`,
+                  borderColor: `var(--ecg-alert-${selected.severity})`,
+                  backgroundColor: `var(--ecg-alert-${selected.severity}-timeline-bg)`,
                 }}
               />
-            )
-          })}
-        <div
-          className="pointer-events-none absolute top-0 bottom-0 border-2"
-          style={{
-            left: `${selectorLeftPct}%`,
-            width: `${selectorWidthPct}%`,
-            borderColor: 'var(--ecg-selector)',
-            backgroundColor: 'var(--ecg-selector-bg)',
-          }}
-        />
+            )}
+          {intersects && (
+            <div
+              data-testid="timeline-viewport"
+              className="pointer-events-none absolute inset-y-0 border-2"
+              style={{
+                left: `${selectorLeftPct}%`,
+                width: `${selectorWidthPct}%`,
+                borderColor: 'var(--ecg-selector)',
+                backgroundColor: 'var(--ecg-selector-bg)',
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   )
-
-  function annotationPercent(timestampMs: number): number {
-    if (durationSec <= 0) return 0
-    return Math.max(
-      0,
-      Math.min(100, ((timestampMs - signal.startTimestamp) / 1000 / durationSec) * 100),
-    )
-  }
 }
 
 function readTokens(): { trace: string; bg: string } {

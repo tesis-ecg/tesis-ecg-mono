@@ -1,8 +1,8 @@
-import { ChartArea, Eraser, Activity, MoveHorizontal, MoveVertical } from 'lucide-react'
-import type { ComponentType } from 'react'
+import { ChartArea, Eraser, Activity, MoveHorizontal, MoveVertical, Hand } from 'lucide-react'
+import { useId, type ComponentType } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 import type { MeasurementTool } from './measure'
 
@@ -49,14 +49,7 @@ const TOOLS: {
   },
 ]
 
-/**
- * Selector de herramientas de medición sobre el trazado: calibres de tiempo y
- * amplitud, área y compás R-R. Stateless — el padre guarda la herramienta
- * activa (ver `useMeasurements`).
- *
- * Se deshabilita entero cuando el visor dibuja la envolvente y no las muestras:
- * medir sobre la envolvente daría números que no son de la señal.
- */
+/** Selección del modo de interacción: mano para desplazar o una herramienta para medir. */
 export function ECGMeasurementToolbar({
   tool,
   onToolChange,
@@ -66,59 +59,90 @@ export function ECGMeasurementToolbar({
   onClear,
   viewKind,
 }: ECGMeasurementToolbarProps) {
-  const active = TOOLS.find((t) => t.id === tool)
+  const helpId = useId()
+  const filteredHelp =
+    viewKind === 'filtered_visualization'
+      ? 'El trazado está filtrado para visualización (0,05–40 Hz): sirve para medir intervalos, no la amplitud del QRS.'
+      : ''
+  const availabilityHelp = !enabled ? disabledReason : ''
+  const help = [availabilityHelp, filteredHelp].filter(Boolean).join(' ')
 
   return (
-    <div className="flex flex-col gap-1">
-      <div role="toolbar" aria-label="Herramientas de medición" className="flex items-center gap-1">
+    <TooltipProvider delayDuration={250}>
+      <div
+        role="group"
+        aria-label="Herramientas del gráfico"
+        className="flex min-w-0 flex-wrap items-center gap-1 p-1"
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant={tool === null ? 'default' : 'ghost'}
+              size="icon"
+              className="size-8 shrink-0"
+              aria-label="Desplazar gráfico"
+              aria-pressed={tool === null}
+              title="Arrastrá para desplazarte por el gráfico"
+              onClick={() => onToolChange(null)}
+            >
+              <Hand className="size-4" aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Arrastrá para desplazarte por el gráfico</TooltipContent>
+        </Tooltip>
+        <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
+        <span id={helpId} className="sr-only">
+          {help}
+        </span>
         {TOOLS.map(({ id, label, hint, Icon }) => {
           const pressed = tool === id
+          const description = [hint, 'Esc para salir.', help].filter(Boolean).join(' ')
           return (
-            <Button
-              key={id}
-              type="button"
-              variant={pressed ? 'default' : 'outline'}
-              size="icon"
-              className="size-8"
-              disabled={!enabled}
-              aria-pressed={pressed}
-              aria-label={label}
-              title={`${label}. ${hint}`}
-              onClick={() => onToolChange(pressed ? null : id)}
-            >
-              <Icon className="size-4" />
-            </Button>
+            <Tooltip key={id}>
+              <TooltipTrigger asChild>
+                <span
+                  className="inline-flex shrink-0"
+                  tabIndex={enabled ? undefined : 0}
+                  aria-label={enabled ? undefined : `${label}. ${description}`}
+                >
+                  <Button
+                    type="button"
+                    variant={pressed ? 'default' : 'ghost'}
+                    size="icon"
+                    className="size-8 shrink-0"
+                    disabled={!enabled}
+                    aria-pressed={pressed}
+                    aria-label={label}
+                    title={description}
+                    aria-describedby={help ? helpId : undefined}
+                    onClick={() => onToolChange(pressed ? null : id)}
+                  >
+                    <Icon className="size-4" aria-hidden />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-xs">
+                <span className="font-medium">{label}</span>
+                <span className="mt-1 block">{description}</span>
+              </TooltipContent>
+            </Tooltip>
           )
         })}
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className={cn('gap-1', measurementCount === 0 && 'invisible')}
+          className="h-8 shrink-0 gap-1"
           disabled={measurementCount === 0}
           onClick={onClear}
           aria-label={`Borrar mediciones (${measurementCount})`}
           title="Borrar todas las mediciones"
         >
-          <Eraser className="size-4" />
+          <Eraser className="size-4" aria-hidden />
           <span className="tabular-nums">{measurementCount}</span>
         </Button>
       </div>
-
-      {!enabled && disabledReason ? (
-        <p className="max-w-xs rounded bg-background/80 px-1.5 py-0.5 text-xs text-fg-muted">
-          {disabledReason}
-        </p>
-      ) : active ? (
-        <p className="max-w-xs text-xs text-fg-muted">{active.hint}. Esc para salir.</p>
-      ) : null}
-
-      {viewKind === 'filtered_visualization' ? (
-        <p role="note" className="max-w-xs text-xs text-fg-muted">
-          El trazado es el filtro de visualización (0,05–40 Hz): sirve para medir intervalos, no la
-          amplitud del QRS.
-        </p>
-      ) : null}
-    </div>
+    </TooltipProvider>
   )
 }

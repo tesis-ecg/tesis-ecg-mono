@@ -13,14 +13,23 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { annotationLabel } from '@/features/ecg/annotationMeta'
+import { ANNOTATION_SEVERITY, annotationLabel } from '@/features/ecg/annotationMeta'
 import { formatDate } from '@/features/ecg/clinicalReportFormat'
 import { unwrapError } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 import { useReclassifyFinding } from '../hooks/useReclassifyFinding'
-import { reclassificationChoices } from '../findingReclassification'
+import { RECLASSIFICATION_KINDS, reclassificationChoices } from '../findingReclassification'
+import type { FindingKind } from '@/generated/openapi'
+import type { ECGAnnotationSeverity } from '@/features/ecg/types'
 import type { StudyFinding, StudyFindingCorrection } from '../types'
 
 const CORRECTION_TEXT: Record<StudyFindingCorrection['action'], string> = {
@@ -44,11 +53,19 @@ export function FindingCorrectionStatus({ finding }: { finding: StudyFinding }) 
   const by = correction.correctedByName ?? 'un usuario'
   const when = correction.correctedAt ? ` el ${formatDate(correction.correctedAt)}` : ''
   return (
-    <span className="text-body3 mt-1 flex flex-col gap-0.5 text-gray-600" data-correction-status>
-      <span className="flex flex-wrap items-center gap-1.5">
-        <Badge variant={correction.action === 'confirm' ? 'success' : 'info'}>
+    <span
+      className="text-body3 mt-1 flex min-w-0 max-w-full flex-col gap-0.5 text-gray-600 wrap-anywhere"
+      data-correction-status
+    >
+      <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+        <Badge
+          variant={correction.action === 'confirm' ? 'success' : 'info'}
+          className="block max-w-full rounded-md text-left whitespace-normal"
+        >
           {CORRECTION_TEXT[correction.action]}
           {effective}
+          {correction.effectiveSeverity &&
+            ` · ${ANNOTATION_SEVERITY[correction.effectiveSeverity].label}`}
         </Badge>
         <span>
           por {by}
@@ -78,6 +95,10 @@ export function FindingReclassifyDialog({
 }: FindingReclassifyDialogProps) {
   const choices = reclassificationChoices(finding)
   const [selected, setSelected] = useState<string>('')
+  const [kind, setKind] = useState<FindingKind | ''>('')
+  const [severity, setSeverity] = useState<ECGAnnotationSeverity>(
+    finding.correction?.effectiveSeverity ?? finding.severity,
+  )
   const [note, setNote] = useState('')
   const mutation = useReclassifyFinding(studyId)
 
@@ -87,17 +108,23 @@ export function FindingReclassifyDialog({
     if (!next) {
       setSelected('')
       setNote('')
+      setKind('')
+      setSeverity(finding.correction?.effectiveSeverity ?? finding.severity)
     }
     onOpenChange(next)
   }
 
   const handleSubmit = () => {
-    if (!choice) return
+    if (!choice || (selected === 'relabel' && !kind)) return
     const trimmed = note.trim()
     mutation.mutate(
       {
         findingId: finding.id,
-        body: { ...choice.request, note: trimmed ? trimmed : null },
+        body: {
+          ...choice.request,
+          ...(selected === 'relabel' && kind ? { kind, severity } : {}),
+          note: trimmed ? trimmed : null,
+        },
       },
       {
         onSuccess: (result) => {
@@ -153,6 +180,44 @@ export function FindingReclassifyDialog({
           ))}
         </fieldset>
 
+        {selected === 'relabel' && (
+          <div className="grid gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="reclassify-kind">Tipo de hallazgo</Label>
+              <Select value={kind} onValueChange={(value) => setKind(value as FindingKind)}>
+                <SelectTrigger id="reclassify-kind" className="w-full">
+                  <SelectValue placeholder="Seleccionar hallazgo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {RECLASSIFICATION_KINDS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="reclassify-severity">Gravedad</Label>
+              <Select
+                value={severity}
+                onValueChange={(value) => setSeverity(value as ECGAnnotationSeverity)}
+              >
+                <SelectTrigger id="reclassify-severity" className="w-full">
+                  <SelectValue placeholder="Seleccionar gravedad" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(ANNOTATION_SEVERITY).map(([value, meta]) => (
+                    <SelectItem key={value} value={value}>
+                      {meta.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="reclassify-note">Nota (opcional)</Label>
           <Textarea
@@ -168,7 +233,10 @@ export function FindingReclassifyDialog({
           <DialogClose asChild>
             <Button variant="outline">Volver</Button>
           </DialogClose>
-          <Button onClick={handleSubmit} disabled={!choice || mutation.isPending}>
+          <Button
+            onClick={handleSubmit}
+            disabled={!choice || (selected === 'relabel' && !kind) || mutation.isPending}
+          >
             {mutation.isPending ? 'Guardando…' : 'Guardar corrección'}
           </Button>
         </DialogFooter>

@@ -1,12 +1,14 @@
 import type { ReclassificationRequest, StudyFinding } from './types'
 
+import { annotationLabel } from '@/features/ecg/annotationMeta'
+import type { FindingKind } from '@/generated/openapi'
+
 type BeatLabel = 'N' | 'S' | 'V'
 
 /**
  * Etiqueta de latido que respalda cada tipo de hallazgo
- * (`back/app/ml/holter_contracts.py::BEAT_LABEL_BY_KIND`). Solo estos tipos se
- * pueden reclasificar a otra etiqueta; el resto admite confirmar, descartar o
- * marcar como ruido.
+ * (`back/app/ml/holter_contracts.py::BEAT_LABEL_BY_KIND`), usada para explicar
+ * el efecto de descartar sobre las métricas.
  */
 const BEAT_LABEL_BY_KIND: Record<string, BeatLabel> = {
   ventricular_ectopy: 'V',
@@ -14,12 +16,6 @@ const BEAT_LABEL_BY_KIND: Record<string, BeatLabel> = {
   supraventricular_ectopy: 'S',
   svt_run: 'S',
   tachycardia: 'N',
-}
-
-const BEAT_LABEL_TEXT: Record<BeatLabel, string> = {
-  N: 'normales (N)',
-  S: 'supraventriculares (S)',
-  V: 'ventriculares (V)',
 }
 
 /**
@@ -51,49 +47,56 @@ export interface ReclassifyChoice {
 /** Las acciones que se le ofrecen al médico para este hallazgo. */
 export function reclassificationChoices(finding: StudyFinding): ReclassifyChoice[] {
   const own = BEAT_LABEL_BY_KIND[finding.kind]
-  const choices: ReclassifyChoice[] = [
-    {
-      value: 'confirm',
-      label: 'Confirmar hallazgo',
-      hint: 'Lo revisé y es correcto. Las cifras no cambian.',
-      request: { action: 'confirm' },
-    },
+  return [
     {
       value: 'reject',
-      label: 'Descartar (falso positivo)',
+      label: 'Descartar',
       hint: rejectHint(finding.kind, own),
       request: { action: 'reject' },
     },
     {
-      value: 'noise',
-      label: 'Marcar como ruido',
-      hint: 'Es artefacto. El tramo sale de todas las métricas, pausas incluidas.',
-      request: { action: 'noise' },
+      value: 'relabel',
+      label: 'Marcar como otro hallazgo',
+      hint: 'Elegí el tipo de hallazgo y su gravedad.',
+      request: { action: 'relabel' },
     },
   ]
-  if (own) {
-    for (const label of ['N', 'S', 'V'] as const) {
-      if (label === own) continue
-      choices.push({
-        value: `relabel:${label}`,
-        label: `Reclasificar como latidos ${BEAT_LABEL_TEXT[label]}`,
-        hint: 'Se re-etiquetan los latidos del tramo y se recalculan las cifras.',
-        request: { action: 'relabel', beatLabel: label },
-      })
-    }
-  }
-  if (finding.correction) {
-    choices.push({
-      value: 'reset',
-      label: 'Restablecer al análisis automático',
-      hint: 'Quita la corrección y vuelve a lo que detectó el motor.',
-      request: { action: 'reset' },
-    })
-  }
-  return choices
 }
 
-/** Lo decide el backend (`reclassifiable`): lo produjo el motor y tiene un tramo propio. */
+/** Lo decide el backend: lo produjo el motor y tiene un tramo propio. */
 export function isReclassifiable(finding: StudyFinding): boolean {
   return finding.reclassifiable === true
 }
+
+// Record exige que cada tipo admitido por la API tenga una opción en el selector.
+const FINDING_KINDS: Record<FindingKind, true> = {
+  tachycardia: true,
+  bradycardia: true,
+  afib: true,
+  pvc: true,
+  pause: true,
+  morphology_anomaly: true,
+  recurrent_morphology: true,
+  ventricular_ectopy: true,
+  supraventricular_ectopy: true,
+  svt_run: true,
+  vt_run: true,
+  av_block_first_degree: true,
+  av_block_mobitz_1: true,
+  av_block_mobitz_2: true,
+  av_block_complete: true,
+  wide_qrs_sustained: true,
+  short_pr: true,
+  noise: true,
+  lead_off: true,
+  sqi_unanalyzable: true,
+  adc_saturated: true,
+  flatline: true,
+  noise_burst: true,
+  normal_beats: true,
+  other: true,
+}
+
+export const RECLASSIFICATION_KINDS = (Object.keys(FINDING_KINDS) as FindingKind[])
+  .map((value) => ({ value, label: annotationLabel(value) }))
+  .sort((a, b) => a.label.localeCompare(b.label, 'es'))

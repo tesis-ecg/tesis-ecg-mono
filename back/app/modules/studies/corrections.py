@@ -57,6 +57,7 @@ class ReclassificationPlan:
     effective_kind: str | None
     span_start: int
     span_end: int
+    effective_severity: str | None = None
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class ReclassificationPlan:
             "fromLabel": self.from_label,
             "toLabel": self.to_label,
             "effectiveKind": self.effective_kind,
+            "effectiveSeverity": self.effective_severity,
             "spanStart": self.span_start,
             "spanEnd": self.span_end,
         }
@@ -111,6 +113,9 @@ def plan_reclassification(
     span: tuple[int, int],
     action: ReclassificationAction,
     beat_label: BeatClass | None,
+    *,
+    target_kind: str | None = None,
+    severity: str | None = None,
 ) -> ReclassificationPlan:
     """Resuelve qué significa `action` sobre un hallazgo de `kind`.
 
@@ -119,9 +124,19 @@ def plan_reclassification(
       cambia cifras salvo ruido y pausas, que `doctor_corrections` resuelve por
       `fromKind`. No queda `kind` efectivo: el hallazgo ya no se afirma.
     - `noise`: el tramo es Grupo A; no queda `kind` efectivo.
-    - `relabel`: exige `beat_label` y un tipo con clase.
+    - `relabel`: acepta tipo y gravedad; el contrato anterior usa `beat_label`.
     """
     own = BEAT_LABEL_BY_KIND.get(kind)
+    if target_kind is not None:
+        if action != "relabel" or beat_label is not None or severity is None:
+            raise InvalidReclassification("kind and severity require relabel without beatLabel")
+        # El tipo clínico y la gravedad se guardan sin alterar lo que afirmó el motor.
+        target_label: BeatClass = (
+            "V" if target_kind == "pvc" else BEAT_LABEL_BY_KIND.get(target_kind, "N")
+        )
+        return ReclassificationPlan(action, kind, own, target_label, target_kind, *span, severity)
+    if severity is not None:
+        raise InvalidReclassification("severity requires kind")
     if action == "relabel":
         if own is None or beat_label is None or beat_label == own:
             raise InvalidReclassification("relabel needs a different beat class for this finding")
@@ -156,6 +171,7 @@ def doctor_corrections(events: Sequence[ECGEvent]) -> DoctorCorrections:
     noise: list[tuple[int, int]] = []
     readable: list[tuple[int, int]] = []
     rejected_pauses: list[tuple[int, int]] = []
+    confirmed_pauses: list[tuple[int, int]] = []
     relabels: list[tuple[float, BeatRelabel]] = []
     corrected = 0
     for event in events:
@@ -182,13 +198,36 @@ def doctor_corrections(events: Sequence[ECGEvent]) -> DoctorCorrections:
                 continue
             corrected += 1
         elif action == "relabel":
-            relabels.append((when, _relabel(span, correction)))
+            from_kind = correction.get("fromKind")
+            target_kind = correction.get("effectiveKind")
+            if target_kind == "pause" and correction.get("effectiveSeverity"):
+                confirmed_pauses.append(span)
+            # Un cambio de tipo también retira la interpretación anterior.
+            if from_kind in NOISE_FINDING_KINDS and target_kind not in NOISE_FINDING_KINDS:
+                readable.append(span)
+            if from_kind == "pause" and target_kind != "pause":
+                rejected_pauses.append(span)
+            if target_kind in {
+                "noise",
+                "lead_off",
+                "sqi_unanalyzable",
+                "adc_saturated",
+                *NOISE_FINDING_KINDS,
+            }:
+                noise.append(span)
+            elif correction.get("toLabel"):
+                sources = (
+                    [correction["fromLabel"]] if correction.get("fromLabel") else ["N", "S", "V"]
+                )
+                for source in sources:
+                    relabels.append((when, _relabel(span, {**correction, "fromLabel": source})))
             corrected += 1
     relabels.sort(key=lambda item: item[0])
     return DoctorCorrections(
         noise_spans=tuple(noise),
         readable_spans=tuple(readable),
         rejected_pause_spans=tuple(rejected_pauses),
+        confirmed_pause_spans=tuple(confirmed_pauses),
         relabels=tuple(relabel for _, relabel in relabels),
         corrected_findings=corrected,
     )
