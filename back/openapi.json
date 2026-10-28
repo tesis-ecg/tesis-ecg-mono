@@ -2282,6 +2282,47 @@
         "title": "LoginResponse",
         "type": "object"
       },
+      "ManualFindingRequest": {
+        "properties": {
+          "clientRequestId": {
+            "format": "uuid",
+            "title": "Clientrequestid",
+            "type": "string"
+          },
+          "endEpochMs": {
+            "minimum": 0.0,
+            "title": "Endepochms",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/FindingKind"
+          },
+          "severity": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "startEpochMs": {
+            "minimum": 0.0,
+            "title": "Startepochms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "startEpochMs",
+          "endEpochMs",
+          "kind",
+          "severity",
+          "clientRequestId"
+        ],
+        "title": "ManualFindingRequest",
+        "type": "object"
+      },
       "MetricEvidenceOut": {
         "description": "Una estadística con el instante que la respalda (req. 5, «evidencia»).\n\n`sampleIndex` es la coordenada del buffer empaquetado y `epochMs` la hora de\npared; con cualquiera de las dos el visor y el informe ubican la tira de ECG.",
         "properties": {
@@ -4633,6 +4674,41 @@
             ],
             "title": "Confidencescore"
           },
+          "createdAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "createdBy": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdby"
+          },
+          "createdByName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdbyname"
+          },
           "description": {
             "anyOf": [
               {
@@ -4693,6 +4769,18 @@
             ],
             "title": "Severity",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "const": "manual",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "startEpochMs": {
             "title": "Startepochms",
@@ -5515,6 +5603,41 @@
               }
             ]
           },
+          "createdAt": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdat"
+          },
+          "createdBy": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdby"
+          },
+          "createdByName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Createdbyname"
+          },
           "description": {
             "anyOf": [
               {
@@ -5568,6 +5691,18 @@
             ],
             "title": "Severity",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "const": "manual",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "startEpochMs": {
             "title": "Startepochms",
@@ -11701,6 +11836,89 @@
           }
         },
         "summary": "Get Study Findings",
+        "tags": [
+          "studies"
+        ]
+      },
+      "post": {
+        "operationId": "create_manual_finding_studies__study_id__findings_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "study_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Study Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "holter_session_v2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Holter Session V2"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualFindingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReclassificationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Manual Finding",
         "tags": [
           "studies"
         ]

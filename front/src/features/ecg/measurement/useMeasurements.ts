@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import type { Measurement, MeasurementTool } from './measure'
+import type { Measurement, ChartTool } from './measure'
 
 /**
  * Estado de las herramientas de medición de un estudio.
@@ -12,7 +12,7 @@ import type { Measurement, MeasurementTool } from './measure'
  * curso ya marcó el evento con `preventDefault` y acá se respeta.
  */
 export function useMeasurements(resetKey: string) {
-  const [tool, setTool] = useState<MeasurementTool | null>(null)
+  const [tool, setTool] = useState<ChartTool | null>(null)
   const [measurements, setMeasurements] = useState<Measurement[]>([])
   const [seenKey, setSeenKey] = useState(resetKey)
 
@@ -28,6 +28,7 @@ export function useMeasurements(resetKey: string) {
     if (tool == null) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (document.querySelector('[role="dialog"]')) return
       setTool(null)
     }
     window.addEventListener('keydown', onKeyDown)

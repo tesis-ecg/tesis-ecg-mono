@@ -1,10 +1,15 @@
 import { X } from 'lucide-react'
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
 
+import { toast } from 'sonner'
+
 import { cn } from '@/lib/utils'
 
 import {
   formatMeasurement,
+  findingRange,
+  type FindingRange,
+  type ChartTool,
   nearestSampleIndex,
   rrCompassMarks,
   spansGap,
@@ -15,7 +20,7 @@ import {
 
 export interface ECGMeasurementOverlayProps {
   /** `null` = herramientas apagadas: el overlay no captura el puntero. */
-  tool: MeasurementTool | null
+  tool: ChartTool | null
   /** `false` cuando el visor no dibuja muestras reales. */
   enabled: boolean
   plotArea: { left: number; top: number; width: number; height: number } | null
@@ -28,6 +33,8 @@ export interface ECGMeasurementOverlayProps {
   trace: MeasureTrace | null
   measurements: Measurement[]
   onChange: (next: Measurement[]) => void
+  onFindingSelect?: (range: FindingRange) => void
+  selectedRange?: FindingRange | null
 }
 
 /** Movimiento mínimo (px) para que un arrastre cuente como medición y no como un clic. */
@@ -87,9 +94,11 @@ export function ECGMeasurementOverlay({
   trace,
   measurements,
   onChange,
+  onFindingSelect,
+  selectedRange,
 }: ECGMeasurementOverlayProps) {
   const [draft, setDraft] = useState<Draft | null>(null)
-  const active = tool != null && enabled
+  const active = tool != null && enabled && !selectedRange
 
   // Una medición en curso no sobrevive a apagar la herramienta ni al zoom fuera
   // del detalle. Derivado en render para no pasar por un efecto.
@@ -111,7 +120,7 @@ export function ECGMeasurementOverlay({
 
   const localX = (event: ReactPointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
-    return event.clientX - rect.left
+    return Math.max(0, Math.min(event.clientX - rect.left, plotArea?.width ?? rect.width))
   }
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -135,6 +144,12 @@ export function ECGMeasurementOverlay({
     const final: Draft = { ...draft, bMs: pxToX(px), bPx: px }
     setDraft(null)
     if (Math.abs(final.bPx - final.aPx) < MIN_DRAG_PX) return
+    if (tool === 'finding') {
+      const range = trace ? findingRange(trace, final.aMs, final.bMs) : null
+      if (range) onFindingSelect?.(range)
+      else toast.error('Seleccioná un tramo continuo con al menos dos muestras, sin cruzar huecos.')
+      return
+    }
     onChange([...measurements, toMeasurement(tool, final, trace)])
   }
 
@@ -144,7 +159,14 @@ export function ECGMeasurementOverlay({
 
   const { width, height } = plotArea
   const draftMeasurement: Measurement | null =
-    liveDraft && tool ? { id: 'draft', tool, aMs: liveDraft.aMs, bMs: liveDraft.bMs } : null
+    liveDraft && tool
+      ? {
+          id: 'draft',
+          tool: tool === 'finding' ? 'time' : tool,
+          aMs: liveDraft.aMs,
+          bMs: liveDraft.bMs,
+        }
+      : null
 
   const renderFigure = (m: Measurement, isDraft: boolean) => {
     const ax = xToPx(m.aMs)
@@ -276,6 +298,17 @@ export function ECGMeasurementOverlay({
       <svg width={width} height={height} className="absolute inset-0" aria-hidden="true">
         {shapes.map((m) => renderFigure(m, false))}
         {draftMeasurement ? renderFigure(draftMeasurement, true) : null}
+        {selectedRange
+          ? renderFigure(
+              {
+                id: 'finding-selection',
+                tool: 'time',
+                aMs: selectedRange.startMs,
+                bMs: selectedRange.endMs,
+              },
+              true,
+            )
+          : null}
       </svg>
       <div
         data-testid="measurement-capture"
@@ -306,7 +339,9 @@ export function ECGMeasurementOverlay({
             borderColor: 'var(--ecg-measure)',
           }}
         >
-          {formatMeasurement(draftMeasurement, trace)}
+          {tool === 'finding'
+            ? `Tramo: ${Math.round(Math.abs(draftMeasurement.bMs - draftMeasurement.aMs))} ms`
+            : formatMeasurement(draftMeasurement, trace)}
         </div>
       ) : null}
     </div>

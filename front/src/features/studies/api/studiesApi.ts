@@ -152,3 +152,11 @@ export async function reclassifyFinding(
   )
   return data
 }
+
+export async function createManualFinding(
+  studyId: string,
+  body: import('@/generated/openapi').ManualFindingRequest,
+): Promise<Reclassification> {
+  const { data } = await api.post<Reclassification>(`/studies/${studyId}/findings`, body)
+  return data
+}

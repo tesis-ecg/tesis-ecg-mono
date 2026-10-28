@@ -6,10 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.study import StudyStatus
 from app.dependencies.auth_dependencies import RoleScope, get_doctor_scope
 from app.dependencies.common_dependencies import get_db
-from app.modules.studies import findings_service, reclassification_service
+from app.modules.studies import findings_service, manual_findings_service, reclassification_service
 from app.modules.studies import studies_service as service
 from app.modules.studies.studies_schemas import (
     HolterMetricsOut,
+    ManualFindingInput,
+    ManualFindingRequest,
     ReclassificationInput,
     ReclassificationOut,
     ReclassificationRequest,
@@ -377,6 +379,21 @@ async def reclassify_finding(
             finding_id=finding_id,
             actor_id=scope.user.id,
             data=data,
+        ),
+        db,
+    )
+
+
+@router.post("/{study_id}/findings", response_model=ReclassificationOut, status_code=201)
+async def create_manual_finding(
+    study_id: uuid.UUID,
+    data: ManualFindingRequest,
+    scope: RoleScope = Depends(get_doctor_scope),
+    db: AsyncSession = Depends(get_db),
+) -> ReclassificationOut:
+    return await manual_findings_service.create_manual_finding(
+        ManualFindingInput(
+            doctor_id=scope.doctor_id, study_id=study_id, actor_id=scope.user.id, data=data
         ),
         db,
     )
