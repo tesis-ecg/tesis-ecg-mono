@@ -388,6 +388,14 @@ export interface LoginResponse {
   "expiresAt": string
 }
 
+export interface ManualFindingRequest {
+  "startEpochMs": number
+  "endEpochMs": number
+  "kind": FindingKind
+  "severity": "low" | "medium" | "high" | "critical"
+  "clientRequestId": string
+}
+
 export interface MetricEvidenceOut {
   "value": number | null
   "sampleIndex": number
@@ -760,6 +768,10 @@ export interface StudyDetailOut {
 }
 
 export interface StudyEcgAnnotationOut {
+  "source"?: string | null
+  "createdBy"?: string | null
+  "createdByName"?: string | null
+  "createdAt"?: string | null
   "id": string
   "kind": string
   "category": "signal_quality" | "clinical" | "patient_marker" | "technical"
@@ -899,6 +911,10 @@ export interface StudyFindingGroupOut {
 }
 
 export interface StudyFindingOut {
+  "source"?: string | null
+  "createdBy"?: string | null
+  "createdByName"?: string | null
+  "createdAt"?: string | null
   "id": string
   "kind": string
   "category": "signal_quality" | "clinical" | "patient_marker" | "technical"

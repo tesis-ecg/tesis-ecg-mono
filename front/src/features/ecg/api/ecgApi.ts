@@ -54,6 +54,10 @@ interface EcgTimelineSegment {
 }
 
 interface EcgAnnotation {
+  source?: 'manual' | null
+  createdBy?: string | null
+  createdByName?: string | null
+  createdAt?: string | null
   id: string
   kind: string
   category: ECGAnnotationCategory
@@ -82,7 +86,10 @@ const NOT_A_FINDING_KINDS = new Set(['normal_beats'])
 
 function isStillAFinding(annotation: EcgAnnotation): boolean {
   if (DISMISSED_STATUSES.has(annotation.validationStatus ?? '')) return false
-  return !NOT_A_FINDING_KINDS.has(annotation.effectiveKind ?? annotation.kind)
+  return (
+    annotation.source === 'manual' ||
+    !NOT_A_FINDING_KINDS.has(annotation.effectiveKind ?? annotation.kind)
+  )
 }
 
 /**
@@ -246,6 +253,10 @@ export async function getStudyEcg(studyId: string, signal?: AbortSignal): Promis
       startMs: annotation.startEpochMs ?? manifest.startTimestamp + annotation.startOffsetMs,
       endMs: annotation.endEpochMs ?? manifest.startTimestamp + annotation.endOffsetMs,
       confidenceScore: annotation.confidenceScore,
+      source: annotation.source,
+      createdBy: annotation.createdBy,
+      createdByName: annotation.createdByName,
+      createdAt: annotation.createdAt,
       linkedAnnotationId: annotation.linkedAnnotationId ?? null,
       description: annotation.description ?? null,
     })),

@@ -45,6 +45,7 @@ from app.modules.studies.corrections import (
     InvalidReclassification,
     ReclassificationPlan,
     event_sample_span,
+    is_manual_finding,
     is_reclassifiable,
     plan_reclassification,
 )
@@ -79,6 +80,40 @@ def _plan(input_data: ReclassificationInput, event: ECGEvent) -> Reclassificatio
             "Este hallazgo no se puede reclasificar.",
         )
     data = input_data.data
+    if is_manual_finding(event):
+        if data.action in ("reject", "reset") and (
+            data.kind is not None or data.severity is not None or data.beatLabel is not None
+        ):
+            raise _unprocessable(
+                "INVALID_RECLASSIFICATION", "La acción no admite tipo ni prioridad."
+            )
+        # A manual decision overlays the detector; rejecting it releases the
+        # overlay, rather than asserting that the underlying signal is normal.
+        if data.action == "reject":
+            return plan_reclassification("other", span, "reject", None)
+        if data.action == "reset":
+            return plan_reclassification(
+                "other",
+                span,
+                "relabel",
+                None,
+                target_kind=annotation_kind(event),
+                severity=event.severity.value.lower(),
+            )
+        if data.action != "relabel" or data.kind is None or data.severity is None:
+            raise _unprocessable("INVALID_RECLASSIFICATION", "Elegí un tipo y su prioridad.")
+        if data.beatLabel is not None:
+            raise _unprocessable(
+                "INVALID_RECLASSIFICATION", "beatLabel no aplica a un hallazgo manual."
+            )
+        return plan_reclassification(
+            "other",
+            span,
+            "relabel",
+            None,
+            target_kind=data.kind.value,
+            severity=data.severity,
+        )
     if data.kind is not None or data.severity is not None:
         if (
             data.action != "relabel"

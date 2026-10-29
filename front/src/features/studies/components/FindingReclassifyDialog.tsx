@@ -40,10 +40,17 @@ const CORRECTION_TEXT: Record<StudyFindingCorrection['action'], string> = {
 }
 
 /**
- * El estado de corrección de un hallazgo: qué se hizo, el tipo original, quién
- * y cuándo. El original se muestra siempre — la corrección no lo reemplaza.
+ * Los hallazgos manuales muestran solo su autor. Para los del motor se muestra
+ * la corrección y se conserva el tipo original.
  */
 export function FindingCorrectionStatus({ finding }: { finding: StudyFinding }) {
+  if (finding.source === 'manual') {
+    return (
+      <span className="text-body3 mt-1 block text-gray-600 wrap-anywhere">
+        Por {finding.createdByName ?? 'un médico'}
+      </span>
+    )
+  }
   const correction = finding.correction
   if (!correction) return null
   const effective =

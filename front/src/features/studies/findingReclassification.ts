@@ -51,7 +51,10 @@ export function reclassificationChoices(finding: StudyFinding): ReclassifyChoice
     {
       value: 'reject',
       label: 'Descartar',
-      hint: rejectHint(finding.kind, own),
+      hint:
+        finding.source === 'manual'
+          ? 'Retira este hallazgo manual y su efecto en las métricas.'
+          : rejectHint(finding.kind, own),
       request: { action: 'reject' },
     },
     {

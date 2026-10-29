@@ -340,6 +340,13 @@ export function StudyDetail() {
                   />
                   <ECGViewer
                     ref={viewerRef}
+                    key={study.id}
+                    manualFindingStudyId={study.id}
+                    onManualFindingCreated={(finding) => {
+                      setSelectedGroup(null)
+                      setShowAnnotationsOnChart(true)
+                      setSelectedAnnotationId(finding.id)
+                    }}
                     signal={ecgQ.data}
                     height={400}
                     paperSpeed={scale.paperSpeed}

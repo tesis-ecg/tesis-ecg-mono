@@ -176,7 +176,8 @@ export function isAnnotationHighlighted(
 export function annotationChartLabel(annotation: ECGAnnotation, links: ECGAnnotationLinks): string {
   const finding = answeredFinding(annotation, links)
   if (finding) return `Respuesta: ${annotationLabel(finding.kind)}`
-  return annotationLabel(annotation.kind)
+  const label = annotationLabel(annotation.kind)
+  return annotation.source === 'manual' ? `${label} · Manual` : label
 }
 
 export function annotationLabel(kind: string): string {
