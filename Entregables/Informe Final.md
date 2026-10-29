@@ -426,6 +426,7 @@ flowchart TB
     subgraph Vercel["Vercel (región São Paulo)"]
         FE["Dashboard web<br/>React + Vite"]
         BE["Backend<br/>FastAPI"]
+        ML["Motor de detección<br/>hilo aparte del backend"]
     end
     subgraph Datos["Servicios de datos"]
         PG[("PostgreSQL<br/>Neon")]
@@ -441,6 +442,9 @@ flowchart TB
     NAV -- "URL prefirmada (10 min)" --> S3
     BE --> PG
     BE --> S3
+    BE -- "bloques de 5 min" --> ML
+    ML -- "hallazgos" --> PG
+    ML -- "etiquetas por latido" --> S3
     BE -- "validación de credenciales" --> A0
     BE -- "notificaciones" --> PUSH
     PUSH --> APP
@@ -517,9 +521,19 @@ flowchart LR
     B --> F["Eventos por reglas<br/>a partir de los indicadores"]
     F --> G["Alertas al médico"]
     G --> H["Notificación push<br/>al paciente (alta y crítica)"]
+    B --> M1
+    subgraph ML["Motor de detección (sección 5.6), en bloques de 5 min"]
+        M1["Limpieza de la señal<br/>y picos R"] --> M2{"Control de calidad<br/>ventanas de 10 s"}
+        M2 -- "válida" --> M3["Ritmo, morfología y<br/>clasificación de latidos"]
+        M2 -- "objetada" --> M4["Agrupación<br/>en episodios"]
+        M3 --> M4
+    end
+    M4 --> I["Hallazgos con la versión del motor<br/>y etiquetas por latido"]
+    I --> G
+    I --> J["Revisión del médico:<br/>confirma, descarta o reclasifica"]
 ```
 
-Figura 4. Procesamiento en segundo plano de un lote recibido.
+Figura 4. Procesamiento en segundo plano de un lote recibido, incluido el motor de detección.
 Fuente: elaboración propia.
 
 La decodificación es una adaptación a Python del decodificador de referencia del firmware. Las constantes del formato se cruzan de forma automática entre el código del firmware y el del backend, y un conjunto de tramas de referencia generadas por el codificador en TypeScript se decodifica en las pruebas de Python.
@@ -592,7 +606,7 @@ La operación se documentó en un manual de procedimientos que cubre la separaci
 
 ## 7.1. Diagrama entidad relación
 
-El modelo de datos tiene quince tablas. Todas, salvo la de límites de intentos, usan identificadores UUID, registran las fechas de creación y modificación y admiten borrado lógico, de modo que ningún registro clínico se elimina físicamente. La Figura 5 muestra las entidades principales y sus relaciones.
+El modelo de datos tiene diecisiete tablas. Todas, salvo la de límites de intentos, usan identificadores UUID, registran las fechas de creación y modificación y admiten borrado lógico, de modo que ningún registro clínico se elimina físicamente. La Figura 5 muestra las entidades principales y sus relaciones.
 
 ```mermaid
 erDiagram
@@ -613,6 +627,10 @@ erDiagram
     STUDY ||--o| STUDY_CLINICAL_REPORT_DRAFT : "tiene"
     STUDY ||--o{ STUDY_CLINICAL_REPORT : "versiona"
     ECG_BATCH ||--o{ ECG_EVENT : "origina"
+    STUDY ||--o{ ECG_EVENT : "reúne los hallazgos"
+    STUDY ||--o{ SIGNAL_QUALITY_INTERVAL : "califica"
+    STUDY ||--o{ ECG_INTERVAL_MEASUREMENT : "mide (investigación)"
+    USER ||--o{ ECG_EVENT : "valida"
     ECG_EVENT ||--o{ ALERT : "dispara"
     ALERT ||--o| PATIENT_REPORT : "es respondida por"
 
@@ -651,6 +669,8 @@ erDiagram
         int last_ingested_seq
         jsonb ecg_pyramid_levels
         string ecg_sha256
+        bigint ml_analyzed_samples
+        jsonb ml_state
     }
     ECG_BATCH {
         uuid id PK
@@ -665,10 +685,31 @@ erDiagram
     ECG_EVENT {
         uuid id PK
         uuid batch_id FK
+        uuid study_id FK
         string event_type
         string severity
         float timestamp_in_recording
         jsonb metadata
+        string model_version
+        string validation_status
+        uuid validated_by FK
+        jsonb correction
+    }
+    SIGNAL_QUALITY_INTERVAL {
+        uuid id PK
+        uuid study_id FK
+        bigint start_sample_index
+        bigint sample_count
+        string level
+        string reason
+        string model_version
+    }
+    ECG_INTERVAL_MEASUREMENT {
+        uuid id PK
+        uuid study_id FK
+        bigint start_sample_index
+        float qt_ms
+        float qtc_ms
     }
     ALERT {
         uuid id PK
@@ -843,11 +884,11 @@ flowchart TD
     F -- "Sí" --> G["Se abre el estudio"]
     F -- "No" --> H["Se incorpora al estudio abierto"]
     G --> H
-    H --> I["Procesamiento: señal, línea de tiempo,<br/>eventos y alertas"]
-    I --> J["El médico revisa la señal,<br/>los hallazgos y los reportes del paciente"]
+    H --> I["Procesamiento: señal, línea de tiempo,<br/>análisis del motor de detección,<br/>eventos y alertas"]
+    I --> J["El médico revisa la señal y los reportes del paciente,<br/>y confirma, descarta o reclasifica los hallazgos"]
     J --> K{"¿Fin del período?"}
     K -- "No" --> E
-    K -- "Sí" --> L["El médico redacta el borrador<br/>y finaliza el informe clínico"]
+    K -- "Sí" --> L["El médico redacta el borrador y finaliza el informe clínico,<br/>una vez que el motor analizó el registro completo"]
     L --> M["El médico finaliza el estudio<br/>o desasigna el chaleco"]
 ```
 
@@ -878,8 +919,8 @@ sequenceDiagram
     participant B as Backend
     participant A as App del paciente
     participant M as Dashboard del médico
-    C->>B: Lote con un evento (por ejemplo, botón de síntomas)
-    B->>B: Genera el evento y la alerta
+    C->>B: Lote con un evento (por ejemplo, botón de síntomas) o con un tramo anómalo
+    B->>B: Genera el evento o el hallazgo del motor de detección, y la alerta
     B->>A: Notificación push (severidad alta o crítica)
     B->>M: Alerta pendiente en la bandeja y en el tablero
     A->>B: El paciente completa síntomas y actividad
