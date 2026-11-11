@@ -183,6 +183,14 @@ export function ECGExpandedView({
         <div ref={viewerSlotRef} className="min-h-[440px] min-w-0 lg:min-h-0">
           <ECGViewer
             ref={viewerRef}
+            key={reclassification?.studyId}
+            manualFindingStudyId={reclassification?.studyId}
+            onManualFindingCreated={(finding) => {
+              changeGroup(null)
+              onShowAnnotationsChange?.(true)
+              setSelectedAnnotationId(finding.id)
+              onAnnotationSelect?.(finding.id)
+            }}
             signal={signal}
             height={viewerHeight}
             paperSpeed={paperSpeed}

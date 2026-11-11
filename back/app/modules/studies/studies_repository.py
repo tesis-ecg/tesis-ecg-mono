@@ -1,13 +1,13 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Select, String, cast, func, or_, select
+from sqlalchemy import Float, Select, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import ScalarSelect
 
 from app.db.models.device import Device
 from app.db.models.doctor import Doctor
-from app.db.models.ecg_batch import ECGBatch
+from app.db.models.ecg_batch import ECGBatch, ProcessingStatus
 from app.db.models.ecg_event import ECGEvent
 from app.db.models.patient import Patient
 from app.db.models.signal_quality import SignalQualityInterval
@@ -463,3 +463,75 @@ async def user_names(db: AsyncSession, user_ids: set[uuid.UUID]) -> dict[uuid.UU
         return {}
     rows = await db.execute(select(User.id, User.full_name).where(User.id.in_(user_ids)))
     return {user_id: name for user_id, name in rows.all()}
+
+
+async def get_manual_finding_by_key(
+    db: AsyncSession, study_id: uuid.UUID, key: str
+) -> ECGEvent | None:
+    result = await db.scalars(
+        select(ECGEvent).where(
+            ECGEvent.study_id == study_id,
+            ECGEvent.dedupe_key == key,
+            ECGEvent.deleted_at.is_(None),
+        )
+    )
+
+    return result.first()
+
+
+async def get_manual_finding_batch(
+    db: AsyncSession, study: Study, start_sample: int
+) -> ECGBatch | None:
+    segment = next(
+        (
+            s
+            for s in study.ecg_segments
+            if int(s["startSampleIndex"])
+            <= start_sample
+            < int(s["startSampleIndex"]) + int(s["sampleCount"])
+        ),
+        None,
+    )
+    statement = select(ECGBatch).where(
+        ECGBatch.deleted_at.is_(None),
+        ECGBatch.device_id == study.device_id,
+    )
+    if segment is None:
+        if not study.ecg_s3_key:
+            return None
+        # Legacy demo stores one study object, but each raw batch has its UTC
+        # start (seconds) and exact sample count. No invented recording batch.
+        epoch_seconds = study.started_at.timestamp() + start_sample / study.sample_rate
+        statement = statement.where(
+            or_(ECGBatch.study_id == study.id, ECGBatch.study_id.is_(None)),
+            ECGBatch.compression_type == "raw-f32",
+            ECGBatch.batch_timestamp <= epoch_seconds,
+            ECGBatch.batch_timestamp + cast(ECGBatch.num_samples, Float) / ECGBatch.sample_rate
+            > epoch_seconds,
+        )
+    elif segment.get("firstSeq") is not None:
+        statement = statement.where(
+            ECGBatch.study_id == study.id, ECGBatch.first_seq == int(segment["firstSeq"])
+        )
+    else:
+        # Legacy seeds have no firstSeq; their raw object identifies the batch.
+        statement = statement.where(ECGBatch.s3_key == str(segment["key"]))
+    result = await db.scalars(
+        statement.order_by(
+            (ECGBatch.processing_status == ProcessingStatus.DONE).desc(),
+            ECGBatch.created_at.desc(),
+        ).limit(1)
+    )
+    return result.first()
+
+
+async def count_study_events(db: AsyncSession, study_id: uuid.UUID) -> int:
+    count = await db.scalar(
+        select(func.count())
+        .select_from(ECGEvent)
+        .where(
+            ECGEvent.study_id == study_id,
+            ECGEvent.deleted_at.is_(None),
+        )
+    )
+    return int(count or 0)

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  findingRange,
   formatMeasurement,
   measureAmplitude,
   measureArea,
@@ -197,5 +198,28 @@ describe('formatMeasurement', () => {
   })
   it('no muestra -0,00', () => {
     expect(formatMeasurement(m('amplitude'), trace([1, 1.0001]))).toBe('Δ 0,00 mV')
+  })
+})
+
+describe('findingRange', () => {
+  const trace = {
+    xs: new Float64Array([1000, 1002, 1004, 5000, 5002]),
+    ys: [0, 1, 0, 1, 0],
+    gapIndices: [3],
+  }
+  it('normalizes either drag direction to real samples', () => {
+    expect(findingRange(trace, 1004, 1000)).toEqual({ startMs: 1000, endMs: 1004 })
+    expect(findingRange(trace, 1000.2, 1003.8)).toEqual({ startMs: 1000, endMs: 1004 })
+  })
+  it('rejects clicks, empty traces and ranges spanning missing recording', () => {
+    expect(findingRange(trace, 1000, 1000)).toBeNull()
+    expect(findingRange(trace, 1002, 5002)).toBeNull()
+    expect(findingRange({ xs: [], ys: [], gapIndices: [] }, 1000, 1004)).toBeNull()
+  })
+  it('bounds the range to the loaded trace', () => {
+    expect(findingRange({ xs: [1000, 1002], ys: [0, 1], gapIndices: [] }, 0, 9999)).toEqual({
+      startMs: 1000,
+      endMs: 1002,
+    })
   })
 })

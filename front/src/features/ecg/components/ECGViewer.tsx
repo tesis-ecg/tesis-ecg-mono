@@ -10,6 +10,8 @@ import {
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 
+import { ManualFindingDialog } from '@/features/studies/components/ManualFindingDialog'
+
 import { cn } from '@/lib/utils'
 
 import {
@@ -29,6 +31,7 @@ import {
   ECGMeasurementToolbar,
   useMeasurements,
   type MeasureTrace,
+  type FindingRange,
 } from '../measurement'
 import { drawPaperGrid, type PaperGridColors } from '../paperGridPlugin'
 import {
@@ -172,6 +175,8 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
     onAnnotationSelect,
     showAnnotations = true,
     toolbar,
+    manualFindingStudyId,
+    onManualFindingCreated,
   },
   ref,
 ) {
@@ -299,6 +304,7 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
   // traza de medición sale de la ventana de detalle empalmada (o de la señal
   // entera si ya es cruda) y las herramientas se apagan cuando lo visible no
   // está cubierto por ella.
+  const [findingSelection, setFindingSelection] = useState<FindingRange | null>(null)
   const measurements = useMeasurements(String(signal.startTimestamp))
   // uPlot no pasa por React: cada cambio de escala (X o Y) o de tamaño tiene
   // que reproyectar las mediciones, y este contador es lo que las repinta.
@@ -1191,11 +1197,23 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
 
   return (
     <div className="min-w-0 w-full">
+      {manualFindingStudyId && findingSelection && (
+        <ManualFindingDialog
+          studyId={manualFindingStudyId}
+          range={findingSelection}
+          onClose={() => setFindingSelection(null)}
+          onCreated={(finding) => {
+            setFindingSelection(null)
+            onManualFindingCreated?.(finding)
+          }}
+        />
+      )}
       <div
         className="mb-2 flex min-h-10 min-w-0 items-center justify-between gap-2"
         data-testid="ecg-viewer-toolbar"
       >
         <ECGMeasurementToolbar
+          allowFindings={!!manualFindingStudyId}
           tool={measurements.tool}
           onToolChange={measurements.setTool}
           enabled={measureEnabled}
@@ -1281,6 +1299,8 @@ export const ECGViewer = forwardRef<ECGViewerHandle, ECGViewerProps>(function EC
             trace={measureTrace}
             measurements={measurements.measurements}
             onChange={measurements.setMeasurements}
+            selectedRange={findingSelection}
+            onFindingSelect={setFindingSelection}
           />
         </div>
       </div>

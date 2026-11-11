@@ -50,6 +50,10 @@ export interface ECGTimeVerification {
 }
 
 export interface ECGAnnotation {
+  source?: 'manual' | null
+  createdBy?: string | null
+  createdByName?: string | null
+  createdAt?: string | null
   id: string
   kind: string
   category: ECGAnnotationCategory
@@ -153,6 +157,8 @@ export interface ECGDetailSource {
 }
 
 export interface ECGViewerProps {
+  manualFindingStudyId?: string
+  onManualFindingCreated?: (finding: import('@/features/studies/types').StudyFinding) => void
   signal: ECGSignal
   /** Alto del viewer en píxeles. Default 400. */
   height?: number

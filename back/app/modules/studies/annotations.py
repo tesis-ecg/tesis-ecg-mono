@@ -324,7 +324,10 @@ def merge_continuous_episodes(
     """
     by_kind: dict[str, list[EventView]] = {}
     for view in views:
-        if view.kind in CONTINUOUS_KINDS:
+        if (
+            view.kind in CONTINUOUS_KINDS
+            and (view.event.event_metadata or {}).get("source") != "manual"
+        ):
             by_kind.setdefault(view.kind, []).append(view)
 
     #: Id del primer tramo -> vista del episodio entero.

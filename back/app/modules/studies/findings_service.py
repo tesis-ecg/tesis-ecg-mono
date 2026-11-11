@@ -40,7 +40,7 @@ from app.modules.studies.annotations import (
     segment_epoch_ms,
     wall_clock_resolver,
 )
-from app.modules.studies.corrections import is_reclassifiable
+from app.modules.studies.corrections import is_manual_finding, is_reclassifiable
 from app.modules.studies.studies_schemas import (
     StudyFindingCorrectionOut,
     StudyFindingGroupOut,
@@ -94,6 +94,10 @@ def _correction_out(
 
 def finding_out(view: EventView, names: Mapping[uuid.UUID, str]) -> StudyFindingOut:
     return StudyFindingOut(
+        source="manual" if is_manual_finding(view.event) else None,
+        createdBy=(view.event.event_metadata or {}).get("createdBy"),
+        createdByName=(view.event.event_metadata or {}).get("createdByName"),
+        createdAt=view.event.created_at if is_manual_finding(view.event) else None,
         id=view.id,
         kind=view.kind,
         category=view.category,
@@ -271,7 +275,7 @@ async def get_study_findings(input_data: StudyFindingsInput, db: AsyncSession) -
     for view in views:
         totals[view.kind] = totals.get(view.kind, 0) + 1
         totals[view.category] = totals.get(view.category, 0) + 1
-        if view.kind in _UNGROUPED_KINDS:
+        if view.kind in _UNGROUPED_KINDS or is_manual_finding(view.event):
             ungrouped.append(view)
             continue
         grouped.setdefault(_group_key(view), []).append(view)

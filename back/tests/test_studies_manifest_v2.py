@@ -149,6 +149,10 @@ async def test_a_legacy_seeded_study_still_returns_raw(
     assert manifest["raw"]["byteLength"] == len(payload)
     assert manifest["segments"] == []
     assert manifest["annotations"][0] == {
+        "source": None,
+        "createdBy": None,
+        "createdByName": None,
+        "createdAt": None,
         "id": manifest["annotations"][0]["id"],
         "kind": "sqi_unanalyzable",
         "category": "signal_quality",

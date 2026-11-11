@@ -13,6 +13,21 @@
  */
 
 export type MeasurementTool = 'time' | 'amplitude' | 'area' | 'rr'
+export type ChartTool = MeasurementTool | 'finding'
+
+export interface FindingRange {
+  startMs: number
+  endMs: number
+}
+
+/** Normaliza contra las muestras disponibles sin permitir cortes de grabación. */
+export function findingRange(trace: MeasureTrace, aMs: number, bMs: number): FindingRange | null {
+  const pair = resolvePair(trace, aMs, bMs)
+  if (!pair) return null
+  const startMs = trace.xs[Math.min(pair.ia, pair.ib)]
+  const endMs = trace.xs[Math.max(pair.ia, pair.ib)]
+  return endMs > startMs ? { startMs, endMs } : null
+}
 
 /**
  * Traza tal como está dibujada. `xs` en epoch ms ascendente, `ys` en mV (con

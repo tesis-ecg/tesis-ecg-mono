@@ -111,6 +111,10 @@ ValidationStatus = Literal["pending", "confirmed", "rejected", "uncertain", "noi
 class StudyEcgAnnotationOut(CamelModel):
     """Rango significativo dentro de la señal, normalizado para el visor."""
 
+    source: Literal["manual"] | None = None
+    createdBy: uuid.UUID | None = None
+    createdByName: str | None = None
+    createdAt: datetime | None = None
     id: uuid.UUID
     kind: str
     category: Literal["signal_quality", "clinical", "patient_marker", "technical"]
@@ -654,6 +658,10 @@ class StudyFindingCorrectionOut(CamelModel):
 class StudyFindingOut(CamelModel):
     """Un hallazgo puntual, ubicable sobre la traza."""
 
+    source: Literal["manual"] | None = None
+    createdBy: uuid.UUID | None = None
+    createdByName: str | None = None
+    createdAt: datetime | None = None
     id: uuid.UUID
     kind: str
     category: Literal["signal_quality", "clinical", "patient_marker", "technical"]
@@ -800,3 +808,19 @@ class ReclassificationInput:
     finding_id: uuid.UUID
     actor_id: uuid.UUID
     data: ReclassificationRequest
+
+
+class ManualFindingRequest(CamelModel):
+    startEpochMs: int = Field(strict=True, ge=0)
+    endEpochMs: int = Field(strict=True, ge=0)
+    kind: FindingKind
+    severity: Literal["low", "medium", "high", "critical"]
+    clientRequestId: uuid.UUID
+
+
+@dataclass(frozen=True)
+class ManualFindingInput:
+    doctor_id: uuid.UUID | None
+    study_id: uuid.UUID
+    actor_id: uuid.UUID
+    data: ManualFindingRequest

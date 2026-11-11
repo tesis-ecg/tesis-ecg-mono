@@ -138,3 +138,8 @@ function annotation(overrides: Partial<ECGAnnotation>): ECGAnnotation {
     ...overrides,
   }
 }
+
+it('identifies a manual finding on the chart', () => {
+  const manual = annotation({ kind: 'tachycardia', source: 'manual' })
+  expect(annotationChartLabel(manual, buildAnnotationLinks([manual]))).toBe('Taquicardia · Manual')
+})

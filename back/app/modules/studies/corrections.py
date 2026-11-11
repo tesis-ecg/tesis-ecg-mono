@@ -93,16 +93,20 @@ def event_sample_span(event: ECGEvent) -> tuple[int, int] | None:
     return int(start), int(start + count)
 
 
-def is_reclassifiable(event: ECGEvent) -> bool:
-    """Si el médico puede corregir el hallazgo: lo escribió el motor y tiene tramo.
+def is_manual_finding(event: ECGEvent) -> bool:
+    return (event.event_metadata or {}).get("source") == "manual"
 
-    Los que no escribió el motor (hardware, seeds, disparador manual) no tienen
+
+def is_reclassifiable(event: ECGEvent) -> bool:
+    """Si el médico puede corregir el hallazgo: motor o selección manual con tramo.
+
+    Hardware, seeds y disparador de simulación no tienen
     un tramo de señal propio que corregir; los de alcance de estudio abarcan
     horas y no son un tramo. `/findings` lo expone para que el panel no ofrezca
     una corrección que la ruta va a rechazar.
     """
     return (
-        event.model_version is not None
+        (event.model_version is not None or is_manual_finding(event))
         and event_scope(event) != STUDY_SCOPE
         and event_sample_span(event) is not None
     )

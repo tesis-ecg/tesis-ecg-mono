@@ -263,6 +263,14 @@ def _event_annotations(
     views, spans_by_event = drawable_event_episodes(study, events, to_epoch_ms)
     annotations = [
         StudyEcgAnnotationOut(
+            source="manual"
+            if (view.event.event_metadata or {}).get("source") == "manual"
+            else None,
+            createdBy=(view.event.event_metadata or {}).get("createdBy"),
+            createdByName=(view.event.event_metadata or {}).get("createdByName"),
+            createdAt=view.event.created_at
+            if (view.event.event_metadata or {}).get("source") == "manual"
+            else None,
             id=view.id,
             kind=view.kind,
             category=view.category,
@@ -1768,7 +1776,7 @@ def _effective_annotations(
         if item.validationStatus in ("rejected", "noise"):
             continue
         kind = item.effectiveKind or item.kind
-        if kind in _NOT_A_FINDING_KINDS:
+        if kind in _NOT_A_FINDING_KINDS and item.source != "manual":
             continue
         effective.append(item if kind == item.kind else item.model_copy(update={"kind": kind}))
     return effective

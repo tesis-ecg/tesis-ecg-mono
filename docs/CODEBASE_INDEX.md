@@ -180,6 +180,8 @@ Three-table auth/profile design: `user` (auth identity) ←1:1→ `doctor` (prof
 
 **Reclasificación de hallazgos**: `FindingReclassifyDialog` ofrece descartar o marcar como otro hallazgo (tipo + gravedad). `POST /studies/{id}/findings/{finding_id}/reclassification` → `reclassification_service` → `corrections.plan_reclassification` conserva el original en `ecg_event` y guarda tipo/gravedad efectivos en su JSON `correction`. El catálogo tipado está en `modules/studies/finding_catalog.py` (`FindingKind`, exportado a OpenAPI). `annotations.event_view` aplica categoría y gravedad corregidas; `doctor_corrections` aplica ruido, clases de latido y pausas revisadas antes de calcular las métricas. Los pedidos anteriores con `beatLabel` siguen admitidos.
 
+**Hallazgos manuales del ECG**: `ECGViewer` comparte la herramienta «Marcar hallazgo» entre estudio y pantalla completa; `ManualFindingDialog` usa `useCreateManualFinding` → `POST /studies/{id}/findings` → `manual_findings_service`. Valida el intervalo contra la timeline (rechaza huecos), congela sus muestras y usa `clientRequestId` para idempotencia. Persiste en `ecg_event` con `metadata.source=manual`, autoría y `model_version=NULL`; no crea alertas ni push. Las reglas de `corrections.py` aplican su efecto a métricas y permiten reclasificar o retirar ese aporte al descartarlo. Los eventos manuales se listan sin agrupar ni fusionar y no desaparecen al reprocesar el motor. Migración `93dfcc2a70ab`: auditoría `ECG_EVENT_CREATED`.
+
 ## Suggested Reading Paths
 
 - **Add/modify a backend endpoint**: `back/app/main.py` → target route → service → repository → schemas; use `get_current_user` for identity and `get_doctor_scope` for explicit admin/doctor scoping. Regenerate OpenAPI/types.

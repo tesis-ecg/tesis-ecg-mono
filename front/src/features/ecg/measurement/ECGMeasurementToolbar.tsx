@@ -1,28 +1,43 @@
-import { ChartArea, Eraser, Activity, MoveHorizontal, MoveVertical, Hand } from 'lucide-react'
+import {
+  ChartArea,
+  Eraser,
+  Activity,
+  MoveHorizontal,
+  MoveVertical,
+  Hand,
+  MapPinPlus,
+} from 'lucide-react'
 import { useId, type ComponentType } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
-import type { MeasurementTool } from './measure'
+import type { ChartTool } from './measure'
 
 export interface ECGMeasurementToolbarProps {
-  tool: MeasurementTool | null
-  onToolChange: (tool: MeasurementTool | null) => void
+  tool: ChartTool | null
+  onToolChange: (tool: ChartTool | null) => void
   /** `false` cuando el visor no dibuja muestras reales (zoom fuera del límite de detalle). */
   enabled: boolean
   disabledReason?: string
   measurementCount: number
   onClear: () => void
+  allowFindings?: boolean
   viewKind?: 'raw' | 'filtered_visualization'
 }
 
 const TOOLS: {
-  id: MeasurementTool
+  id: ChartTool
   label: string
   hint: string
   Icon: ComponentType<{ className?: string }>
 }[] = [
+  {
+    id: 'finding',
+    label: 'Marcar hallazgo',
+    hint: 'Arrastrá para seleccionar un tramo y agregar un hallazgo manual',
+    Icon: MapPinPlus,
+  },
   {
     id: 'time',
     label: 'Calibre de tiempo',
@@ -58,6 +73,7 @@ export function ECGMeasurementToolbar({
   measurementCount,
   onClear,
   viewKind,
+  allowFindings = false,
 }: ECGMeasurementToolbarProps) {
   const helpId = useId()
   const filteredHelp =
@@ -95,40 +111,42 @@ export function ECGMeasurementToolbar({
         <span id={helpId} className="sr-only">
           {help}
         </span>
-        {TOOLS.map(({ id, label, hint, Icon }) => {
-          const pressed = tool === id
-          const description = [hint, 'Esc para salir.', help].filter(Boolean).join(' ')
-          return (
-            <Tooltip key={id}>
-              <TooltipTrigger asChild>
-                <span
-                  className="inline-flex shrink-0"
-                  tabIndex={enabled ? undefined : 0}
-                  aria-label={enabled ? undefined : `${label}. ${description}`}
-                >
-                  <Button
-                    type="button"
-                    variant={pressed ? 'default' : 'ghost'}
-                    size="icon"
-                    className="size-8 shrink-0"
-                    disabled={!enabled}
-                    aria-pressed={pressed}
-                    aria-label={label}
-                    title={description}
-                    aria-describedby={help ? helpId : undefined}
-                    onClick={() => onToolChange(pressed ? null : id)}
+        {TOOLS.filter(({ id }) => id !== 'finding' || allowFindings).map(
+          ({ id, label, hint, Icon }) => {
+            const pressed = tool === id
+            const description = [hint, 'Esc para salir.', help].filter(Boolean).join(' ')
+            return (
+              <Tooltip key={id}>
+                <TooltipTrigger asChild>
+                  <span
+                    className="inline-flex shrink-0"
+                    tabIndex={enabled ? undefined : 0}
+                    aria-label={enabled ? undefined : `${label}. ${description}`}
                   >
-                    <Icon className="size-4" aria-hidden />
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-xs">
-                <span className="font-medium">{label}</span>
-                <span className="mt-1 block">{description}</span>
-              </TooltipContent>
-            </Tooltip>
-          )
-        })}
+                    <Button
+                      type="button"
+                      variant={pressed ? 'default' : 'ghost'}
+                      size="icon"
+                      className="size-8 shrink-0"
+                      disabled={!enabled}
+                      aria-pressed={pressed}
+                      aria-label={label}
+                      title={description}
+                      aria-describedby={help ? helpId : undefined}
+                      onClick={() => onToolChange(pressed ? null : id)}
+                    >
+                      <Icon className="size-4" aria-hidden />
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs">
+                  <span className="font-medium">{label}</span>
+                  <span className="mt-1 block">{description}</span>
+                </TooltipContent>
+              </Tooltip>
+            )
+          },
+        )}
         <Button
           type="button"
           variant="ghost"
